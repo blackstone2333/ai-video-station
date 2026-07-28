@@ -14,8 +14,18 @@ from .errors import AppError, NotFoundError, ValidationAppError
 from .medialib import MediaLibraryService
 from .naming import NamingJobRepository, NamingService
 from .qbittorrent import QBittorrentClient
-from .quality import Release, canonical_media_name, detect_episode, detect_season, link_display_name
+from .quality import (
+    EPISODIC_MEDIA_TYPES,
+    Release,
+    canonical_media_name,
+    detect_episode,
+    detect_season,
+    infer_media_type,
+    link_display_name,
+)
 from .watchlist import WatchlistRepository, utc_now_iso
+from .sites import ProviderRegistry, SiteRepository
+from .transmission import TransmissionClient
 
 
 logger = logging.getLogger(__name__)
@@ -55,7 +65,7 @@ class SearchOutcome:
 
 
 class SearchService:
-    def __init__(self, crawler: SixVClient, cache: ResultCache) -> None:
+    def __init__(self, crawler: Any, cache: ResultCache) -> None:
         self.crawler = crawler
         self.cache = cache
 
@@ -73,7 +83,7 @@ class DownloadService:
     def __init__(
         self,
         settings: Settings,
-        qb: QBittorrentClient,
+        qb: Any,
         cache: ResultCache,
         naming: Optional[NamingService] = None,
     ) -> None:
@@ -90,7 +100,8 @@ class DownloadService:
         media_type: str,
     ) -> Release:
         year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)
-        season = detect_season(title) if media_type == "tv" else None
+        resolved_type = infer_media_type(title, download_link, media_type)
+        season = detect_season(title) if resolved_type in EPISODIC_MEDIA_TYPES else None
         return Release(
             id=result_id,
             title=title,
@@ -102,8 +113,8 @@ class DownloadService:
             language=None,
             hdr=None,
             encoding=None,
-            media_type=media_type,
-            episode=detect_episode(title) if media_type == "tv" else None,
+            media_type=resolved_type,
+            episode=detect_episode(title) if resolved_type in EPISODIC_MEDIA_TYPES else None,
             media_name=canonical_media_name(title),
             year=int(year_match.group(1)) if year_match else None,
             season=season,
@@ -123,10 +134,20 @@ class DownloadService:
                 "download_link does not match the selected search result",
                 [{"field": "download_link", "message": "result mismatch", "code": "RESULT_MISMATCH"}],
             )
-        resolved_type = cached.media_type if cached else media_type
+        resolved_type = cached.media_type if cached else infer_media_type(title, download_link, media_type)
         if resolved_type == "auto":
-            resolved_type = "movie"
-        category = self.settings.qb_tv_category if resolved_type == "tv" else self.settings.qb_movie_category
+            resolved_type = infer_media_type(title, download_link, media_type)
+        if resolved_type == "auto":
+            raise ValidationAppError(
+                "media type could not be detected; choose movie, tv, or anime",
+                [{"field": "type", "message": "explicit media type required", "code": "TYPE_REQUIRED"}],
+            )
+        if resolved_type == "anime":
+            category = self.settings.qb_anime_category
+        elif resolved_type == "tv":
+            category = self.settings.qb_tv_category
+        else:
+            category = self.settings.qb_movie_category
         release = cached or self._fallback_release(result_id, download_link, title, resolved_type)
         result = self.naming.add_download(release, category) if self.naming else self.qb.add_download(download_link, category)
         return {**result, "title": title, "type": resolved_type}
@@ -138,7 +159,7 @@ class WatchlistService:
         settings: Settings,
         repository: WatchlistRepository,
         search: SearchService,
-        qb: QBittorrentClient,
+        qb: Any,
         naming: Optional[NamingService] = None,
     ) -> None:
         self.settings = settings
@@ -200,9 +221,11 @@ class WatchlistService:
 
             downloaded_links = set(item.get("downloaded_links", []))
             downloaded_episodes = set(item.get("downloaded_episodes", []))
-            if resolved_type == "tv":
+            if resolved_type in EPISODIC_MEDIA_TYPES:
                 candidates = self._select_tv_releases(releases, downloaded_episodes)
-                category = self.settings.qb_tv_category
+                category = (
+                    self.settings.qb_anime_category if resolved_type == "anime" else self.settings.qb_tv_category
+                )
             else:
                 candidates = releases[:1]
                 category = self.settings.qb_movie_category
@@ -224,7 +247,7 @@ class WatchlistService:
                 {
                     "downloaded_links": sorted(downloaded_links),
                     "downloaded_episodes": sorted(downloaded_episodes),
-                    "status": "monitoring" if resolved_type == "tv" else "found",
+                    "status": "monitoring" if resolved_type in EPISODIC_MEDIA_TYPES else "found",
                     "found_at": item.get("found_at") or now,
                 }
             )
@@ -265,8 +288,8 @@ class WatchlistService:
 
 @dataclass
 class AppServices:
-    crawler: SixVClient
-    qb: QBittorrentClient
+    crawler: Any
+    qb: Any
     watchlist: WatchlistRepository
     cache: ResultCache
     search: SearchService
@@ -274,11 +297,22 @@ class AppServices:
     watchlist_service: WatchlistService
     naming_jobs: Optional[NamingJobRepository] = None
     naming: Optional[NamingService] = None
+    sites: Optional[SiteRepository] = None
 
 
 def build_services(settings: Settings) -> AppServices:
-    crawler = SixVClient(settings)
-    qb = QBittorrentClient(settings)
+    default_site = {
+        "id": "sixv",
+        "name": "6v",
+        "adapter": "sixv",
+        "enabled": True,
+        "base_urls": settings.site_urls,
+        "address_page": settings.sixv_address_page,
+        "default_type": "auto",
+    }
+    sites = SiteRepository(settings.sites_path, default_site)
+    crawler = ProviderRegistry(settings, sites)
+    qb = TransmissionClient(settings) if settings.downloader_type == "transmission" else QBittorrentClient(settings)
     watchlist = WatchlistRepository(settings.watchlist_path)
     cache = ResultCache()
     search = SearchService(crawler, cache)
@@ -287,4 +321,4 @@ def build_services(settings: Settings) -> AppServices:
     naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker)
     download = DownloadService(settings, qb, cache, naming)
     watchlist_service = WatchlistService(settings, watchlist, search, qb, naming)
-    return AppServices(crawler, qb, watchlist, cache, search, download, watchlist_service, naming_jobs, naming)
+    return AppServices(crawler, qb, watchlist, cache, search, download, watchlist_service, naming_jobs, naming, sites)

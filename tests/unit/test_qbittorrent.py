@@ -1,7 +1,7 @@
 import responses
 
-from sixv.config import Settings
-from sixv.qbittorrent import QBittorrentClient, torrent_hash
+from ainas.config import Settings
+from ainas.qbittorrent import QBittorrentClient, torrent_hash
 
 
 MAGNET = "magnet:?xt=urn:btih:" + "a" * 40

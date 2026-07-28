@@ -6,14 +6,15 @@ import pytest
 import requests
 import responses
 
-from sixv.crawler import SixVClient
-from sixv.errors import UpstreamError
+from ainas.crawler import SixVClient
+from ainas.errors import UpstreamError
 
 
 SEARCH_HTML = """
 <html><meta charset="gb2312"><div class="listBox"><ul>
   <li><div class="listInfo"><h3><a href="/jddy/2023-11-09/46705.html" title="奥本海默">奥本海默</a></h3></div></li>
   <li><div class="listInfo"><h3><a href="/mj/2026-01-02/50000.html" title="测试剧">测试剧</a></h3></div></li>
+  <li><div class="listInfo"><h3><a href="/dm/2026-01-03/50001.html" title="Rick and Morty">Rick and Morty</a></h3></div></li>
 </ul></div></html>
 """
 
@@ -30,7 +31,7 @@ DETAIL_HTML = """
 
 def test_parse_search_and_detail_pages():
     items = SixVClient.parse_search_page(SEARCH_HTML, "https://sixv.test")
-    assert [item.media_type for item in items] == ["movie", "tv"]
+    assert [item.media_type for item in items] == ["movie", "tv", "anime"]
     releases = SixVClient.parse_detail_page(
         DETAIL_HTML,
         items[0].url,

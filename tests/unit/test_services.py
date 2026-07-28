@@ -1,8 +1,8 @@
 import pytest
 
-from sixv.errors import ValidationAppError
-from sixv.quality import build_release
-from sixv.services import DownloadService, ResultCache, SearchService
+from ainas.errors import ValidationAppError
+from ainas.quality import build_release
+from ainas.services import DownloadService, ResultCache, SearchService
 
 
 RELEASE = build_release(
@@ -49,3 +49,22 @@ def test_download_service_uses_cached_type_and_rejects_mismatch(settings):
     assert qb.values[0][1] == settings.qb_tv_category
     with pytest.raises(ValidationAppError):
         service.download(RELEASE.id, "magnet:?xt=urn:btih:" + "f" * 40, RELEASE.title, "tv")
+
+
+def test_download_service_routes_anime_and_requires_type_when_unknown(settings):
+    anime = build_release(
+        "Rick and Morty",
+        "S01E01 1080p",
+        "https://sixv.test/dm/1.html",
+        "magnet:?xt=urn:btih:" + "c" * 40,
+        "anime",
+    )
+    cache = ResultCache()
+    cache.put_all([anime])
+    qb = StubQB()
+    service = DownloadService(settings, qb, cache)
+    assert service.download(anime.id, anime.download_link, anime.title, "auto")["type"] == "anime"
+    assert qb.values[0][1] == settings.qb_anime_category
+
+    with pytest.raises(ValidationAppError, match="media type could not be detected"):
+        service.download("unknown12", "magnet:?xt=urn:btih:" + "d" * 40, "Unknown title", "auto")

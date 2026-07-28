@@ -24,6 +24,11 @@ EPISODE_PATTERNS = [
     re.compile(r"第\s*(\d{1,3})\s*[集话期]"),
     re.compile(r"(?i)(?:更新|全)?\s*(\d{1,3})\s*集"),
 ]
+EPISODIC_MEDIA_TYPES = {"tv", "anime"}
+ANIME_PATH_RE = re.compile(r"(?i)/(?:dm|dongman|donghua|anime|animation|cartoon)(?:/|$)")
+TV_PATH_HINT_RE = re.compile(r"(?i)/(?:dlz|rj|mj|tv|lianxuju|dianshiju|guoju|duanju|rihanju|oumeiju|dsj)(?:/|$)")
+MOVIE_PATH_HINT_RE = re.compile(r"(?i)/(?:dy|jddy|movie|dianying|film)(?:/|$)")
+ANIME_HINT_RE = re.compile(r"(?i)动漫|动画(?:剧|系列|片)?|番剧|anime|animation|cartoon")
 
 
 @dataclass(frozen=True)
@@ -45,6 +50,7 @@ class Release:
     year: Optional[int] = None
     season: Optional[int] = None
     link_name: Optional[str] = None
+    provider: Optional[str] = None
 
     def to_api(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -132,6 +138,22 @@ def detect_season(text: str) -> Optional[int]:
     if episode and episode.startswith("S"):
         return int(episode[1:3])
     return None
+
+
+def infer_media_type(text: str, url: str = "", hint: str = "auto") -> str:
+    """Resolve movie/TV/anime without treating every unknown category as a movie."""
+    normalized = unquote(text)
+    if ANIME_PATH_RE.search(urlparse(url).path) or ANIME_HINT_RE.search(normalized):
+        return "anime"
+    if TV_PATH_HINT_RE.search(urlparse(url).path):
+        return "tv"
+    if MOVIE_PATH_HINT_RE.search(urlparse(url).path):
+        return "movie"
+    if hint in EPISODIC_MEDIA_TYPES:
+        return hint
+    if detect_episode(normalized) or detect_season(normalized) is not None:
+        return "tv"
+    return hint
 
 
 def canonical_media_name(value: str) -> str:
@@ -244,8 +266,9 @@ def build_release(
     title = page_title.strip()
     if label.strip() and label.strip() not in title:
         title = f"{title} | {label.strip()}"
-    episode = detect_episode(readable) if media_type == "tv" else None
-    season = detect_season(readable) if media_type == "tv" else None
+    resolved_media_type = infer_media_type(readable, page_url, media_type)
+    episode = detect_episode(readable) if resolved_media_type in EPISODIC_MEDIA_TYPES else None
+    season = detect_season(readable) if resolved_media_type in EPISODIC_MEDIA_TYPES else None
     if episode and episode.startswith("S"):
         season = int(episode[1:3])
     return Release(
@@ -259,7 +282,7 @@ def build_release(
         language=_language(readable),
         hdr=_hdr(readable),
         encoding=_encoding(readable),
-        media_type=media_type,
+        media_type=resolved_media_type,
         episode=episode,
         size_bytes=size_bytes,
         media_name=canonical_media_name(page_title),

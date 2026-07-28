@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from sixv.config import Settings
+from ainas.config import Settings
 
 
 @pytest.fixture

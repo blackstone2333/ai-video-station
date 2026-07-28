@@ -93,9 +93,14 @@ class MediaLibraryService:
         )
 
     def _target_root(self, media_type: str) -> Path:
-        if media_type not in {"movie", "tv"}:
+        if media_type not in {"movie", "tv", "anime"}:
             raise HardlinkError(f"unsupported media type: {media_type!r}")
-        host_target = self.settings.medialib_tv_path if media_type == "tv" else self.settings.medialib_movie_path
+        if media_type == "movie":
+            host_target = self.settings.medialib_movie_path
+        elif media_type == "anime":
+            host_target = self.settings.medialib_anime_path
+        else:
+            host_target = self.settings.medialib_tv_path
         return self._container_path(host_target, f"{media_type} media library path")
 
     def _source_candidates(
@@ -162,12 +167,14 @@ class MediaLibraryService:
         content_root_name: str | None = None,
     ) -> Path:
         media_type = str(plan.get("media_type") or "")
-        if media_type not in {"movie", "tv"}:
+        if media_type not in {"movie", "tv", "anime"}:
             raise HardlinkError(f"unsupported media type: {media_type!r}")
         root_name = self._safe_component(plan.get("root_name"), "media root name")
         media_name = self._safe_component(plan.get("media_name") or root_name, "media name")
         removable_roots = [root_name, media_name]
-        if content_root_name and not (media_type == "tv" and SEASON_DIRECTORY_RE.fullmatch(content_root_name)):
+        if content_root_name and not (
+            media_type in {"tv", "anime"} and SEASON_DIRECTORY_RE.fullmatch(content_root_name)
+        ):
             removable_roots.append(content_root_name)
         relative = self._strip_media_root(relative, removable_roots)
 

@@ -4,10 +4,10 @@ from pathlib import Path
 
 import pytest
 
-from sixv.config import Settings
-from sixv.errors import UpstreamError
-from sixv.naming import EmbyNamingPlanner, NamingJobRepository, NamingPlan, NamingService, safe_name
-from sixv.quality import build_release
+from ainas.config import Settings
+from ainas.errors import UpstreamError
+from ainas.naming import EmbyNamingPlanner, NamingJobRepository, NamingPlan, NamingService, safe_name
+from ainas.quality import build_release
 
 
 HASH = "a" * 40
@@ -32,6 +32,17 @@ def tv_release():
         "https://sixv.test/dlz/1.html",
         "magnet:?xt=urn:btih:" + "b" * 40 + "&dn=02.mp4",
         "tv",
+        2026,
+    )
+
+
+def anime_release():
+    return build_release(
+        "Rick and Morty[第七季]",
+        "01.mkv",
+        "https://sixv.test/dm/1.html",
+        "magnet:?xt=urn:btih:" + "c" * 40 + "&dn=01.mkv",
+        "anime",
         2026,
     )
 
@@ -71,6 +82,13 @@ def test_tv_plan_turns_bare_numbers_into_emby_episode_names():
     assert renamed["第2季/02.mkv"] == "第2季/漫长的季节 - S02E02.mkv"
     assert renamed["第2季/02.chs.ass"] == "第2季/漫长的季节 - S02E02.zh-CN.ass"
     assert preview["folder_operations"] == [{"kind": "folder", "old_path": "第2季", "new_path": "Season 02"}]
+
+
+def test_anime_uses_tv_style_emby_naming():
+    plan = EmbyNamingPlanner.from_release(anime_release())
+    preview = EmbyNamingPlanner().plan_files([{"name": "01.mkv", "size": 100}], plan)
+    assert plan.media_type == "anime"
+    assert preview["operations"][0]["new_path"] == "Rick and Morty - S07E01.mkv"
 
 
 def test_movie_multiversion_and_safe_name_rules():
@@ -167,7 +185,7 @@ def test_naming_service_stages_renames_and_releases_torrent(tmp_path):
     repository = NamingJobRepository(settings.naming_jobs_path)
     service = NamingService(settings, repository, qb)
     result = service.add_download(movie_release(), "sixv-movie")
-    assert result["current_category"] == "sixv-naming"
+    assert result["current_category"] == settings.qb_naming_category
     assert result["planned_name"] == "大黄蜂 (2018)"
     assert result["naming_status"] == "completed"
     assert ("category", "sixv-movie") in qb.calls

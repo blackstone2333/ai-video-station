@@ -1,7 +1,7 @@
 services:
-  sixv-crawler:
+  ai-nas-core:
     build: .
-    container_name: sixv-crawler
+    container_name: ai-nas-core
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     env_file:

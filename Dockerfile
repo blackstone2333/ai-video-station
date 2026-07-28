@@ -8,19 +8,19 @@ WORKDIR /app
 
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \
-    && groupadd --system sixv \
-    && useradd --system --gid sixv --home-dir /app sixv \
+    && groupadd --system ainas \
+    && useradd --system --gid ainas --home-dir /app ainas \
     && mkdir -p /data \
-    && chown -R sixv:sixv /app /data
+    && chown -R ainas:ainas /app /data
 
-COPY --chown=sixv:sixv sixv ./sixv
-COPY --chown=sixv:sixv static ./static
-COPY --chown=sixv:sixv main.py ./main.py
+COPY --chown=ainas:ainas ainas ./ainas
+COPY --chown=ainas:ainas static ./static
+COPY --chown=ainas:ainas main.py ./main.py
 
-USER sixv
+USER ainas
 EXPOSE 16666
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:16666/health', timeout=3)" || exit 1
 
-CMD ["gunicorn", "--bind", "0.0.0.0:16666", "--workers", "1", "--threads", "4", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "sixv.app:create_app()"]
+CMD ["gunicorn", "--bind", "0.0.0.0:16666", "--workers", "1", "--threads", "4", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "ainas.app:create_app()"]

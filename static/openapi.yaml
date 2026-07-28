@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
-  title: 6v 自动下载 API
-  version: 1.2.0
-  description: 搜索 6v 资源、推送到 qBittorrent，并管理电影/电视剧监听。
+  title: AI NAS Core API
+  version: 1.3.0
+  description: 多站点媒体搜索、订阅、下载器调度、Emby 命名和硬链接入库。
 servers:
   - url: http://localhost:16666
 components:
@@ -27,7 +27,7 @@ components:
       required: [keyword]
       properties:
         keyword: {type: string, minLength: 1, maxLength: 100, examples: [奥本海默]}
-        type: {type: string, enum: [movie, tv, auto], default: auto}
+        type: {type: string, enum: [movie, tv, anime, auto], default: auto}
     Release:
       type: object
       required: [id, title, url, download_link, type]
@@ -42,12 +42,28 @@ components:
         language: {type: [string, 'null']}
         hdr: {type: [string, 'null']}
         encoding: {type: [string, 'null']}
-        type: {type: string, enum: [movie, tv]}
+        type: {type: string, enum: [movie, tv, anime, auto]}
+        provider: {type: [string, 'null']}
         episode: {type: [string, 'null']}
         media_name: {type: [string, 'null']}
         year: {type: [integer, 'null']}
         season: {type: [integer, 'null']}
         link_name: {type: [string, 'null']}
+    Site:
+      type: object
+      required: [name, adapter, enabled, base_urls]
+      properties:
+        id: {type: string}
+        name: {type: string}
+        adapter: {type: string, enum: [sixv, generic]}
+        enabled: {type: boolean}
+        base_urls: {type: array, items: {type: string, format: uri}}
+        search_url: {type: [string, 'null']}
+        result_selector: {type: string}
+        title_selector: {type: string}
+        link_selector: {type: string}
+        download_selector: {type: string}
+        default_type: {type: string, enum: [movie, tv, anime, auto]}
 paths:
   /health:
     get:
@@ -62,7 +78,7 @@ paths:
         '503': {description: 已配置的依赖不可用}
   /api/search:
     post:
-      summary: 搜索电影或电视剧
+      summary: 跨已启用站点搜索电影、电视剧或动漫
       security: [{ApiKey: []}]
       requestBody:
         required: true
@@ -85,10 +101,10 @@ paths:
                   watchlisted: {type: boolean}
                   watchlist_id: {type: [string, 'null']}
         '422': {description: 参数错误}
-        '502': {description: 6v 站点不可用}
+        '502': {description: 已配置媒体站点不可用}
   /api/download:
     post:
-      summary: 将所选版本推送到 qBittorrent
+      summary: 将所选版本推送到当前下载器
       security: [{ApiKey: []}]
       requestBody:
         required: true
@@ -101,10 +117,10 @@ paths:
                 result_id: {type: string}
                 download_link: {type: string}
                 title: {type: string}
-                type: {type: string, enum: [movie, tv, auto], default: auto}
+                type: {type: string, enum: [movie, tv, anime, auto], default: auto}
       responses:
         '200': {description: 已加入队列}
-        '503': {description: qBittorrent 未配置}
+        '503': {description: 当前下载器未配置}
   /api/qb/status:
     get:
       summary: 查询 qBittorrent 连接状态
@@ -117,6 +133,18 @@ paths:
       security: [{ApiKey: []}]
       responses:
         '200': {description: 任务列表}
+  /api/downloader/status:
+    get:
+      summary: 查询当前下载器（qBittorrent 或 Transmission）连接状态
+      security: [{ApiKey: []}]
+      responses:
+        '200': {description: 下载器状态}
+  /api/downloader/tasks:
+    get:
+      summary: 查询当前下载器任务
+      security: [{ApiKey: []}]
+      responses:
+        '200': {description: 下载任务列表}
   /api/watchlist/add:
     post:
       summary: 添加监听项目
@@ -193,3 +221,51 @@ paths:
                 job_id: {type: [string, 'null']}
       responses:
         '200': {description: 处理报告}
+  /api/hardlinks:
+    get:
+      summary: 分页查看硬链接入库任务
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {in: query, name: status, schema: {type: string, default: done}}
+      responses:
+        '200': {description: 硬链接记录列表}
+  /api/settings/sites:
+    get:
+      summary: 获取媒体站点配置
+      security: [{ApiKey: []}]
+      responses:
+        '200': {description: 站点列表}
+    post:
+      summary: 添加通用 HTML 媒体站点
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Site'}
+      responses:
+        '201': {description: 站点已创建}
+        '422': {description: 配置无效}
+  /api/settings/sites/{site_id}:
+    patch:
+      summary: 更新站点配置
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: path, name: site_id, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object}
+      responses:
+        '200': {description: 站点已更新}
+        '404': {description: 站点不存在}
+    delete:
+      summary: 删除站点配置
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: path, name: site_id, required: true, schema: {type: string}}
+      responses:
+        '204': {description: 站点已删除}

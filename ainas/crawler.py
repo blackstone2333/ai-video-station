@@ -6,7 +6,7 @@ import logging
 import re
 import threading
 from dataclasses import dataclass
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
 import requests
@@ -14,7 +14,7 @@ from bs4 import BeautifulSoup
 
 from .config import Settings
 from .errors import UpstreamError
-from .quality import Release, build_release, decode_thunder_url, sort_releases
+from .quality import ANIME_PATH_RE, Release, build_release, decode_thunder_url, infer_media_type, sort_releases
 
 
 logger = logging.getLogger(__name__)
@@ -37,12 +37,27 @@ class SearchItem:
 
 
 class SixVClient:
-    def __init__(self, settings: Settings, session: Optional[requests.Session] = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        session: Optional[requests.Session] = None,
+        site: Optional[Mapping[str, Any]] = None,
+    ) -> None:
         self.settings = settings
+        self.site = dict(site or {})
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": settings.user_agent, "Accept": "text/html,*/*;q=0.8"})
         self._active_base: Optional[str] = None
         self._lock = threading.RLock()
+
+    @property
+    def base_urls(self) -> List[str]:
+        values = self.site.get("base_urls") or self.settings.site_urls
+        return [str(item).rstrip("/") for item in values if str(item).strip()]
+
+    @property
+    def address_page(self) -> str:
+        return str(self.site.get("address_page") or self.settings.sixv_address_page).rstrip("/")
 
     @staticmethod
     def decode_html(content: bytes) -> str:
@@ -54,7 +69,7 @@ class SixVClient:
     def _discover_domains(self) -> List[str]:
         try:
             response = self.session.get(
-                self.settings.sixv_address_page,
+                self.address_page,
                 timeout=self.settings.request_timeout_seconds,
                 allow_redirects=True,
             )
@@ -75,7 +90,7 @@ class SixVClient:
         with self._lock:
             if self._active_base and not force:
                 return self._active_base
-            candidates = self.settings.site_urls
+            candidates = self.base_urls
             discovered: List[str] = []
             for pass_number in range(2):
                 for base in candidates + discovered:
@@ -108,7 +123,10 @@ class SixVClient:
 
     @staticmethod
     def _media_type_from_url(url: str) -> str:
-        return "tv" if TV_PATH_RE.search(urlparse(url).path) else "movie"
+        path = urlparse(url).path
+        if ANIME_PATH_RE.search(path):
+            return "anime"
+        return "tv" if TV_PATH_RE.search(path) else infer_media_type("", url, "auto")
 
     @staticmethod
     def parse_search_page(page_html: str, base: str) -> List[SearchItem]:
@@ -274,7 +292,7 @@ class SixVClient:
                 effective_base = f"{effective.scheme}://{effective.netloc}"
                 items = self.parse_search_page(self.decode_html(response.content), effective_base)
                 if media_type != "auto":
-                    items = [item for item in items if item.media_type == media_type]
+                    items = [item for item in items if item.media_type in {media_type, "auto"}]
                 title_matches = [item for item in items if keyword.casefold() in item.title.casefold()]
                 if title_matches:
                     items = title_matches
@@ -288,6 +306,8 @@ class SixVClient:
                             "detail_page_skipped",
                             extra={"url": item.url, "error_type": type(exc).__name__},
                         )
+                if media_type != "auto":
+                    releases = [item for item in releases if item.media_type == media_type]
                 return sort_releases(releases)
             except requests.Timeout as exc:
                 last_error = exc

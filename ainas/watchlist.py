@@ -80,7 +80,7 @@ class WatchlistRepository:
                 "check_count": 0,
                 "downloaded_episodes": [],
                 "downloaded_links": [],
-                "status": "monitoring" if media_type == "tv" else "pending",
+                "status": "monitoring" if media_type in {"tv", "anime"} else "pending",
                 "found_at": None,
                 "last_error": None,
             }

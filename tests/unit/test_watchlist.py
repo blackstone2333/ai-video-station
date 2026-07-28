@@ -4,10 +4,10 @@ from dataclasses import replace
 
 import pytest
 
-from sixv.errors import NotFoundError, ServiceUnavailableError
-from sixv.quality import build_release
-from sixv.services import ResultCache, SearchOutcome, WatchlistService
-from sixv.watchlist import WatchlistRepository
+from ainas.errors import NotFoundError, ServiceUnavailableError
+from ainas.quality import build_release
+from ainas.services import ResultCache, SearchOutcome, WatchlistService
+from ainas.watchlist import WatchlistRepository
 
 
 class StubSearch:

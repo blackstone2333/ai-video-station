@@ -14,8 +14,16 @@ from .config import Settings
 from .errors import AppError, ServiceUnavailableError, ValidationAppError
 from .logging_config import configure_logging
 from .middleware import install_middleware
-from .models import DownloadRequest, NamingCheckRequest, SearchRequest, WatchlistAddRequest, WatchlistCheckRequest
+from .models import (
+    DownloadRequest,
+    NamingCheckRequest,
+    SearchRequest,
+    SitePatchRequest,
+    WatchlistAddRequest,
+    WatchlistCheckRequest,
+)
 from .services import AppServices, build_services
+from .sites import SiteConfig
 
 
 logger = logging.getLogger(__name__)
@@ -51,7 +59,7 @@ def _parse_json(model: Type[ModelT]) -> ModelT:
 
 def _problem(exc: AppError):
     body: Dict[str, Any] = {
-        "type": f"https://sixv.local/errors/{exc.code}",
+        "type": f"https://ai-nas.local/errors/{exc.code}",
         "title": exc.title,
         "status": exc.status_code,
         "detail": exc.detail,
@@ -124,8 +132,8 @@ def create_app(
     app = Flask(__name__, static_folder="../static", static_url_path="/static")
     app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=64 * 1024)
     services = services or build_services(settings)
-    app.extensions["sixv_settings"] = settings
-    app.extensions["sixv_services"] = services
+    app.extensions["ai_nas_settings"] = settings
+    app.extensions["ai_nas_services"] = services
     install_middleware(app, settings)
 
     @app.errorhandler(AppError)
@@ -166,15 +174,15 @@ def create_app(
     def ready():
         checks: Dict[str, Any] = {}
         try:
-            checks["sixv"] = {"status": "ok", "domain": services.crawler.probe()}
+            checks["providers"] = {"status": "ok", "domain": services.crawler.probe()}
         except AppError as exc:
-            checks["sixv"] = {"status": "error", "detail": exc.detail}
+            checks["providers"] = {"status": "error", "detail": exc.detail}
         qb_status = services.qb.status()
-        checks["qbittorrent"] = {
+        checks["downloader"] = {
             "status": "ok" if qb_status["connected"] else ("optional" if not qb_status["configured"] else "error"),
             **qb_status,
         }
-        ready_state = checks["sixv"]["status"] == "ok" and checks["qbittorrent"]["status"] != "error"
+        ready_state = checks["providers"]["status"] == "ok" and checks["downloader"]["status"] != "error"
         return jsonify({"status": "ok" if ready_state else "degraded", "checks": checks}), 200 if ready_state else 503
 
     @app.route("/api/search", methods=["POST", "OPTIONS"])
@@ -206,10 +214,12 @@ def create_app(
         result = services.download.download(body.result_id, body.download_link, body.title, body.media_type)
         return jsonify({"success": True, "message": "已添加到下载队列", **result})
 
+    @app.get("/api/downloader/status")
     @app.get("/api/qb/status")
     def qb_status():
         return jsonify({"success": True, **services.qb.status()})
 
+    @app.get("/api/downloader/tasks")
     @app.get("/api/qb/tasks")
     def qb_tasks():
         tasks = services.qb.tasks()
@@ -284,7 +294,83 @@ def create_app(
         body = _parse_json(NamingCheckRequest)
         return jsonify({"success": True, **services.naming.check(body.job_id)})
 
+    @app.get("/api/hardlinks")
+    def hardlinks():
+        if not services.naming_jobs:
+            raise ServiceUnavailableError("hardlink history is not initialized")
+        try:
+            page = max(1, int(request.args.get("page", "1")))
+            per_page = min(100, max(1, int(request.args.get("per_page", "20"))))
+        except ValueError as exc:
+            raise ValidationAppError("page and per_page must be integers") from exc
+        status = request.args.get("status", "done")
+        jobs = [item for item in services.naming_jobs.list() if item.get("hardlink_status")]
+        if status != "all":
+            jobs = [item for item in jobs if item.get("hardlink_status") == status]
+        jobs.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+        values = [
+            {
+                "id": item["id"],
+                "name": item.get("plan", {}).get("root_name"),
+                "type": item.get("plan", {}).get("media_type"),
+                "status": item.get("hardlink_status"),
+                "target": (item.get("hardlink_result") or {}).get("target"),
+                "linked": (item.get("hardlink_result") or {}).get("linked", 0),
+                "skipped": (item.get("hardlink_result") or {}).get("skipped", 0),
+                "files": (item.get("hardlink_result") or {}).get("files", []),
+                "error": item.get("hardlink_error"),
+                "completed_at": item.get("updated_at"),
+            }
+            for item in jobs
+        ]
+        start = (page - 1) * per_page
+        return jsonify(
+            {
+                "success": True,
+                "items": values[start : start + per_page],
+                "pagination": {
+                    "page": page,
+                    "per_page": per_page,
+                    "total": len(values),
+                    "total_pages": (len(values) + per_page - 1) // per_page,
+                },
+            }
+        )
+
+    @app.get("/api/settings/sites")
+    def sites_list():
+        if not services.sites:
+            raise ServiceUnavailableError("site settings are not initialized")
+        items = services.sites.list()
+        return jsonify({"success": True, "items": items, "count": len(items)})
+
+    @app.post("/api/settings/sites")
+    def sites_add():
+        if not services.sites:
+            raise ServiceUnavailableError("site settings are not initialized")
+        body = _parse_json(SiteConfig)
+        item = services.sites.add(body.model_dump())
+        response = jsonify({"success": True, "item": item})
+        response.status_code = 201
+        response.headers["Location"] = f"/api/settings/sites/{item['id']}"
+        return response
+
+    @app.patch("/api/settings/sites/<site_id>")
+    def sites_update(site_id: str):
+        if not services.sites:
+            raise ServiceUnavailableError("site settings are not initialized")
+        body = _parse_json(SitePatchRequest)
+        item = services.sites.update(site_id, body.model_dump(exclude_none=True))
+        return jsonify({"success": True, "item": item})
+
+    @app.delete("/api/settings/sites/<site_id>")
+    def sites_delete(site_id: str):
+        if not services.sites:
+            raise ServiceUnavailableError("site settings are not initialized")
+        services.sites.delete(site_id)
+        return "", 204
+
     scheduler_allowed = settings.scheduler_enabled if start_scheduler is None else start_scheduler
     if scheduler_allowed:
-        app.extensions["sixv_scheduler"] = _start_scheduler(app, settings, services)
+        app.extensions["ai_nas_scheduler"] = _start_scheduler(app, settings, services)
     return app

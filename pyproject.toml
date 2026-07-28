@@ -1,11 +1,11 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "-q --cov=sixv --cov-report=term-missing --cov-fail-under=80"
+addopts = "-q --cov=ainas --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]
 branch = true
-source = ["sixv"]
+source = ["ainas"]
 
 [tool.coverage.report]
 show_missing = true

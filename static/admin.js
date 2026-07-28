@@ -1,8 +1,8 @@
 "use strict";
 
 const state = {
-  apiKey: sessionStorage.getItem("sixvApiKey") || "",
-  watchlist: [], downloads: [], naming: [], qb: null, loading: false,
+  apiKey: sessionStorage.getItem("aiNasApiKey") || sessionStorage.getItem("sixvApiKey") || "",
+  watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], qb: null, loading: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -42,7 +42,7 @@ function stateLabel(value) {
     downloading: "下载中", stalledDL: "等待数据", metaDL: "获取元数据", queuedDL: "排队中", pausedDL: "已暂停",
     uploading: "做种中", stalledUP: "做种等待", pausedUP: "已完成", completed: "已完成", pending: "待处理",
     waiting_metadata: "等待元数据", retrying: "重试中", failed: "失败", found: "已找到", monitoring: "追更中", expired: "超期监听",
-    waiting_download: "等待下载完成", done: "硬链接完成", disabled: "硬链接已关闭",
+    waiting_download: "等待下载完成", done: "硬链接完成", disabled: "硬链接已关闭", site_disabled: "已停用",
   };
   return labels[value] || value || "未知";
 }
@@ -56,6 +56,10 @@ function chip(value) {
 function namingStatus(item) {
   if (["waiting_download", "retrying", "failed"].includes(item.hardlink_status)) return item.hardlink_status;
   return item.hardlink_status === "done" ? "done" : item.status;
+}
+
+function mediaTypeLabel(value) {
+  return ({movie:"电影", tv:"电视剧", anime:"动漫", auto:"自动"})[value] || value || "未知";
 }
 
 let toastTimer;
@@ -81,13 +85,12 @@ function setTab(name) {
 function renderMetrics() {
   const activeStates = new Set(["downloading","stalledDL","metaDL","queuedDL","forcedDL","checkingDL"]);
   const active = state.downloads.filter((item) => activeStates.has(item.state));
-  const complete = state.downloads.filter((item) => Number(item.progress || 0) >= .999 || ["uploading","pausedUP","stalledUP"].includes(item.state));
   const errors = state.watchlist.filter((item) => item.last_error).length + state.naming.filter((item) => item.status === "failed" || item.hardlink_status === "failed").length;
   $("#metric-watch").textContent = state.watchlist.length;
-  $("#metric-watch-note").textContent = `${state.watchlist.filter((item) => item.type === "tv").length} 个追剧任务`;
+  $("#metric-watch-note").textContent = `${state.watchlist.filter((item) => ["tv","anime"].includes(item.type)).length} 个追更任务`;
   $("#metric-active").textContent = active.length;
   $("#metric-speed").textContent = `${formatBytes(active.reduce((sum,item) => sum + Number(item.dlspeed || 0), 0))}/s`;
-  $("#metric-complete").textContent = complete.length;
+  $("#metric-complete").textContent = state.hardlinks.filter((item) => item.status === "done").length;
   $("#metric-errors").textContent = errors;
 }
 
@@ -104,7 +107,7 @@ function downloadMarkup(item) {
 function renderDownloads() {
   const values = state.downloads;
   $("#download-count").textContent = `${values.length} 条`;
-  $("#downloads-list").innerHTML = values.length ? values.map(downloadMarkup).join("") : '<div class="empty">当前没有 qBittorrent 下载记录</div>';
+  $("#downloads-list").innerHTML = values.length ? values.map(downloadMarkup).join("") : '<div class="empty">当前没有下载记录</div>';
   const active = values.filter((item) => Number(item.progress || 0) < .999).slice(0,4);
   $("#overview-downloads").innerHTML = active.length ? active.map(downloadMarkup).join("") : '<div class="empty">队列安静，当前没有进行中的下载</div>';
 }
@@ -114,12 +117,36 @@ function renderWatchlist() {
   const values = state.watchlist.filter((item) => !query || item.keyword.toLowerCase().includes(query));
   $("#watchlist-body").innerHTML = values.length ? values.map((item) => `<tr>
     <td><div class="cell-main">${escapeHTML(item.keyword)}<small>${escapeHTML(item.id.slice(0,8))}</small></div></td>
-    <td>${item.type === "tv" ? "电视剧" : item.type === "movie" ? "电影" : "自动"}</td>
+    <td>${escapeHTML(mediaTypeLabel(item.type))}</td>
     <td>${chip(namingStatus(item))}</td>
     <td>${item.downloaded_episodes?.length || item.downloaded_links?.length || 0}</td>
     <td>${formatDate(item.last_check)}</td>
     <td><button class="danger-button" data-delete-watch="${escapeHTML(item.id)}" type="button">移除</button></td>
   </tr>`).join("") : '<tr><td colspan="6"><div class="empty">没有符合条件的监听任务</div></td></tr>';
+}
+
+function renderHardlinks() {
+  const filter = $("#hardlink-filter").value;
+  const values = state.hardlinks.filter((item) => filter === "all" || item.status === filter);
+  $("#hardlinks-body").innerHTML = values.length ? values.map((item) => `<tr>
+    <td><div class="cell-main">${escapeHTML(item.name || "未命名")}<small>${escapeHTML(item.id.slice(0,8))}</small></div></td>
+    <td>${escapeHTML(mediaTypeLabel(item.type))}</td>
+    <td class="target-text" title="${escapeHTML(item.target || "")}">${escapeHTML(item.target || "—")}</td>
+    <td>${Number(item.linked || 0)} 链接 / ${Number(item.skipped || 0)} 跳过</td>
+    <td>${chip(item.status)}</td>
+    <td>${formatDate(item.completed_at)}</td>
+  </tr>`).join("") : '<tr><td colspan="6"><div class="empty">暂无符合条件的硬链接任务</div></td></tr>';
+}
+
+function renderSites() {
+  $("#site-count").textContent = `${state.sites.length} 个`;
+  $("#sites-body").innerHTML = state.sites.length ? state.sites.map((item) => `<tr>
+    <td><div class="cell-main">${escapeHTML(item.name)}<small>${escapeHTML(item.id)}</small></div></td>
+    <td>${item.adapter === "sixv" ? "6v 内置" : "通用 HTML"}</td>
+    <td class="target-text" title="${escapeHTML(item.base_urls?.[0] || "")}">${escapeHTML(item.base_urls?.[0] || "—")}</td>
+    <td>${chip(item.enabled ? "completed" : "site_disabled")}</td>
+    <td><div class="inline-actions"><button class="quiet-button" data-toggle-site="${escapeHTML(item.id)}" data-enabled="${item.enabled}" type="button">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-site="${escapeHTML(item.id)}" type="button">删除</button></div></td>
+  </tr>`).join("") : '<tr><td colspan="5"><div class="empty">尚未配置站点</div></td></tr>';
 }
 
 function renderNaming() {
@@ -141,16 +168,19 @@ function renderAutomation() {
   const waiting = state.naming.filter((item) => ["pending","waiting_metadata","retrying"].includes(item.status) || ["waiting_download","retrying"].includes(item.hardlink_status)).length;
   const failed = state.naming.filter((item) => item.status === "failed" || item.hardlink_status === "failed").length;
   const qbok = state.qb?.connected;
+  const downloader = state.qb?.client === "transmission" ? "Transmission" : "qBittorrent";
   $("#automation-status").innerHTML = `
-    <div class="status-row ${qbok ? "" : "error"}"><i></i><span>qBittorrent 连接</span><small>${qbok ? escapeHTML(state.qb.version) : "不可用"}</small></div>
-    <div class="status-row ${waiting ? "warn" : ""}"><i></i><span>等待规范命名</span><small>${waiting} 项</small></div>
-    <div class="status-row ${failed ? "error" : ""}"><i></i><span>命名失败</span><small>${failed} 项</small></div>
+    <div class="status-row ${qbok ? "" : "error"}"><i></i><span>${downloader} 连接</span><small>${qbok ? escapeHTML(state.qb.version) : "不可用"}</small></div>
+    <div class="status-row ${waiting ? "warn" : ""}"><i></i><span>等待命名或入库</span><small>${waiting} 项</small></div>
+    <div class="status-row ${failed ? "error" : ""}"><i></i><span>命名或入库失败</span><small>${failed} 项</small></div>
     <div class="status-row"><i></i><span>订阅定时检查</span><small>每 12 小时</small></div>`;
 }
 
 function renderAll() {
-  renderMetrics(); renderDownloads(); renderWatchlist(); renderNaming(); renderAutomation();
+  renderMetrics(); renderDownloads(); renderWatchlist(); renderNaming(); renderHardlinks(); renderSites(); renderAutomation();
   const online = state.qb?.connected;
+  const downloader = state.qb?.client === "transmission" ? "Transmission" : "qBittorrent";
+  $("#downloader-name").textContent = downloader;
   $("#qb-version").textContent = online ? `在线 / ${state.qb.version}` : state.qb?.configured ? "连接异常" : "尚未配置";
   $("#site-status").className = `signal ${online ? "ok" : state.qb?.configured ? "error" : ""}`;
   $("#site-status").lastChild.textContent = online ? "系统在线" : "服务已连接";
@@ -163,7 +193,8 @@ async function loadAll(silent = false) {
   $("#refresh-all").classList.add("loading");
   try {
     const requests = await Promise.allSettled([
-      api("/api/qb/status"), api("/api/qb/tasks"), api("/api/watchlist"), api("/api/naming/jobs?per_page=100"),
+      api("/api/downloader/status"), api("/api/downloader/tasks"), api("/api/watchlist"), api("/api/naming/jobs?per_page=100"),
+      api("/api/hardlinks?status=all&per_page=100"), api("/api/settings/sites"),
     ]);
     const authFailure = requests.find((item) => item.status === "rejected" && item.reason instanceof AuthError);
     if (authFailure) throw authFailure.reason;
@@ -171,6 +202,8 @@ async function loadAll(silent = false) {
     state.downloads = requests[1].status === "fulfilled" ? requests[1].value.tasks : [];
     state.watchlist = requests[2].status === "fulfilled" ? requests[2].value.items : [];
     state.naming = requests[3].status === "fulfilled" ? requests[3].value.items : [];
+    state.hardlinks = requests[4].status === "fulfilled" ? requests[4].value.items : [];
+    state.sites = requests[5].status === "fulfilled" ? requests[5].value.items : [];
     renderAll();
     $("#auth-modal").classList.add("hidden");
     if (!silent && requests.some((item) => item.status === "rejected")) toast("部分数据暂时不可用", true);
@@ -195,6 +228,7 @@ function bindEvents() {
   $("#refresh-all").addEventListener("click", () => loadAll());
   $("#watch-filter").addEventListener("input", renderWatchlist);
   $("#naming-filter").addEventListener("change", renderNaming);
+  $("#hardlink-filter").addEventListener("change", renderHardlinks);
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
   $("#watchlist-body").addEventListener("click", async (event) => {
@@ -203,10 +237,34 @@ function bindEvents() {
     try { await api(`/api/watchlist/${button.dataset.deleteWatch}`, {method:"DELETE"}); toast("监听已移除"); await loadAll(true); }
     catch (error) { toast(error.message, true); }
   });
-  $("#auth-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); state.apiKey = $("#api-key").value.trim(); sessionStorage.setItem("sixvApiKey", state.apiKey); await loadAll();
+  $("#site-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const payload = {
+      name: $("#site-name").value.trim(), adapter: "generic", enabled: true,
+      base_urls: [$("#site-base").value.trim()], search_url: $("#site-search-url").value.trim(),
+      result_selector: $("#site-result-selector").value.trim(), title_selector: $("#site-title-selector").value.trim(),
+      link_selector: $("#site-link-selector").value.trim(), download_selector: $("#site-download-selector").value.trim(),
+      default_type: $("#site-default-type").value,
+      tv_path_patterns: $("#site-tv-patterns").value.split(",").map((item) => item.trim()).filter(Boolean),
+      anime_path_patterns: $("#site-anime-patterns").value.split(",").map((item) => item.trim()).filter(Boolean),
+    };
+    try { await api("/api/settings/sites", {method:"POST", body:JSON.stringify(payload)}); toast("站点已保存"); event.currentTarget.reset(); await loadAll(true); }
+    catch (error) { toast(error.message, true); }
   });
-  $("#logout").addEventListener("click", () => { sessionStorage.removeItem("sixvApiKey"); state.apiKey = ""; $("#api-key").value = ""; showAuth(); });
+  $("#sites-body").addEventListener("click", async (event) => {
+    const toggle = event.target.closest("[data-toggle-site]");
+    const remove = event.target.closest("[data-delete-site]");
+    try {
+      let changed = false;
+      if (toggle) { await api(`/api/settings/sites/${toggle.dataset.toggleSite}`, {method:"PATCH", body:JSON.stringify({enabled:toggle.dataset.enabled !== "true"})}); changed = true; }
+      if (remove && confirm("确定删除这个站点配置吗？")) { await api(`/api/settings/sites/${remove.dataset.deleteSite}`, {method:"DELETE"}); changed = true; }
+      if (changed) { toast("站点配置已更新"); await loadAll(true); }
+    } catch (error) { toast(error.message, true); }
+  });
+  $("#auth-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); state.apiKey = $("#api-key").value.trim(); sessionStorage.setItem("aiNasApiKey", state.apiKey); await loadAll();
+  });
+  $("#logout").addEventListener("click", () => { sessionStorage.removeItem("aiNasApiKey"); sessionStorage.removeItem("sixvApiKey"); state.apiKey = ""; $("#api-key").value = ""; showAuth(); });
 }
 
 function tickClock() { $("#clock").textContent = new Date().toLocaleTimeString("zh-CN", {hour12:false}); }

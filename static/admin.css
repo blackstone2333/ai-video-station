@@ -131,6 +131,13 @@ td:first-child { color: var(--paper); font-weight: 600; max-width: 320px; }
 .danger-button { border: 0; background: none; color: var(--red); cursor: pointer; font-size: 10px; opacity: .7; }
 .danger-button:hover { opacity: 1; }
 .error-text { color: var(--red); max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.target-text { max-width: 420px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.settings-form { display: grid; gap: 14px; padding: 22px; }
+.settings-form label { display: grid; gap: 7px; color: var(--muted); font-size: 10px; }
+.settings-form input, .settings-form select { width: 100%; min-height: 40px; padding: 0 11px; color: var(--paper); background: var(--ink-2); border: 1px solid var(--line); outline: 0; }
+.settings-form input:focus, .settings-form select:focus { border-color: var(--cyan); }
+.settings-form small { color: var(--muted); font-size: 10px; line-height: 1.6; }
+.inline-actions { display: flex; gap: 10px; align-items: center; }
 
 footer { width: min(1460px,calc(100% - 44px)); margin: 0 auto; padding: 24px 0 32px; border-top: 1px solid var(--line); display: flex; justify-content: space-between; color: #59605c; font: 600 9px/1 var(--display); letter-spacing: .12em; }
 

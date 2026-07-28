@@ -107,7 +107,11 @@ class QBittorrentClient:
         if not category:
             return
         try:
-            self._request("POST", "/api/v2/torrents/createCategory", data={"category": category})
+            self._request(
+                "POST",
+                "/api/v2/torrents/createCategory",
+                data={"category": category, "savePath": str(self.settings.download_path_for_category(category))},
+            )
         except UpstreamError:
             logger.warning("qb_category_creation_failed", extra={"category": category})
 
@@ -175,14 +179,27 @@ class QBittorrentClient:
 
     def status(self) -> Dict[str, Any]:
         if not self.configured:
-            return {"configured": False, "connected": False, "version": None, "error": "QB_HOST is not set"}
+            return {
+                "client": "qbittorrent",
+                "configured": False,
+                "connected": False,
+                "version": None,
+                "error": "QB_HOST is not set",
+            }
         try:
             self.login()
             version = self._request("GET", "/api/v2/app/version").text.strip()
-            return {"configured": True, "connected": True, "version": version, "error": None}
+            return {
+                "client": "qbittorrent",
+                "configured": True,
+                "connected": True,
+                "version": version,
+                "error": None,
+            }
         except (ServiceUnavailableError, UpstreamError) as exc:
             return {
                 "configured": True,
+                "client": "qbittorrent",
                 "connected": False,
                 "version": None,
                 "error": exc.detail if hasattr(exc, "detail") else str(exc),

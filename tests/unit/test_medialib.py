@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from sixv.config import Settings
-from sixv.medialib import HardlinkError, MediaLibraryService
+from ainas.config import Settings
+from ainas.medialib import HardlinkError, MediaLibraryService
 
 
 def media_settings(tmp_path: Path, enabled: bool = True) -> tuple[Settings, Path, Path]:
@@ -21,7 +21,12 @@ def media_settings(tmp_path: Path, enabled: bool = True) -> tuple[Settings, Path
         medialib_base_path=host,
         medialib_movie_path=host / "video" / "movies",
         medialib_tv_path=host / "video" / "tv",
+        medialib_anime_path=host / "video" / "anime",
         medialib_mount_path=mount,
+        downloads_base_path=host / "Downloads",
+        download_movie_path=host / "Downloads" / "Movie",
+        download_tv_path=host / "Downloads" / "TV",
+        download_anime_path=host / "Downloads" / "Anime",
     )
     return settings, host, mount
 
@@ -124,6 +129,20 @@ def test_tv_keeps_season_and_adds_it_for_root_episodes(tmp_path):
     assert result["linked"] == 2
     assert first.stat().st_ino == season_episode.stat().st_ino
     assert third.stat().st_ino == root_episode.stat().st_ino
+
+
+def test_anime_links_to_separate_library_with_season_structure(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    source = mount / "Downloads" / "Anime" / "Rick and Morty - S01E01.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"anime")
+    MediaLibraryService(settings).link_completed(
+        {"save_path": str(host / "Downloads" / "Anime")},
+        [{"name": source.name, "priority": 1}],
+        {"media_type": "anime", "media_name": "Rick and Morty", "root_name": "Rick and Morty"},
+    )
+    target = mount / "video" / "anime" / "Rick and Morty" / "Season 01" / source.name
+    assert target.stat().st_ino == source.stat().st_ino
 
 
 def test_existing_files_are_skipped_and_same_inode_is_reported(tmp_path):

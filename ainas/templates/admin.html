@@ -4,15 +4,15 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>6V 媒体调度台</title>
+  <title>AI NAS Core 媒体调度台</title>
   <link rel="stylesheet" href="/static/admin.css?v={{ version }}">
 </head>
 <body>
   <div class="grain" aria-hidden="true"></div>
   <header class="masthead">
     <a class="brand" href="/admin" aria-label="返回管理首页">
-      <span class="brand-mark">6V</span>
-      <span class="brand-copy"><b>媒体调度台</b><small>MEDIA INTAKE / NAS</small></span>
+      <span class="brand-mark">AI</span>
+      <span class="brand-copy"><b>NAS Core</b><small>MEDIA INTAKE / AUTOMATION</small></span>
     </a>
     <div class="system-strip">
       <span id="site-status" class="signal"><i></i>服务连接中</span>
@@ -27,10 +27,10 @@
       <div class="hero-copy">
         <p class="eyebrow">HOME CINEMA OPERATIONS</p>
         <h1>今晚的片单，<br><em>正在自动就位。</em></h1>
-        <p class="lede">搜索、监听、下载、规范命名。异常留在这里，影片进入 Emby。</p>
+        <p class="lede">多站点搜索、订阅、下载、规范命名与硬链接入库。核心能力可直接由 AI 调用。</p>
       </div>
       <div class="hero-status">
-        <span>qBittorrent</span>
+        <span id="downloader-name">下载器</span>
         <strong id="qb-version">等待连接</strong>
         <small id="last-updated">尚未刷新</small>
       </div>
@@ -48,6 +48,8 @@
       <button class="tab" data-tab="watchlist" type="button">订阅监听 <span>02</span></button>
       <button class="tab" data-tab="downloads" type="button">下载记录 <span>03</span></button>
       <button class="tab" data-tab="naming" type="button">规范命名 <span>04</span></button>
+      <button class="tab" data-tab="hardlinks" type="button">媒体入库 <span>05</span></button>
+      <button class="tab" data-tab="sites" type="button">站点设置 <span>06</span></button>
     </nav>
 
     <section id="panel-overview" class="panel active" data-panel="overview">
@@ -79,9 +81,45 @@
 
     <section id="panel-downloads" class="panel" data-panel="downloads">
       <article class="card">
-        <header class="card-head action-head"><div><p>QBITTORRENT</p><h2>下载队列与记录</h2></div><span id="download-count" class="count-chip">0 条</span></header>
+        <header class="card-head action-head"><div><p>DOWNLOADER</p><h2>下载队列与记录</h2></div><span id="download-count" class="count-chip">0 条</span></header>
         <div id="downloads-list" class="download-stack roomy"></div>
       </article>
+    </section>
+
+    <section id="panel-hardlinks" class="panel" data-panel="hardlinks">
+      <article class="card">
+        <header class="card-head action-head">
+          <div><p>MEDIA LIBRARY</p><h2>硬链接入库记录</h2></div>
+          <select id="hardlink-filter" class="filter-input"><option value="done">成功任务</option><option value="all">全部任务</option><option value="waiting_download">等待下载</option><option value="retrying">重试中</option><option value="failed">失败</option></select>
+        </header>
+        <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>目标目录</th><th>链接文件</th><th>状态</th><th>完成时间</th></tr></thead><tbody id="hardlinks-body"></tbody></table></div>
+      </article>
+    </section>
+
+    <section id="panel-sites" class="panel" data-panel="sites">
+      <div class="panel-grid">
+        <article class="card span-5">
+          <header class="card-head"><div><p>PROVIDER</p><h2>添加普通 HTML 站点</h2></div></header>
+          <form id="site-form" class="settings-form">
+            <label>站点名称<input id="site-name" required maxlength="100" placeholder="例如：我的资源站"></label>
+            <label>站点首页<input id="site-base" required type="url" placeholder="https://example.com"></label>
+            <label>搜索地址模板<input id="site-search-url" required placeholder="{base_url}/search?q={keyword}"></label>
+            <label>结果选择器<input id="site-result-selector" required value=".search-item"></label>
+            <label>标题选择器<input id="site-title-selector" required value="a"></label>
+            <label>详情链接选择器<input id="site-link-selector" required value="a"></label>
+            <label>下载链接选择器<input id="site-download-selector" required value="a[href]"></label>
+            <label>默认分类<select id="site-default-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option></select></label>
+            <label>电视剧路径关键词<input id="site-tv-patterns" value="/tv/,/series/" placeholder="用英文逗号分隔"></label>
+            <label>动漫路径关键词<input id="site-anime-patterns" value="/anime/,/animation/,/dm/" placeholder="用英文逗号分隔"></label>
+            <button class="primary-button wide" type="submit">保存站点</button>
+            <small>适用于无复杂反爬、可通过 CSS 选择器定位结果和下载链接的网站。</small>
+          </form>
+        </article>
+        <article class="card span-7">
+          <header class="card-head"><div><p>ACTIVE SOURCES</p><h2>已配置站点</h2></div><span id="site-count" class="count-chip">0 个</span></header>
+          <div class="table-wrap"><table><thead><tr><th>站点</th><th>适配器</th><th>地址</th><th>状态</th><th></th></tr></thead><tbody id="sites-body"></tbody></table></div>
+        </article>
+      </div>
     </section>
 
     <section id="panel-naming" class="panel" data-panel="naming">
@@ -95,7 +133,7 @@
     </section>
   </main>
 
-  <footer><span>6V CRAWLER / v{{ version }}</span><span>端口 16666 · 数据每 20 秒自动刷新</span></footer>
+  <footer><span>AI NAS CORE / v{{ version }}</span><span>端口 16666 · 数据每 20 秒自动刷新</span></footer>
 
   <div id="auth-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="auth-title">
     <form id="auth-form" class="auth-card">

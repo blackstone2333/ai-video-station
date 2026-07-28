@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
-MediaType = Literal["movie", "tv", "auto"]
+MediaType = Literal["movie", "tv", "anime", "auto"]
 
 
 class StrictModel(BaseModel):
@@ -56,3 +56,18 @@ class WatchlistCheckRequest(StrictModel):
 
 class NamingCheckRequest(StrictModel):
     job_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
+
+
+class SitePatchRequest(StrictModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    enabled: Optional[bool] = None
+    base_urls: Optional[List[str]] = Field(default=None, min_length=1, max_length=20)
+    address_page: Optional[str] = None
+    search_url: Optional[str] = None
+    result_selector: Optional[str] = None
+    title_selector: Optional[str] = None
+    link_selector: Optional[str] = None
+    download_selector: Optional[str] = None
+    default_type: Optional[Literal["auto", "movie", "tv", "anime"]] = None
+    tv_path_patterns: Optional[List[str]] = None
+    anime_path_patterns: Optional[List[str]] = None

@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .config import Settings
 from .errors import AppError, NotFoundError
 from .qbittorrent import QBittorrentClient, torrent_hash
-from .quality import Release, canonical_media_name, detect_episode, detect_season
+from .quality import EPISODIC_MEDIA_TYPES, Release, canonical_media_name, detect_episode, detect_season
 from .watchlist import utc_now_iso
 
 
@@ -141,7 +141,7 @@ class EmbyNamingPlanner:
         for index, item in enumerate(videos):
             old_path = item["name"]
             old_value = PurePosixPath(old_path)
-            if plan.media_type == "tv":
+            if plan.media_type in EPISODIC_MEDIA_TYPES:
                 detected = detect_episode(old_value.name) or (plan.episode if len(videos) == 1 else None)
                 season = detect_season(old_value.name) or plan.season
                 episode = _episode_with_default_season(detected, season)
@@ -479,7 +479,7 @@ class NamingService:
                     for item in self.repository.list()
                     if item["status"] == "completed"
                     and item["id"] not in processed_ids
-                    and item.get("hardlink_status") in {"waiting_download", "retrying"}
+                    and item.get("hardlink_status") in {"pending", "waiting_download", "retrying"}
                 ]
             for item in hardlink_jobs:
                 results.append(self._finish_hardlink(item))

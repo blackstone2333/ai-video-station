@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sixv.app import create_app
-from sixv.config import Settings
-from sixv.naming import NamingJobRepository, NamingPlan
-from sixv.quality import build_release
-from sixv.services import AppServices, ResultCache, SearchOutcome
-from sixv.watchlist import WatchlistRepository
+from ainas.app import create_app
+from ainas.config import Settings
+from ainas.naming import NamingJobRepository, NamingPlan
+from ainas.quality import build_release
+from ainas.services import AppServices, ResultCache, SearchOutcome
+from ainas.sites import SiteRepository
+from ainas.watchlist import WatchlistRepository
 
 
 MAGNET = "magnet:?xt=urn:btih:" + "a" * 40
@@ -84,6 +85,10 @@ def build_test_app(tmp_path: Path):
     watchlist = WatchlistRepository(settings.watchlist_path)
     search = StubSearch(cache)
     naming_jobs = NamingJobRepository(settings.naming_jobs_path)
+    sites = SiteRepository(
+        settings.sites_path,
+        {"id": "sixv", "name": "6v", "adapter": "sixv", "enabled": True, "base_urls": ["https://sixv.test"]},
+    )
     services = AppServices(
         crawler=StubCrawler(),
         qb=qb,
@@ -94,6 +99,7 @@ def build_test_app(tmp_path: Path):
         watchlist_service=StubWatchlistService(),
         naming_jobs=naming_jobs,
         naming=StubNamingService(),
+        sites=sites,
     )
     return create_app(settings, services, start_scheduler=False), services
 
@@ -105,7 +111,7 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert client.get("/").location == "/admin"
     admin = client.get("/admin")
     assert admin.status_code == 200
-    assert "6V 媒体调度台" in admin.get_data(as_text=True)
+    assert "AI NAS Core 媒体调度台" in admin.get_data(as_text=True)
     assert "frame-ancestors 'none'" in admin.headers["Content-Security-Policy"]
     assert client.get("/static/admin.css").status_code == 200
     assert client.get("/static/admin.js").status_code == 200
@@ -185,3 +191,39 @@ def test_naming_job_api_lists_gets_and_checks_jobs(tmp_path):
     checked = client.post("/api/naming/jobs/check", json={"job_id": item["id"]}, headers=headers)
     assert checked.json["completed"] == 1
     assert client.get("/api/naming/jobs?page=bad", headers=headers).status_code == 422
+
+
+def test_hardlink_history_and_site_settings_api(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "test-key"}
+    plan = NamingPlan("anime", "Rick and Morty", "Rick and Morty", None, 1, "S01E01", "01.mkv")
+    job = services.naming_jobs.upsert("b" * 40, plan, "Anime")
+    services.naming_jobs.update(
+        job["id"],
+        {
+            "status": "completed",
+            "hardlink_status": "done",
+            "hardlink_result": {"target": "/medialib/video/anime/Rick and Morty", "linked": 1, "skipped": 0, "files": []},
+        },
+    )
+    history = client.get("/api/hardlinks", headers=headers)
+    assert history.status_code == 200
+    assert history.json["items"][0]["type"] == "anime"
+    assert history.json["items"][0]["linked"] == 1
+
+    created = client.post(
+        "/api/settings/sites",
+        json={
+            "name": "Generic",
+            "adapter": "generic",
+            "base_urls": ["https://media.test"],
+            "search_url": "{base_url}/search?q={keyword}",
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    site_id = created.json["item"]["id"]
+    assert client.patch(f"/api/settings/sites/{site_id}", json={"enabled": False}, headers=headers).json["item"]["enabled"] is False
+    assert client.get("/api/settings/sites", headers=headers).json["count"] == 2
+    assert client.delete(f"/api/settings/sites/{site_id}", headers=headers).status_code == 204

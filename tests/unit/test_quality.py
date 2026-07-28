@@ -1,9 +1,10 @@
-from sixv.quality import (
+from ainas.quality import (
     build_release,
     canonical_media_name,
     decode_thunder_url,
     detect_episode,
     detect_season,
+    infer_media_type,
     is_cam_release,
     parse_size,
     sort_releases,
@@ -60,3 +61,9 @@ def test_size_episode_and_thunder_helpers():
     assert canonical_media_name("<font color='red'>大黄蜂</font>") == "大黄蜂"
     assert decode_thunder_url("magnet:?xt=x") == "magnet:?xt=x"
     assert decode_thunder_url("thunder://QUFlZDJrOi8vZmlsZVpa") == "ed2k://file"
+
+
+def test_media_type_inference_recognizes_anime_and_episode_series():
+    assert infer_media_type("Rick and Morty", "https://site.test/dm/123.html", "auto") == "anime"
+    assert infer_media_type("凯蒂斯总统 S01E01", "https://site.test/unknown/123.html", "movie") == "tv"
+    assert infer_media_type("奥本海默 1080p", "https://site.test/movie/1.html", "movie") == "movie"
