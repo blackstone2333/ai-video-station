@@ -1,0 +1,195 @@
+openapi: 3.1.0
+info:
+  title: 6v 自动下载 API
+  version: 1.2.0
+  description: 搜索 6v 资源、推送到 qBittorrent，并管理电影/电视剧监听。
+servers:
+  - url: http://localhost:16666
+components:
+  securitySchemes:
+    ApiKey:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, detail, request_id]
+      properties:
+        type: {type: string, format: uri}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        instance: {type: string}
+        request_id: {type: string}
+    SearchRequest:
+      type: object
+      required: [keyword]
+      properties:
+        keyword: {type: string, minLength: 1, maxLength: 100, examples: [奥本海默]}
+        type: {type: string, enum: [movie, tv, auto], default: auto}
+    Release:
+      type: object
+      required: [id, title, url, download_link, type]
+      properties:
+        id: {type: string}
+        title: {type: string}
+        url: {type: string, format: uri}
+        download_link: {type: string}
+        size: {type: [string, 'null']}
+        resolution: {type: [string, 'null']}
+        source: {type: [string, 'null']}
+        language: {type: [string, 'null']}
+        hdr: {type: [string, 'null']}
+        encoding: {type: [string, 'null']}
+        type: {type: string, enum: [movie, tv]}
+        episode: {type: [string, 'null']}
+        media_name: {type: [string, 'null']}
+        year: {type: [integer, 'null']}
+        season: {type: [integer, 'null']}
+        link_name: {type: [string, 'null']}
+paths:
+  /health:
+    get:
+      summary: 存活检查
+      responses:
+        '200': {description: 服务正常}
+  /ready:
+    get:
+      summary: 依赖就绪检查
+      responses:
+        '200': {description: 依赖正常或可选依赖未配置}
+        '503': {description: 已配置的依赖不可用}
+  /api/search:
+    post:
+      summary: 搜索电影或电视剧
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SearchRequest'}
+      responses:
+        '200':
+          description: 搜索完成
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: {type: boolean}
+                  keyword: {type: string}
+                  type: {type: string}
+                  results: {type: array, items: {$ref: '#/components/schemas/Release'}}
+                  count: {type: integer}
+                  watchlisted: {type: boolean}
+                  watchlist_id: {type: [string, 'null']}
+        '422': {description: 参数错误}
+        '502': {description: 6v 站点不可用}
+  /api/download:
+    post:
+      summary: 将所选版本推送到 qBittorrent
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [result_id, download_link, title]
+              properties:
+                result_id: {type: string}
+                download_link: {type: string}
+                title: {type: string}
+                type: {type: string, enum: [movie, tv, auto], default: auto}
+      responses:
+        '200': {description: 已加入队列}
+        '503': {description: qBittorrent 未配置}
+  /api/qb/status:
+    get:
+      summary: 查询 qBittorrent 连接状态
+      security: [{ApiKey: []}]
+      responses:
+        '200': {description: 状态信息}
+  /api/qb/tasks:
+    get:
+      summary: 查询 qBittorrent 任务
+      security: [{ApiKey: []}]
+      responses:
+        '200': {description: 任务列表}
+  /api/watchlist/add:
+    post:
+      summary: 添加监听项目
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/SearchRequest'}
+      responses:
+        '201': {description: 已添加或返回现有项目}
+  /api/watchlist:
+    get:
+      summary: 获取监听列表
+      security: [{ApiKey: []}]
+      responses:
+        '200': {description: 监听列表}
+  /api/watchlist/{item_id}:
+    delete:
+      summary: 删除监听项目
+      security: [{ApiKey: []}]
+      parameters:
+        - in: path
+          name: item_id
+          required: true
+          schema: {type: string}
+      responses:
+        '204': {description: 已删除}
+        '404': {description: 项目不存在}
+  /api/watchlist/check:
+    post:
+      summary: 手动检查全部或单个监听项目
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                item_id: {type: [string, 'null']}
+      responses:
+        '200': {description: 检查报告}
+  /api/naming/jobs:
+    get:
+      summary: 分页查看 Emby 规范命名任务
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
+        - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
+        - {in: query, name: status, schema: {type: string}}
+      responses:
+        '200': {description: 命名任务列表}
+  /api/naming/jobs/{job_id}:
+    get:
+      summary: 查看单个命名任务
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: path, name: job_id, required: true, schema: {type: string}}
+      responses:
+        '200': {description: 命名任务}
+        '404': {description: 任务不存在}
+  /api/naming/jobs/check:
+    post:
+      summary: 立即处理全部或指定命名任务
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                job_id: {type: [string, 'null']}
+      responses:
+        '200': {description: 处理报告}

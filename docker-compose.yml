@@ -1,0 +1,24 @@
+services:
+  sixv-crawler:
+    build: .
+    container_name: sixv-crawler
+    restart: unless-stopped
+    user: "${PUID:-1000}:${PGID:-1000}"
+    env_file:
+      - .env
+    ports:
+      - "${PORT:-16666}:16666"
+    volumes:
+      - ./data:/data
+      - "${MEDIALIB_BASE_PATH:-/volume1/video}:/medialib:rw"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:16666/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import base64
+import logging
+import re
+from typing import Any, Dict, List, Optional
+
+import requests
+
+from .config import Settings
+from .errors import ServiceUnavailableError, UpstreamError, ValidationAppError
+
+
+logger = logging.getLogger(__name__)
+MAGNET_HASH_RE = re.compile(r"(?i)[?&]xt=urn:btih:([a-z0-9]+)")
+
+
+def torrent_hash(download_link: str) -> Optional[str]:
+    match = MAGNET_HASH_RE.search(download_link)
+    if not match:
+        return None
+    value = match.group(1)
+    if len(value) == 40:
+        return value.lower()
+    if len(value) == 32:
+        try:
+            return base64.b32decode(value.upper()).hex()
+        except ValueError:
+            return value.lower()
+    return value.lower()
+
+
+class QBittorrentClient:
+    def __init__(self, settings: Settings, session: Optional[requests.Session] = None) -> None:
+        self.settings = settings
+        self.session = session or requests.Session()
+
+    @property
+    def configured(self) -> bool:
+        return bool(self.settings.qb_base_url)
+
+    def _base_url(self) -> str:
+        if not self.settings.qb_base_url:
+            raise ServiceUnavailableError("qBittorrent is not configured; set QB_HOST and credentials")
+        return self.settings.qb_base_url
+
+    def _request(self, method: str, path: str, **kwargs: Any) -> requests.Response:
+        base = self._base_url()
+        try:
+            response = self.session.request(
+                method,
+                f"{base}{path}",
+                timeout=self.settings.request_timeout_seconds,
+                verify=self.settings.qb_verify_ssl,
+                **kwargs,
+            )
+            if response.status_code in {401, 403}:
+                self.login()
+                response = self.session.request(
+                    method,
+                    f"{base}{path}",
+                    timeout=self.settings.request_timeout_seconds,
+                    verify=self.settings.qb_verify_ssl,
+                    **kwargs,
+                )
+            response.raise_for_status()
+            return response
+        except requests.Timeout as exc:
+            raise UpstreamError("qBittorrent", "request timed out", timeout=True) from exc
+        except requests.RequestException as exc:
+            raise UpstreamError("qBittorrent", "connection failed") from exc
+
+    def login(self) -> None:
+        base = self._base_url()
+        try:
+            response = self.session.post(
+                f"{base}/api/v2/auth/login",
+                data={
+                    "username": self.settings.qb_username,
+                    "password": self.settings.qb_password.get_secret_value(),
+                },
+                timeout=self.settings.request_timeout_seconds,
+                verify=self.settings.qb_verify_ssl,
+            )
+            response.raise_for_status()
+            if response.text.strip() != "Ok.":
+                raise ServiceUnavailableError("qBittorrent rejected the configured username or password")
+        except requests.Timeout as exc:
+            raise UpstreamError("qBittorrent", "login timed out", timeout=True) from exc
+        except requests.RequestException as exc:
+            raise UpstreamError("qBittorrent", "login failed") from exc
+
+    @staticmethod
+    def validate_download_link(download_link: str) -> str:
+        value = download_link.strip()
+        lowered = value.lower()
+        if lowered.startswith(("magnet:?", "ed2k://")):
+            return value
+        if lowered.startswith(("http://", "https://")) and ".torrent" in lowered:
+            return value
+        raise ValidationAppError(
+            "download_link must be a magnet, ed2k, or HTTP(S) .torrent URL",
+            [{"field": "download_link", "message": "unsupported download scheme", "code": "UNSUPPORTED_LINK"}],
+        )
+
+    def ensure_category(self, category: str) -> None:
+        if not category:
+            return
+        try:
+            self._request("POST", "/api/v2/torrents/createCategory", data={"category": category})
+        except UpstreamError:
+            logger.warning("qb_category_creation_failed", extra={"category": category})
+
+    def add_download(self, download_link: str, category: str, rename: Optional[str] = None) -> Dict[str, Any]:
+        link = self.validate_download_link(download_link)
+        self.login()
+        self.ensure_category(category)
+        payload = {"urls": link, "category": category, "paused": "false"}
+        if rename:
+            payload["rename"] = rename
+        response = self._request(
+            "POST",
+            "/api/v2/torrents/add",
+            data=payload,
+        )
+        if response.text.strip() != "Ok.":
+            raise UpstreamError("qBittorrent", "torrent was not accepted")
+        task_hash = torrent_hash(link)
+        logger.info("qb_download_added", extra={"task_hash": task_hash, "category": category})
+        return {"qb_task_id": task_hash, "category": category}
+
+    def torrent_info(self, hash_value: str) -> Optional[Dict[str, Any]]:
+        self.login()
+        response = self._request("GET", "/api/v2/torrents/info", params={"hashes": hash_value})
+        values = response.json()
+        return values[0] if values else None
+
+    def files(self, hash_value: str) -> List[Dict[str, Any]]:
+        self.login()
+        response = self._request("GET", "/api/v2/torrents/files", params={"hash": hash_value})
+        return [
+            {
+                "index": item.get("index"),
+                "name": item.get("name"),
+                "size": item.get("size", 0),
+                "progress": item.get("progress", 0),
+                "priority": item.get("priority", 0),
+            }
+            for item in response.json()
+        ]
+
+    def rename_file(self, hash_value: str, old_path: str, new_path: str) -> None:
+        self._request(
+            "POST",
+            "/api/v2/torrents/renameFile",
+            data={"hash": hash_value, "oldPath": old_path, "newPath": new_path},
+        )
+
+    def rename_folder(self, hash_value: str, old_path: str, new_path: str) -> None:
+        self._request(
+            "POST",
+            "/api/v2/torrents/renameFolder",
+            data={"hash": hash_value, "oldPath": old_path, "newPath": new_path},
+        )
+
+    def rename_torrent(self, hash_value: str, name: str) -> None:
+        self._request("POST", "/api/v2/torrents/rename", data={"hash": hash_value, "name": name})
+
+    def set_category(self, hash_value: str, category: str) -> None:
+        self.ensure_category(category)
+        self._request("POST", "/api/v2/torrents/setCategory", data={"hashes": hash_value, "category": category})
+
+    def resume(self, hash_value: str) -> None:
+        self._request("POST", "/api/v2/torrents/resume", data={"hashes": hash_value})
+
+    def status(self) -> Dict[str, Any]:
+        if not self.configured:
+            return {"configured": False, "connected": False, "version": None, "error": "QB_HOST is not set"}
+        try:
+            self.login()
+            version = self._request("GET", "/api/v2/app/version").text.strip()
+            return {"configured": True, "connected": True, "version": version, "error": None}
+        except (ServiceUnavailableError, UpstreamError) as exc:
+            return {
+                "configured": True,
+                "connected": False,
+                "version": None,
+                "error": exc.detail if hasattr(exc, "detail") else str(exc),
+            }
+
+    def tasks(self) -> List[Dict[str, Any]]:
+        self.login()
+        response = self._request("GET", "/api/v2/torrents/info", params={"sort": "added_on", "reverse": "true"})
+        values = response.json()
+        fields = (
+            "hash",
+            "name",
+            "state",
+            "progress",
+            "size",
+            "downloaded",
+            "dlspeed",
+            "eta",
+            "category",
+            "save_path",
+            "added_on",
+            "completion_on",
+        )
+        return [{field: item.get(field) for field in fields} for item in values]

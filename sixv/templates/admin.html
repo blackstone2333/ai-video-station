@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>6V 媒体调度台</title>
+  <link rel="stylesheet" href="/static/admin.css?v={{ version }}">
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+  <header class="masthead">
+    <a class="brand" href="/admin" aria-label="返回管理首页">
+      <span class="brand-mark">6V</span>
+      <span class="brand-copy"><b>媒体调度台</b><small>MEDIA INTAKE / NAS</small></span>
+    </a>
+    <div class="system-strip">
+      <span id="site-status" class="signal"><i></i>服务连接中</span>
+      <time id="clock">--:--:--</time>
+      <button id="refresh-all" class="icon-button" type="button" title="刷新全部数据" aria-label="刷新全部数据">↻</button>
+      <button id="logout" class="text-button" type="button">更换密钥</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="hero-panel">
+      <div class="hero-copy">
+        <p class="eyebrow">HOME CINEMA OPERATIONS</p>
+        <h1>今晚的片单，<br><em>正在自动就位。</em></h1>
+        <p class="lede">搜索、监听、下载、规范命名。异常留在这里，影片进入 Emby。</p>
+      </div>
+      <div class="hero-status">
+        <span>qBittorrent</span>
+        <strong id="qb-version">等待连接</strong>
+        <small id="last-updated">尚未刷新</small>
+      </div>
+    </section>
+
+    <section class="metrics" aria-label="系统数据概览">
+      <article class="metric amber"><span>监听订阅</span><strong id="metric-watch">—</strong><small id="metric-watch-note">等待读取</small></article>
+      <article class="metric cyan"><span>正在下载</span><strong id="metric-active">—</strong><small id="metric-speed">0 B/s</small></article>
+      <article class="metric cream"><span>已完成任务</span><strong id="metric-complete">—</strong><small>qB 下载记录</small></article>
+      <article class="metric red"><span>需要处理</span><strong id="metric-errors">—</strong><small>监听或命名异常</small></article>
+    </section>
+
+    <nav class="tabs" aria-label="后台功能">
+      <button class="tab active" data-tab="overview" type="button">总览 <span>01</span></button>
+      <button class="tab" data-tab="watchlist" type="button">订阅监听 <span>02</span></button>
+      <button class="tab" data-tab="downloads" type="button">下载记录 <span>03</span></button>
+      <button class="tab" data-tab="naming" type="button">规范命名 <span>04</span></button>
+    </nav>
+
+    <section id="panel-overview" class="panel active" data-panel="overview">
+      <div class="panel-grid">
+        <article class="card span-7">
+          <header class="card-head"><div><p>LIVE QUEUE</p><h2>当前下载</h2></div><button class="quiet-button" data-go="downloads" type="button">查看全部 →</button></header>
+          <div id="overview-downloads" class="download-stack"><div class="empty">正在读取 qBittorrent…</div></div>
+        </article>
+        <article class="card span-5">
+          <header class="card-head"><div><p>AUTOMATION</p><h2>自动化状态</h2></div></header>
+          <div id="automation-status" class="status-list"></div>
+        </article>
+        <article class="card span-12">
+          <header class="card-head"><div><p>RECENT ACTIVITY</p><h2>最近命名记录</h2></div><button class="quiet-button" data-go="naming" type="button">查看全部 →</button></header>
+          <div id="overview-naming" class="activity-row"></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="panel-watchlist" class="panel" data-panel="watchlist">
+      <article class="card">
+        <header class="card-head action-head">
+          <div><p>SUBSCRIPTIONS</p><h2>订阅与追更</h2></div>
+          <div class="head-actions"><input id="watch-filter" class="filter-input" type="search" placeholder="筛选片名"><button id="check-watchlist" class="primary-button" type="button">立即检查</button></div>
+        </header>
+        <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>状态</th><th>已下载</th><th>上次检查</th><th></th></tr></thead><tbody id="watchlist-body"></tbody></table></div>
+      </article>
+    </section>
+
+    <section id="panel-downloads" class="panel" data-panel="downloads">
+      <article class="card">
+        <header class="card-head action-head"><div><p>QBITTORRENT</p><h2>下载队列与记录</h2></div><span id="download-count" class="count-chip">0 条</span></header>
+        <div id="downloads-list" class="download-stack roomy"></div>
+      </article>
+    </section>
+
+    <section id="panel-naming" class="panel" data-panel="naming">
+      <article class="card">
+        <header class="card-head action-head">
+          <div><p>EMBY NORMALIZER</p><h2>规范命名任务</h2></div>
+          <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="completed">命名完成</option><option value="waiting_metadata">等待元数据</option><option value="waiting_download">等待下载</option><option value="done">硬链接完成</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
+        </header>
+        <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="naming-body"></tbody></table></div>
+      </article>
+    </section>
+  </main>
+
+  <footer><span>6V CRAWLER / v{{ version }}</span><span>端口 16666 · 数据每 20 秒自动刷新</span></footer>
+
+  <div id="auth-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <form id="auth-form" class="auth-card">
+      <span class="auth-kicker">CONTROL ACCESS</span>
+      <h2 id="auth-title">输入后台 API Key</h2>
+      <p>密钥只保存在当前浏览器标签页，关闭页面后自动清除。</p>
+      <label>API Key<input id="api-key" type="password" autocomplete="off" placeholder="在 .env 中设置的 API_KEY" required></label>
+      <button class="primary-button wide" type="submit">进入调度台</button>
+      <small id="auth-error"></small>
+    </form>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <script src="/static/admin.js?v={{ version }}" defer></script>
+</body>
+</html>

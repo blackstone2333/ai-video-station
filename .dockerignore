@@ -1,0 +1,8 @@
+.git
+.env
+.venv
+__pycache__
+.pytest_cache
+.coverage
+tests
+data/*.corrupt-*.json
