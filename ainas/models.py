@@ -6,7 +6,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
-MediaType = Literal["movie", "tv", "anime", "auto"]
+MediaType = Literal["movie", "tv", "anime", "custom", "auto"]
 
 
 class StrictModel(BaseModel):
@@ -69,19 +69,25 @@ class SitePatchRequest(StrictModel):
     title_selector: Optional[str] = None
     link_selector: Optional[str] = None
     download_selector: Optional[str] = None
-    default_type: Optional[Literal["auto", "movie", "tv", "anime"]] = None
+    default_type: Optional[Literal["auto", "movie", "tv", "anime", "custom"]] = None
     tv_path_patterns: Optional[List[str]] = None
     anime_path_patterns: Optional[List[str]] = None
 
 
 class PathSettingsPatchRequest(StrictModel):
+    qb_movie_category: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    qb_tv_category: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    qb_anime_category: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    qb_custom_category: Optional[str] = Field(default=None, min_length=1, max_length=100)
     downloads_base_path: Optional[Path] = None
     download_movie_path: Optional[Path] = None
     download_tv_path: Optional[Path] = None
     download_anime_path: Optional[Path] = None
+    download_custom_path: Optional[Path] = None
     medialib_movie_path: Optional[Path] = None
     medialib_tv_path: Optional[Path] = None
     medialib_anime_path: Optional[Path] = None
+    medialib_custom_path: Optional[Path] = None
     medialib_hardlink_enabled: Optional[bool] = None
 
     @model_validator(mode="after")

@@ -93,12 +93,14 @@ class MediaLibraryService:
         )
 
     def _target_root(self, media_type: str) -> Path:
-        if media_type not in {"movie", "tv", "anime"}:
+        if media_type not in {"movie", "tv", "anime", "custom"}:
             raise HardlinkError(f"unsupported media type: {media_type!r}")
         if media_type == "movie":
             host_target = self.settings.medialib_movie_path
         elif media_type == "anime":
             host_target = self.settings.medialib_anime_path
+        elif media_type == "custom":
+            host_target = self.settings.medialib_custom_path
         else:
             host_target = self.settings.medialib_tv_path
         return self._container_path(host_target, f"{media_type} media library path")
@@ -167,8 +169,13 @@ class MediaLibraryService:
         content_root_name: str | None = None,
     ) -> Path:
         media_type = str(plan.get("media_type") or "")
-        if media_type not in {"movie", "tv", "anime"}:
+        if media_type not in {"movie", "tv", "anime", "custom"}:
             raise HardlinkError(f"unsupported media type: {media_type!r}")
+        if media_type == "custom":
+            if content_root_name and relative.parts[0].casefold() != content_root_name.casefold():
+                root = self._safe_component(content_root_name, "custom content root")
+                relative = Path(root) / relative
+            return self._target_root(media_type) / relative
         root_name = self._safe_component(plan.get("root_name"), "media root name")
         media_name = self._safe_component(plan.get("media_name") or root_name, "media name")
         removable_roots = [root_name, media_name]

@@ -67,3 +67,4 @@ def test_media_type_inference_recognizes_anime_and_episode_series():
     assert infer_media_type("Rick and Morty", "https://site.test/dm/123.html", "auto") == "anime"
     assert infer_media_type("凯蒂斯总统 S01E01", "https://site.test/unknown/123.html", "movie") == "tv"
     assert infer_media_type("奥本海默 1080p", "https://site.test/movie/1.html", "movie") == "movie"
+    assert infer_media_type("Python 学习资料", "https://site.test/files/1.html", "custom") == "custom"

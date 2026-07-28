@@ -47,6 +47,16 @@ def anime_release():
     )
 
 
+def custom_release():
+    return build_release(
+        "Python 入门课程",
+        "Python-Course-Pack",
+        "https://resources.test/learning/1.html",
+        "magnet:?xt=urn:btih:" + "d" * 40 + "&dn=Python-Course-Pack",
+        "custom",
+    )
+
+
 def test_movie_plan_corrects_obfuscated_link_name_and_subtitle():
     plan = EmbyNamingPlanner.from_release(movie_release())
     assert plan.root_name == "大黄蜂 (2018)"
@@ -89,6 +99,18 @@ def test_anime_uses_tv_style_emby_naming():
     preview = EmbyNamingPlanner().plan_files([{"name": "01.mkv", "size": 100}], plan)
     assert plan.media_type == "anime"
     assert preview["operations"][0]["new_path"] == "Rick and Morty - S07E01.mkv"
+
+
+def test_custom_plan_does_not_rename_files_or_folders():
+    plan = EmbyNamingPlanner.from_release(custom_release())
+    preview = EmbyNamingPlanner().plan_files(
+        [{"name": "Python-Course-Pack/第一章/01.mp4", "size": 100}, {"name": "Python-Course-Pack/讲义.pdf", "size": 10}],
+        plan,
+    )
+    assert plan.media_type == "custom"
+    assert preview["file_count"] == 2
+    assert preview["operations"] == []
+    assert preview["folder_operations"] == []
 
 
 def test_movie_multiversion_and_safe_name_rules():
@@ -244,6 +266,24 @@ def test_naming_waits_for_complete_download_then_hardlinks(tmp_path):
     updated = repository.get(job["id"])
     assert updated["hardlink_status"] == "done"
     assert len(hardlinker.calls) == 1
+
+
+def test_custom_download_uses_final_category_and_hardlinks_without_rename(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB(files=[{"name": "Python-Course-Pack/讲义.pdf", "size": 10}])
+    qb.torrent_value = {"hash": "d" * 40, "progress": 1.0}
+    hardlinker = FakeHardlinker()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb, hardlinker=hardlinker)
+
+    result = service.add_download(custom_release(), settings.qb_custom_category)
+
+    assert result["current_category"] == settings.qb_custom_category
+    assert result["naming_status"] == "completed"
+    assert result["hardlink_status"] == "done"
+    assert ("add", settings.qb_custom_category, None) in qb.calls
+    assert not any(call[0].startswith("rename") for call in qb.calls)
+    assert hardlinker.calls[0][2].media_type == "custom"
 
 
 def test_hardlink_failure_retries_and_can_be_manually_retried(tmp_path):

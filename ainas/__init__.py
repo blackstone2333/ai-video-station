@@ -1,3 +1,3 @@
-"""AI NAS Core media automation service."""
+"""AI Video Station media automation service."""
 
-__version__ = "1.3.1"
+__version__ = "1.4.0"

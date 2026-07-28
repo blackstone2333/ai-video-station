@@ -22,11 +22,13 @@ def media_settings(tmp_path: Path, enabled: bool = True) -> tuple[Settings, Path
         medialib_movie_path=host / "video" / "movies",
         medialib_tv_path=host / "video" / "tv",
         medialib_anime_path=host / "video" / "anime",
+        medialib_custom_path=host / "video" / "custom",
         medialib_mount_path=mount,
         downloads_base_path=host / "Downloads",
         download_movie_path=host / "Downloads" / "Movie",
         download_tv_path=host / "Downloads" / "TV",
         download_anime_path=host / "Downloads" / "Anime",
+        download_custom_path=host / "Downloads" / "Custom",
     )
     return settings, host, mount
 
@@ -145,6 +147,33 @@ def test_anime_links_to_separate_library_with_season_structure(tmp_path):
     assert target.stat().st_ino == source.stat().st_ino
 
 
+def test_custom_content_keeps_original_names_and_directories(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    source_root = mount / "Downloads" / "Custom" / "Python 入门" / "第一章"
+    source_root.mkdir(parents=True)
+    document = source_root / "讲义.pdf"
+    video = source_root / "01-环境配置.mp4"
+    document.write_bytes(b"document")
+    video.write_bytes(b"lesson")
+
+    result = MediaLibraryService(settings).link_completed(
+        {
+            "save_path": str(host / "Downloads" / "Custom"),
+            "content_path": str(host / "Downloads" / "Custom" / "Python 入门"),
+        },
+        [
+            {"name": "Python 入门/第一章/讲义.pdf", "priority": 1},
+            {"name": "Python 入门/第一章/01-环境配置.mp4", "priority": 1},
+        ],
+        {"media_type": "custom", "media_name": "Python 入门", "root_name": "Python 入门"},
+    )
+
+    target = mount / "video" / "custom" / "Python 入门" / "第一章"
+    assert result["linked"] == 2
+    assert (target / document.name).stat().st_ino == document.stat().st_ino
+    assert (target / video.name).stat().st_ino == video.stat().st_ino
+
+
 def test_existing_files_are_skipped_and_same_inode_is_reported(tmp_path):
     settings, host, mount = media_settings(tmp_path)
     source = mount / "Downloads" / "sixv-movie" / "电影 (2024).mkv"
@@ -198,5 +227,12 @@ def test_settings_reject_media_target_outside_base(tmp_path):
             medialib_base_path=tmp_path / "video",
             medialib_movie_path=tmp_path / "other" / "movies",
             medialib_tv_path=tmp_path / "video" / "tv",
+            medialib_anime_path=tmp_path / "video" / "anime",
+            medialib_custom_path=tmp_path / "video" / "custom",
+            downloads_base_path=tmp_path / "video" / "Downloads",
+            download_movie_path=tmp_path / "video" / "Downloads" / "Movie",
+            download_tv_path=tmp_path / "video" / "Downloads" / "TV",
+            download_anime_path=tmp_path / "video" / "Downloads" / "Anime",
+            download_custom_path=tmp_path / "video" / "Downloads" / "Custom",
             medialib_mount_path=tmp_path / "mount",
         )

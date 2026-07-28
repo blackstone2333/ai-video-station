@@ -111,7 +111,7 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert client.get("/").location == "/admin"
     admin = client.get("/admin")
     assert admin.status_code == 200
-    assert "AI NAS Core 媒体调度台" in admin.get_data(as_text=True)
+    assert "AI Video Station 媒体调度台" in admin.get_data(as_text=True)
     assert "路径设置" in admin.get_data(as_text=True)
     assert "frame-ancestors 'none'" in admin.headers["Content-Security-Policy"]
     assert client.get("/static/admin.css").status_code == 200
@@ -240,6 +240,7 @@ def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
     assert current.status_code == 200
     assert current.json["settings"]["medialib_base_path"] == "/volume1/video"
     assert current.json["settings"]["medialib_mount_path"] == "/medialib"
+    assert current.json["settings"]["qb_custom_category"] == "Custom"
 
     changed = client.patch(
         "/api/settings/paths",
@@ -248,9 +249,15 @@ def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
             "download_movie_path": "/volume1/video/Incoming/Films",
             "download_tv_path": "/volume1/video/Incoming/Series",
             "download_anime_path": "/volume1/video/Incoming/Anime",
+            "download_custom_path": "/volume1/video/Incoming/Learning",
             "medialib_movie_path": "/volume1/video/Library/Films",
             "medialib_tv_path": "/volume1/video/Library/Series",
             "medialib_anime_path": "/volume1/video/Library/Anime",
+            "medialib_custom_path": "/volume1/video/Library/Learning",
+            "qb_movie_category": "国外电影",
+            "qb_tv_category": "电视剧",
+            "qb_anime_category": "动漫",
+            "qb_custom_category": "学习资料",
             "medialib_hardlink_enabled": False,
         },
         headers=headers,
@@ -258,6 +265,8 @@ def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
     assert changed.status_code == 200
     assert changed.json["settings"]["download_movie_path"] == "/volume1/video/Incoming/Films"
     assert changed.json["settings"]["medialib_hardlink_enabled"] is False
+    assert changed.json["settings"]["download_custom_path"] == "/volume1/video/Incoming/Learning"
+    assert changed.json["settings"]["qb_custom_category"] == "学习资料"
     assert (tmp_path / "path_settings.json").exists()
 
     relative = client.patch(
@@ -275,3 +284,9 @@ def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
     assert outside.status_code == 422
     assert client.patch("/api/settings/paths", json={}, headers=headers).status_code == 422
     assert client.patch("/api/settings/paths", json={"medialib_base_path": "/tmp"}, headers=headers).status_code == 422
+    duplicate = client.patch(
+        "/api/settings/paths",
+        json={"qb_custom_category": "国外电影"},
+        headers=headers,
+    )
+    assert duplicate.status_code == 422

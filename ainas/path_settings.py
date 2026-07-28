@@ -20,11 +20,19 @@ PATH_FIELDS = (
     "download_movie_path",
     "download_tv_path",
     "download_anime_path",
+    "download_custom_path",
     "medialib_movie_path",
     "medialib_tv_path",
     "medialib_anime_path",
+    "medialib_custom_path",
 )
-EDITABLE_FIELDS = (*PATH_FIELDS, "medialib_hardlink_enabled")
+CATEGORY_FIELDS = (
+    "qb_movie_category",
+    "qb_tv_category",
+    "qb_anime_category",
+    "qb_custom_category",
+)
+EDITABLE_FIELDS = (*CATEGORY_FIELDS, *PATH_FIELDS, "medialib_hardlink_enabled")
 
 
 class PathSettingsRepository:
@@ -63,7 +71,12 @@ class PathSettingsRepository:
 
         normalized: Dict[str, Any] = {}
         for name, value in changes.items():
-            normalized[name] = self._normalized_path(value, name) if name in PATH_FIELDS else value
+            if name in PATH_FIELDS:
+                normalized[name] = self._normalized_path(value, name)
+            elif name in CATEGORY_FIELDS:
+                normalized[name] = str(value).strip()
+            else:
+                normalized[name] = value
 
         base = self._normalized_path(self.settings.medialib_base_path, "medialib_base_path")
         complete = {name: normalized.get(name, getattr(self.settings, name)) for name in PATH_FIELDS}
@@ -86,6 +99,7 @@ class PathSettingsRepository:
 
         candidate_values = self.settings.model_dump()
         candidate_values.update(complete)
+        candidate_values.update({name: normalized[name] for name in CATEGORY_FIELDS if name in normalized})
         if "medialib_hardlink_enabled" in normalized:
             candidate_values["medialib_hardlink_enabled"] = normalized["medialib_hardlink_enabled"]
         try:
@@ -102,6 +116,7 @@ class PathSettingsRepository:
             raise ValidationAppError("路径设置校验失败", errors) from exc
 
         normalized.update({name: complete[name] for name in changes if name in PATH_FIELDS})
+        normalized.update({name: getattr(candidate, name) for name in changes if name in CATEGORY_FIELDS})
         if "medialib_hardlink_enabled" in changes:
             normalized["medialib_hardlink_enabled"] = candidate.medialib_hardlink_enabled
         return normalized

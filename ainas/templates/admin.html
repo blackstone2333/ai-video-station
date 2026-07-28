@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>AI NAS Core 媒体调度台</title>
+  <title>AI Video Station 媒体调度台</title>
   <link rel="stylesheet" href="/static/admin.css?v={{ version }}">
 </head>
 <body>
@@ -12,7 +12,7 @@
   <header class="masthead">
     <a class="brand" href="/admin" aria-label="返回管理首页">
       <span class="brand-mark">AI</span>
-      <span class="brand-copy"><b>NAS Core</b><small>MEDIA INTAKE / AUTOMATION</small></span>
+      <span class="brand-copy"><b>Video Station</b><small>MEDIA INTAKE / AUTOMATION</small></span>
     </a>
     <div class="system-strip">
       <span id="site-status" class="signal"><i></i>服务连接中</span>
@@ -109,7 +109,7 @@
             <label>标题选择器<input id="site-title-selector" required value="a"></label>
             <label>详情链接选择器<input id="site-link-selector" required value="a"></label>
             <label>下载链接选择器<input id="site-download-selector" required value="a[href]"></label>
-            <label>默认分类<select id="site-default-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option></select></label>
+            <label>默认分类<select id="site-default-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label>
             <label>电视剧路径关键词<input id="site-tv-patterns" value="/tv/,/series/" placeholder="用英文逗号分隔"></label>
             <label>动漫路径关键词<input id="site-anime-patterns" value="/anime/,/animation/,/dm/" placeholder="用英文逗号分隔"></label>
             <button class="primary-button wide" type="submit">保存站点</button>
@@ -148,20 +148,22 @@
           <header class="card-head"><div><p>DOWNLOAD DESTINATIONS</p><h2>下载目录</h2></div></header>
           <div class="settings-form">
             <label>下载总目录<input id="path-downloads-base" required placeholder="/volume1/video/Downloads"></label>
-            <label>电影下载目录<input id="path-download-movie" required placeholder="/volume1/video/Downloads/Movie"></label>
-            <label>电视剧下载目录<input id="path-download-tv" required placeholder="/volume1/video/Downloads/TV"></label>
-            <label>动漫下载目录<input id="path-download-anime" required placeholder="/volume1/video/Downloads/Anime"></label>
-            <small>新加入 qBittorrent 或 Transmission 的任务会立即使用这里设置的分类目录。</small>
+            <div class="path-slot"><span>槽位 1 · 电影整理规则</span><label>分类名称<input id="path-category-movie" required maxlength="100" placeholder="Movie"></label><label>下载目录<input id="path-download-movie" required placeholder="/volume1/video/Downloads/Movie"></label></div>
+            <div class="path-slot"><span>槽位 2 · 剧集整理规则</span><label>分类名称<input id="path-category-tv" required maxlength="100" placeholder="TV"></label><label>下载目录<input id="path-download-tv" required placeholder="/volume1/video/Downloads/TV"></label></div>
+            <div class="path-slot"><span>槽位 3 · 动漫整理规则</span><label>分类名称<input id="path-category-anime" required maxlength="100" placeholder="Anime"></label><label>下载目录<input id="path-download-anime" required placeholder="/volume1/video/Downloads/Anime"></label></div>
+            <div class="path-slot"><span>槽位 4 · 原样整理</span><label>分类名称<input id="path-category-custom" required maxlength="100" placeholder="学习资料"></label><label>下载目录<input id="path-download-custom" required placeholder="/volume1/video/Downloads/Custom"></label></div>
+            <small>四个分类名称和目录都可以修改。前三个槽位保留电影、剧集、动漫的命名规则；第四个槽位适合学习资料等内容，文件名和目录结构保持原样。</small>
           </div>
         </article>
 
         <article class="card span-6">
-          <header class="card-head"><div><p>EMBY DESTINATIONS</p><h2>硬链接目录</h2></div></header>
+          <header class="card-head"><div><p>HARDLINK DESTINATIONS</p><h2>硬链接目录</h2></div></header>
           <div class="settings-form">
-            <label>电影媒体库<input id="path-medialib-movie" required placeholder="/volume1/video/video/movies"></label>
-            <label>电视剧媒体库<input id="path-medialib-tv" required placeholder="/volume1/video/video/tv"></label>
-            <label>动漫媒体库<input id="path-medialib-anime" required placeholder="/volume1/video/video/anime"></label>
-            <label class="toggle-row"><span><b>自动硬链接入库</b><small>命名完成后自动加入 Emby 媒体库</small></span><input id="path-hardlink-enabled" type="checkbox" role="switch"></label>
+            <label>电影目标目录<input id="path-medialib-movie" required placeholder="/volume1/video/video/movies"></label>
+            <label>电视剧目标目录<input id="path-medialib-tv" required placeholder="/volume1/video/video/tv"></label>
+            <label>动漫目标目录<input id="path-medialib-anime" required placeholder="/volume1/video/video/anime"></label>
+            <label>自定义内容目录<input id="path-medialib-custom" required placeholder="/volume1/video/video/custom"></label>
+            <label class="toggle-row"><span><b>自动硬链接整理</b><small>命名或下载完成后自动进入对应目标目录</small></span><input id="path-hardlink-enabled" type="checkbox" role="switch"></label>
             <button id="save-paths" class="primary-button wide" type="submit">保存并立即生效</button>
             <small>下载目录与媒体库目录需要位于同一文件系统；已有同名文件仍会安全跳过。</small>
           </div>
@@ -170,7 +172,7 @@
     </section>
   </main>
 
-  <footer><span>AI NAS CORE / v{{ version }}</span><span>端口 16666 · 数据每 20 秒自动刷新</span></footer>
+  <footer><span>AI VIDEO STATION / v{{ version }}</span><span>端口 16666 · 数据每 20 秒自动刷新</span></footer>
 
   <div id="auth-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="auth-title">
     <form id="auth-form" class="auth-card">

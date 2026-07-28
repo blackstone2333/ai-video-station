@@ -12,7 +12,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
 
-    app_name: str = "ai-nas-core"
+    app_name: str = "ai-video-station"
     host: str = "0.0.0.0"
     port: int = Field(default=16666, ge=1, le=65535)
     log_level: str = "INFO"
@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     sixv_address_page: str = "https://www.6v123.net"
     request_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     search_detail_limit: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "Mozilla/5.0 (compatible; ai-nas-core/1.3; +NAS)"
+    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.4; +NAS)"
 
     downloader_type: str = "qbittorrent"
     qb_host: Optional[str] = None
@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     qb_movie_category: str = "Movie"
     qb_tv_category: str = "TV"
     qb_anime_category: str = "Anime"
+    qb_custom_category: str = "Custom"
 
     transmission_host: Optional[str] = None
     transmission_port: int = Field(default=9091, ge=1, le=65535)
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     download_movie_path: Path = Path("/volume1/video/Downloads/Movie")
     download_tv_path: Path = Path("/volume1/video/Downloads/TV")
     download_anime_path: Path = Path("/volume1/video/Downloads/Anime")
+    download_custom_path: Path = Path("/volume1/video/Downloads/Custom")
 
     watchlist_check_hours: int = Field(default=12, ge=1, le=168)
     watchlist_expire_days: int = Field(default=14, ge=1, le=365)
@@ -68,6 +70,7 @@ class Settings(BaseSettings):
     medialib_movie_path: Path = Path("/volume1/video/video/movies")
     medialib_tv_path: Path = Path("/volume1/video/video/tv")
     medialib_anime_path: Path = Path("/volume1/video/video/anime")
+    medialib_custom_path: Path = Path("/volume1/video/video/custom")
     medialib_mount_path: Path = Path("/medialib")
 
     api_key: Optional[SecretStr] = None
@@ -99,6 +102,16 @@ class Settings(BaseSettings):
             raise ValueError("must be qbittorrent or transmission")
         return value
 
+    @field_validator("qb_movie_category", "qb_tv_category", "qb_anime_category", "qb_custom_category")
+    @classmethod
+    def validate_category_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("download category names cannot be blank")
+        if len(value) > 100:
+            raise ValueError("download category names cannot exceed 100 characters")
+        return value
+
     @model_validator(mode="after")
     def validate_medialib_paths(self) -> "Settings":
         base = Path(os.path.normpath(str(self.medialib_base_path)))
@@ -110,9 +123,18 @@ class Settings(BaseSettings):
                 ("DOWNLOAD_MOVIE_PATH", self.download_movie_path),
                 ("DOWNLOAD_TV_PATH", self.download_tv_path),
                 ("DOWNLOAD_ANIME_PATH", self.download_anime_path),
+                ("DOWNLOAD_CUSTOM_PATH", self.download_custom_path),
             ):
                 if not Path(os.path.normpath(str(path))).is_absolute():
                     raise ValueError(f"{field_name} must be an absolute host path")
+        categories = (
+            self.qb_movie_category,
+            self.qb_tv_category,
+            self.qb_anime_category,
+            self.qb_custom_category,
+        )
+        if len({item.casefold() for item in categories}) != len(categories):
+            raise ValueError("download category names must be unique")
         if not self.medialib_hardlink_enabled:
             return self
 
@@ -120,10 +142,12 @@ class Settings(BaseSettings):
             ("MEDIALIB_MOVIE_PATH", self.medialib_movie_path),
             ("MEDIALIB_TV_PATH", self.medialib_tv_path),
             ("MEDIALIB_ANIME_PATH", self.medialib_anime_path),
+            ("MEDIALIB_CUSTOM_PATH", self.medialib_custom_path),
             ("DOWNLOADS_BASE_PATH", self.downloads_base_path),
             ("DOWNLOAD_MOVIE_PATH", self.download_movie_path),
             ("DOWNLOAD_TV_PATH", self.download_tv_path),
             ("DOWNLOAD_ANIME_PATH", self.download_anime_path),
+            ("DOWNLOAD_CUSTOM_PATH", self.download_custom_path),
         ):
             normalized = Path(os.path.normpath(str(path)))
             if not normalized.is_absolute():
@@ -183,6 +207,8 @@ class Settings(BaseSettings):
             return self.download_tv_path
         if category == self.qb_anime_category:
             return self.download_anime_path
+        if category == self.qb_custom_category:
+            return self.download_custom_path
         return self.downloads_base_path
 
     @property

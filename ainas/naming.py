@@ -126,6 +126,16 @@ class EmbyNamingPlanner:
 
     def plan_files(self, files: Iterable[Dict[str, Any]], plan: NamingPlan) -> Dict[str, Any]:
         values = [item for item in files if item.get("name")]
+        if plan.media_type == "custom":
+            return {
+                "root_name": plan.root_name,
+                "video_count": sum(
+                    PurePosixPath(item["name"]).suffix.lower() in VIDEO_EXTENSIONS for item in values
+                ),
+                "file_count": len(values),
+                "operations": [],
+                "folder_operations": [],
+            }
         videos = [item for item in values if PurePosixPath(item["name"]).suffix.lower() in VIDEO_EXTENSIONS]
         subtitles = [item for item in values if PurePosixPath(item["name"]).suffix.lower() in SUBTITLE_EXTENSIONS]
         videos.sort(key=lambda item: (-int(item.get("size") or 0), item["name"].casefold()))
@@ -298,15 +308,17 @@ class NamingService:
     def add_download(self, release: Release, final_category: str) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
         hash_value = torrent_hash(release.download_link)
-        use_staging = self.settings.naming_enabled and bool(hash_value)
+        is_custom = release.media_type == "custom"
+        use_staging = self.settings.naming_enabled and not is_custom and bool(hash_value)
+        track_custom = is_custom and self.settings.medialib_hardlink_enabled and bool(hash_value)
         current_category = self.settings.qb_naming_category if use_staging else final_category
         result = self.qb.add_download(
             release.download_link,
             current_category,
-            rename=plan.root_name if self.settings.naming_enabled else None,
+            rename=plan.root_name if self.settings.naming_enabled and not is_custom else None,
         )
         job = None
-        if use_staging and hash_value:
+        if (use_staging or track_custom) and hash_value:
             job = self.repository.upsert(hash_value, plan, final_category)
             self.check(job["id"])
             job = self.repository.get(job["id"])
@@ -345,11 +357,12 @@ class NamingService:
         plan = NamingPlan(**job["plan"])
         preview = self.planner.plan_files(files, plan)
         try:
-            for operation in preview["operations"]:
-                self.qb.rename_file(job["torrent_hash"], operation["old_path"], operation["new_path"])
-            for operation in preview["folder_operations"]:
-                self.qb.rename_folder(job["torrent_hash"], operation["old_path"], operation["new_path"])
-            self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
+            if plan.media_type != "custom":
+                for operation in preview["operations"]:
+                    self.qb.rename_file(job["torrent_hash"], operation["old_path"], operation["new_path"])
+                for operation in preview["folder_operations"]:
+                    self.qb.rename_folder(job["torrent_hash"], operation["old_path"], operation["new_path"])
+                self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
             self.qb.set_category(job["torrent_hash"], job["final_category"])
             self.qb.resume(job["torrent_hash"])
             hardlink_enabled = bool(self.hardlinker and self.hardlinker.enabled)

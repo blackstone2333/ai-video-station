@@ -1,7 +1,7 @@
 "use strict";
 
 const state = {
-  apiKey: sessionStorage.getItem("aiNasApiKey") || sessionStorage.getItem("sixvApiKey") || "",
+  apiKey: sessionStorage.getItem("aiVideoStationApiKey") || sessionStorage.getItem("sixvApiKey") || "",
   watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], paths: null, pathsDirty: false, qb: null, loading: false,
 };
 
@@ -59,7 +59,7 @@ function namingStatus(item) {
 }
 
 function mediaTypeLabel(value) {
-  return ({movie:"电影", tv:"电视剧", anime:"动漫", auto:"自动"})[value] || value || "未知";
+  return ({movie:"电影", tv:"电视剧", anime:"动漫", custom:"自定义", auto:"自动"})[value] || value || "未知";
 }
 
 let toastTimer;
@@ -182,12 +182,18 @@ function renderPaths() {
   $("#path-medialib-base").value = values.medialib_base_path || "";
   $("#path-medialib-mount").value = values.medialib_mount_path || "";
   $("#path-downloads-base").value = values.downloads_base_path || "";
+  $("#path-category-movie").value = values.qb_movie_category || "";
+  $("#path-category-tv").value = values.qb_tv_category || "";
+  $("#path-category-anime").value = values.qb_anime_category || "";
+  $("#path-category-custom").value = values.qb_custom_category || "";
   $("#path-download-movie").value = values.download_movie_path || "";
   $("#path-download-tv").value = values.download_tv_path || "";
   $("#path-download-anime").value = values.download_anime_path || "";
+  $("#path-download-custom").value = values.download_custom_path || "";
   $("#path-medialib-movie").value = values.medialib_movie_path || "";
   $("#path-medialib-tv").value = values.medialib_tv_path || "";
   $("#path-medialib-anime").value = values.medialib_anime_path || "";
+  $("#path-medialib-custom").value = values.medialib_custom_path || "";
   $("#path-hardlink-enabled").checked = Boolean(values.medialib_hardlink_enabled);
 }
 
@@ -285,13 +291,19 @@ function bindEvents() {
     event.preventDefault();
     const button = $("#save-paths");
     const payload = {
+      qb_movie_category: $("#path-category-movie").value.trim(),
+      qb_tv_category: $("#path-category-tv").value.trim(),
+      qb_anime_category: $("#path-category-anime").value.trim(),
+      qb_custom_category: $("#path-category-custom").value.trim(),
       downloads_base_path: $("#path-downloads-base").value.trim(),
       download_movie_path: $("#path-download-movie").value.trim(),
       download_tv_path: $("#path-download-tv").value.trim(),
       download_anime_path: $("#path-download-anime").value.trim(),
+      download_custom_path: $("#path-download-custom").value.trim(),
       medialib_movie_path: $("#path-medialib-movie").value.trim(),
       medialib_tv_path: $("#path-medialib-tv").value.trim(),
       medialib_anime_path: $("#path-medialib-anime").value.trim(),
+      medialib_custom_path: $("#path-medialib-custom").value.trim(),
       medialib_hardlink_enabled: $("#path-hardlink-enabled").checked,
     };
     button.disabled = true;
@@ -307,9 +319,9 @@ function bindEvents() {
     } finally { button.disabled = false; }
   });
   $("#auth-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); state.apiKey = $("#api-key").value.trim(); sessionStorage.setItem("aiNasApiKey", state.apiKey); await loadAll();
+    event.preventDefault(); state.apiKey = $("#api-key").value.trim(); sessionStorage.setItem("aiVideoStationApiKey", state.apiKey); await loadAll();
   });
-  $("#logout").addEventListener("click", () => { sessionStorage.removeItem("aiNasApiKey"); sessionStorage.removeItem("sixvApiKey"); state.apiKey = ""; $("#api-key").value = ""; showAuth(); });
+  $("#logout").addEventListener("click", () => { sessionStorage.removeItem("aiVideoStationApiKey"); sessionStorage.removeItem("sixvApiKey"); state.apiKey = ""; $("#api-key").value = ""; showAuth(); });
 }
 
 function tickClock() { $("#clock").textContent = new Date().toLocaleTimeString("zh-CN", {hour12:false}); }

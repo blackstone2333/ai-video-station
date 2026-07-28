@@ -68,3 +68,16 @@ def test_download_service_routes_anime_and_requires_type_when_unknown(settings):
 
     with pytest.raises(ValidationAppError, match="media type could not be detected"):
         service.download("unknown12", "magnet:?xt=urn:btih:" + "d" * 40, "Unknown title", "auto")
+
+
+def test_download_service_routes_custom_content(settings):
+    qb = StubQB()
+    service = DownloadService(settings, qb, ResultCache())
+    result = service.download(
+        "custom001",
+        "magnet:?xt=urn:btih:" + "f" * 40,
+        "Python 学习资料",
+        "custom",
+    )
+    assert result["type"] == "custom"
+    assert qb.values[0][1] == settings.qb_custom_category

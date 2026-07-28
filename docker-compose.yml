@@ -1,7 +1,7 @@
 services:
-  ai-nas-core:
+  ai-video-station:
     build: .
-    container_name: ai-nas-core
+    container_name: ai-video-station
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     env_file:

@@ -61,7 +61,7 @@ def _parse_json(model: Type[ModelT]) -> ModelT:
 
 def _problem(exc: AppError):
     body: Dict[str, Any] = {
-        "type": f"https://ai-nas.local/errors/{exc.code}",
+        "type": f"https://ai-video-station.local/errors/{exc.code}",
         "title": exc.title,
         "status": exc.status_code,
         "detail": exc.detail,
@@ -136,8 +136,8 @@ def create_app(
     services = services or build_services(settings)
     if services.path_settings is None:
         services.path_settings = PathSettingsRepository(settings)
-    app.extensions["ai_nas_settings"] = settings
-    app.extensions["ai_nas_services"] = services
+    app.extensions["video_station_settings"] = settings
+    app.extensions["video_station_services"] = services
     install_middleware(app, settings)
 
     @app.errorhandler(AppError)
@@ -390,5 +390,5 @@ def create_app(
 
     scheduler_allowed = settings.scheduler_enabled if start_scheduler is None else start_scheduler
     if scheduler_allowed:
-        app.extensions["ai_nas_scheduler"] = _start_scheduler(app, settings, services)
+        app.extensions["video_station_scheduler"] = _start_scheduler(app, settings, services)
     return app

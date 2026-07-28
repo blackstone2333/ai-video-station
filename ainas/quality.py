@@ -141,7 +141,9 @@ def detect_season(text: str) -> Optional[int]:
 
 
 def infer_media_type(text: str, url: str = "", hint: str = "auto") -> str:
-    """Resolve movie/TV/anime without treating every unknown category as a movie."""
+    """Resolve a media type without treating every unknown category as a movie."""
+    if hint == "custom":
+        return "custom"
     normalized = unquote(text)
     if ANIME_PATH_RE.search(urlparse(url).path) or ANIME_HINT_RE.search(normalized):
         return "anime"

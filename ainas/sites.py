@@ -39,7 +39,7 @@ class SiteConfig(BaseModel):
     title_selector: str = "a"
     link_selector: str = "a"
     download_selector: str = "a[href]"
-    default_type: Literal["auto", "movie", "tv", "anime"] = "auto"
+    default_type: Literal["auto", "movie", "tv", "anime", "custom"] = "auto"
     tv_path_patterns: List[str] = Field(default_factory=lambda: ["/tv/", "/series/"])
     anime_path_patterns: List[str] = Field(
         default_factory=lambda: ["/anime/", "/animation/", "/dongman/", "/donghua/", "/dm/"]

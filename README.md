@@ -1,6 +1,6 @@
-# AI NAS Core
+# AI Video Station
 
-AI NAS Core 是一个可独立部署、可由 AI 调用的精简媒体 NAS 核心。它把“媒体站点”“下载器”和“媒体库”拆成可替换边界，负责搜索、订阅监听、下载、Emby 规范命名以及同盘硬链接入库。
+AI Video Station 是一个可独立部署、可由 AI 调用的轻量媒体下载与整理服务。它把“媒体站点”“下载器”和“媒体库”拆成可替换边界，负责搜索、订阅监听、下载、Emby 规范命名以及同盘硬链接入库。
 
 当前内置 6v 适配器，同时支持后台添加普通 HTML 资源站；下载器支持 qBittorrent 和 Transmission。现有 6v API 调用方式继续兼容。
 
@@ -8,11 +8,11 @@ AI NAS Core 是一个可独立部署、可由 AI 调用的精简媒体 NAS 核�
 
 - 多站点搜索：内置 6v，也可用 CSS 选择器添加无复杂反爬的 HTML 站点
 - 下载器适配：qBittorrent / Transmission 二选一
-- 三类媒体：电影、电视剧、动漫
+- 四个可配置槽位：电影、电视剧、动漫、自定义内容
 - 自动纠正类型：结合栏目 URL、动漫关键词、`SxxExx`、季/集信息判断，不再把未知栏目直接当电影
 - Emby 命名：电影 `片名 (年份)`；电视剧和动漫 `剧名 - SxxExx`
-- 独立下载目录：`Downloads/Movie`、`Downloads/TV`、`Downloads/Anime`
-- 同盘硬链接：自动进入 movies、tv、anime 媒体库，不复制文件、不覆盖同名文件
+- 独立下载目录：电影、电视剧、动漫、自定义内容各自设置
+- 同盘硬链接：自动进入四个对应目录，不复制文件、不覆盖同名文件
 - 管理后台：订阅、下载、命名、硬链接入库记录、站点设置、下载与媒体库路径设置
 - AI 友好 REST API：API Key、OpenAPI、统一错误结构、请求编号和限流
 
@@ -35,15 +35,18 @@ QB_HOST=192.168.31.10
 QB_PORT=8080
 QB_USERNAME=admin
 QB_PASSWORD=你的密码
+QB_CUSTOM_CATEGORY=Custom
 
 MEDIALIB_BASE_PATH=/volume1/video
 DOWNLOADS_BASE_PATH=/volume1/video/Downloads
 DOWNLOAD_MOVIE_PATH=/volume1/video/Downloads/Movie
 DOWNLOAD_TV_PATH=/volume1/video/Downloads/TV
 DOWNLOAD_ANIME_PATH=/volume1/video/Downloads/Anime
+DOWNLOAD_CUSTOM_PATH=/volume1/video/Downloads/Custom
 MEDIALIB_MOVIE_PATH=/volume1/video/video/movies
 MEDIALIB_TV_PATH=/volume1/video/video/tv
 MEDIALIB_ANIME_PATH=/volume1/video/video/anime
+MEDIALIB_CUSTOM_PATH=/volume1/video/video/custom
 MEDIALIB_HARDLINK_ENABLED=true
 ```
 
@@ -60,7 +63,7 @@ TRANSMISSION_PASSWORD=你的密码
 启动并检查：
 
 ```bash
-docker compose up -d --build
+docker compose up -d --build --remove-orphans
 curl http://NAS_IP:16666/health
 curl http://NAS_IP:16666/ready
 ```
@@ -69,7 +72,7 @@ curl http://NAS_IP:16666/ready
 
 Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下载目录和媒体库必须位于同一文件系统，才能通过 `os.link` 创建不额外占空间的硬链接。
 
-首次启动后可以在后台“路径设置”中修改电影、电视剧、动漫的下载目录和硬链接目录，保存后立即生效，无需重启服务。后台设置保存在 `data/path_settings.json`，优先于 `.env` 中对应的目录值。
+首次启动后可以在后台“路径设置”中修改四个分类名称及其下载目录和硬链接目录，保存后立即生效，无需重启服务。后台设置保存在 `data/path_settings.json`，优先于 `.env` 中对应的目录值。
 
 `MEDIALIB_BASE_PATH` 是 Docker 的宿主机根挂载，后台只读显示，不能在运行中修改。需要更换根挂载时，请修改 `.env` 后重建或重启容器。后台填写的所有下载目录和媒体库目录都必须是这个根挂载内的绝对路径。
 
@@ -79,9 +82,10 @@ Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下�
 /volume1/video/Downloads/Movie  → /volume1/video/video/movies/片名 (年份)/
 /volume1/video/Downloads/TV     → /volume1/video/video/tv/剧名/Season XX/
 /volume1/video/Downloads/Anime  → /volume1/video/video/anime/剧名/Season XX/
+/volume1/video/Downloads/Custom → /volume1/video/video/custom/原目录结构/
 ```
 
-电影会保留资源内部子目录；电视剧和动漫保留已有 `Season XX`，根目录的 `SxxExx` 文件会自动放入对应 Season。目标同名文件存在时跳过，不执行覆盖。视频、字幕、NFO 和海报等已下载文件会一起入库，torrent padding 文件与未下载文件除外。
+电影会保留资源内部子目录；电视剧和动漫保留已有 `Season XX`，根目录的 `SxxExx` 文件会自动放入对应 Season。自定义槽位不会套用影视命名规则，适合学习资料等内容，会原样保留文件名和目录结构。目标同名文件存在时跳过，不执行覆盖。视频、字幕、NFO、海报和自定义资料等已下载文件会一起入库，torrent padding 文件与未下载文件除外。
 
 ## 配置媒体站点
 
@@ -103,7 +107,7 @@ Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下�
 1. 站点栏目路径规则，例如 `/dm/`、`/anime/` → 动漫
 2. 标题中的动漫/动画/番剧关键词
 3. `SxxExx`、`第 xx 集`、`Season xx` 等季集证据
-4. AI 或 API 明确传入的 `movie`、`tv`、`anime`
+4. AI 或 API 明确传入的 `movie`、`tv`、`anime`、`custom`
 
 仍无法判断时保留 `auto`，下载接口会要求明确选择类型，不再静默放进电影目录。
 

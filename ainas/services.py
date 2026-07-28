@@ -140,10 +140,12 @@ class DownloadService:
             resolved_type = infer_media_type(title, download_link, media_type)
         if resolved_type == "auto":
             raise ValidationAppError(
-                "media type could not be detected; choose movie, tv, or anime",
+                "media type could not be detected; choose movie, tv, anime, or custom",
                 [{"field": "type", "message": "explicit media type required", "code": "TYPE_REQUIRED"}],
             )
-        if resolved_type == "anime":
+        if resolved_type == "custom":
+            category = self.settings.qb_custom_category
+        elif resolved_type == "anime":
             category = self.settings.qb_anime_category
         elif resolved_type == "tv":
             category = self.settings.qb_tv_category
@@ -227,6 +229,9 @@ class WatchlistService:
                 category = (
                     self.settings.qb_anime_category if resolved_type == "anime" else self.settings.qb_tv_category
                 )
+            elif resolved_type == "custom":
+                candidates = releases[:1]
+                category = self.settings.qb_custom_category
             else:
                 candidates = releases[:1]
                 category = self.settings.qb_movie_category

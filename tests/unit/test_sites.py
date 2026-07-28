@@ -37,9 +37,10 @@ def test_site_repository_crud(tmp_path):
     assert repository.list()[0]["id"] == "sixv"
     added = repository.add(generic_site())
     assert added["adapter"] == "generic"
+    assert repository.add(generic_site(id="learning", default_type="custom"))["default_type"] == "custom"
     assert repository.update("generic", {"enabled": False})["enabled"] is False
     repository.delete("generic")
-    assert [item["id"] for item in repository.list()] == ["sixv"]
+    assert [item["id"] for item in repository.list()] == ["sixv", "learning"]
 
 
 @responses.activate
