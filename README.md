@@ -13,7 +13,7 @@ AI NAS Core 是一个可独立部署、可由 AI 调用的精简媒体 NAS 核�
 - Emby 命名：电影 `片名 (年份)`；电视剧和动漫 `剧名 - SxxExx`
 - 独立下载目录：`Downloads/Movie`、`Downloads/TV`、`Downloads/Anime`
 - 同盘硬链接：自动进入 movies、tv、anime 媒体库，不复制文件、不覆盖同名文件
-- 管理后台：订阅、下载、命名、硬链接入库记录、站点设置
+- 管理后台：订阅、下载、命名、硬链接入库记录、站点设置、下载与媒体库路径设置
 - AI 友好 REST API：API Key、OpenAPI、统一错误结构、请求编号和限流
 
 ## NAS 部署
@@ -69,6 +69,10 @@ curl http://NAS_IP:16666/ready
 
 Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下载目录和媒体库必须位于同一文件系统，才能通过 `os.link` 创建不额外占空间的硬链接。
 
+首次启动后可以在后台“路径设置”中修改电影、电视剧、动漫的下载目录和硬链接目录，保存后立即生效，无需重启服务。后台设置保存在 `data/path_settings.json`，优先于 `.env` 中对应的目录值。
+
+`MEDIALIB_BASE_PATH` 是 Docker 的宿主机根挂载，后台只读显示，不能在运行中修改。需要更换根挂载时，请修改 `.env` 后重建或重启容器。后台填写的所有下载目录和媒体库目录都必须是这个根挂载内的绝对路径。
+
 ## 目录规则
 
 ```text
@@ -122,6 +126,8 @@ Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下�
 | `POST /api/settings/sites` | 添加通用站点 |
 | `PATCH /api/settings/sites/{id}` | 更新或停用站点 |
 | `DELETE /api/settings/sites/{id}` | 删除站点 |
+| `GET /api/settings/paths` | 查看下载与媒体库目录设置 |
+| `PATCH /api/settings/paths` | 保存目录设置并立即生效 |
 
 旧的 `/api/qb/status` 和 `/api/qb/tasks` 继续作为兼容别名。完整契约见 `static/openapi.yaml`。
 
@@ -146,4 +152,4 @@ pytest
 SCHEDULER_ENABLED=false DATA_DIR=./data python main.py
 ```
 
-生产镜像使用 Gunicorn 单 worker，避免同一容器内重复运行定时任务。运行数据保存在 `data/watchlist.json`、`data/naming_jobs.json` 和 `data/sites.json`。
+生产镜像使用 Gunicorn 单 worker，避免同一容器内重复运行定时任务。运行数据保存在 `data/watchlist.json`、`data/naming_jobs.json`、`data/sites.json` 和 `data/path_settings.json`。

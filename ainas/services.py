@@ -12,6 +12,7 @@ from .config import Settings
 from .crawler import SixVClient
 from .errors import AppError, NotFoundError, ValidationAppError
 from .medialib import MediaLibraryService
+from .path_settings import PathSettingsRepository
 from .naming import NamingJobRepository, NamingService
 from .qbittorrent import QBittorrentClient
 from .quality import (
@@ -298,9 +299,11 @@ class AppServices:
     naming_jobs: Optional[NamingJobRepository] = None
     naming: Optional[NamingService] = None
     sites: Optional[SiteRepository] = None
+    path_settings: Optional[PathSettingsRepository] = None
 
 
 def build_services(settings: Settings) -> AppServices:
+    path_settings = PathSettingsRepository(settings)
     default_site = {
         "id": "sixv",
         "name": "6v",
@@ -321,4 +324,16 @@ def build_services(settings: Settings) -> AppServices:
     naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker)
     download = DownloadService(settings, qb, cache, naming)
     watchlist_service = WatchlistService(settings, watchlist, search, qb, naming)
-    return AppServices(crawler, qb, watchlist, cache, search, download, watchlist_service, naming_jobs, naming, sites)
+    return AppServices(
+        crawler=crawler,
+        qb=qb,
+        watchlist=watchlist,
+        cache=cache,
+        search=search,
+        download=download,
+        watchlist_service=watchlist_service,
+        naming_jobs=naming_jobs,
+        naming=naming,
+        sites=sites,
+        path_settings=path_settings,
+    )

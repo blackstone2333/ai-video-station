@@ -3,6 +3,7 @@ from __future__ import annotations
 import responses
 
 from ainas.config import Settings
+from ainas.path_settings import PathSettingsRepository
 from ainas.transmission import TransmissionClient
 
 
@@ -46,10 +47,11 @@ def test_transmission_adds_to_media_directory_and_maps_tasks(tmp_path):
         },
     )
     client = TransmissionClient(settings)
+    PathSettingsRepository(settings).update({"download_movie_path": "/volume1/video/Incoming/Films"})
     added = client.add_download(magnet, settings.qb_movie_category)
     assert added["qb_task_id"] == "a" * 40
     request = responses.calls[0].request.body.decode() if isinstance(responses.calls[0].request.body, bytes) else responses.calls[0].request.body
-    assert "/volume1/video/Downloads/Movie" in request
+    assert "/volume1/video/Incoming/Films" in request
 
     responses.post(
         RPC,

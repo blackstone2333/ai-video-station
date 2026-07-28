@@ -112,6 +112,7 @@ def test_health_auth_search_download_and_qb(tmp_path):
     admin = client.get("/admin")
     assert admin.status_code == 200
     assert "AI NAS Core 媒体调度台" in admin.get_data(as_text=True)
+    assert "路径设置" in admin.get_data(as_text=True)
     assert "frame-ancestors 'none'" in admin.headers["Content-Security-Policy"]
     assert client.get("/static/admin.css").status_code == 200
     assert client.get("/static/admin.js").status_code == 200
@@ -227,3 +228,50 @@ def test_hardlink_history_and_site_settings_api(tmp_path):
     assert client.patch(f"/api/settings/sites/{site_id}", json={"enabled": False}, headers=headers).json["item"]["enabled"] is False
     assert client.get("/api/settings/sites", headers=headers).json["count"] == 2
     assert client.delete(f"/api/settings/sites/{site_id}", headers=headers).status_code == 204
+
+
+def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
+    app, _ = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "test-key"}
+
+    assert client.get("/api/settings/paths").status_code == 401
+    current = client.get("/api/settings/paths", headers=headers)
+    assert current.status_code == 200
+    assert current.json["settings"]["medialib_base_path"] == "/volume1/video"
+    assert current.json["settings"]["medialib_mount_path"] == "/medialib"
+
+    changed = client.patch(
+        "/api/settings/paths",
+        json={
+            "downloads_base_path": "/volume1/video/Incoming",
+            "download_movie_path": "/volume1/video/Incoming/Films",
+            "download_tv_path": "/volume1/video/Incoming/Series",
+            "download_anime_path": "/volume1/video/Incoming/Anime",
+            "medialib_movie_path": "/volume1/video/Library/Films",
+            "medialib_tv_path": "/volume1/video/Library/Series",
+            "medialib_anime_path": "/volume1/video/Library/Anime",
+            "medialib_hardlink_enabled": False,
+        },
+        headers=headers,
+    )
+    assert changed.status_code == 200
+    assert changed.json["settings"]["download_movie_path"] == "/volume1/video/Incoming/Films"
+    assert changed.json["settings"]["medialib_hardlink_enabled"] is False
+    assert (tmp_path / "path_settings.json").exists()
+
+    relative = client.patch(
+        "/api/settings/paths",
+        json={"download_movie_path": "Incoming/Films"},
+        headers=headers,
+    )
+    assert relative.status_code == 422
+    assert relative.json["errors"][0]["field"] == "download_movie_path"
+    outside = client.patch(
+        "/api/settings/paths",
+        json={"medialib_tv_path": "/another-volume/tv"},
+        headers=headers,
+    )
+    assert outside.status_code == 422
+    assert client.patch("/api/settings/paths", json={}, headers=headers).status_code == 422
+    assert client.patch("/api/settings/paths", json={"medialib_base_path": "/tmp"}, headers=headers).status_code == 422

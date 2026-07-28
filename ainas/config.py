@@ -197,6 +197,10 @@ class Settings(BaseSettings):
     def sites_path(self) -> Path:
         return self.data_dir / "sites.json"
 
+    @property
+    def path_settings_path(self) -> Path:
+        return self.data_dir / "path_settings.json"
+
     def api_key_value(self) -> Optional[str]:
         if self.api_key is None:
             return None

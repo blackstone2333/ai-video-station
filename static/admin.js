@@ -2,7 +2,7 @@
 
 const state = {
   apiKey: sessionStorage.getItem("aiNasApiKey") || sessionStorage.getItem("sixvApiKey") || "",
-  watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], qb: null, loading: false,
+  watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], paths: null, pathsDirty: false, qb: null, loading: false,
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -176,6 +176,21 @@ function renderAutomation() {
     <div class="status-row"><i></i><span>订阅定时检查</span><small>每 12 小时</small></div>`;
 }
 
+function renderPaths() {
+  if (!state.paths || state.pathsDirty) return;
+  const values = state.paths;
+  $("#path-medialib-base").value = values.medialib_base_path || "";
+  $("#path-medialib-mount").value = values.medialib_mount_path || "";
+  $("#path-downloads-base").value = values.downloads_base_path || "";
+  $("#path-download-movie").value = values.download_movie_path || "";
+  $("#path-download-tv").value = values.download_tv_path || "";
+  $("#path-download-anime").value = values.download_anime_path || "";
+  $("#path-medialib-movie").value = values.medialib_movie_path || "";
+  $("#path-medialib-tv").value = values.medialib_tv_path || "";
+  $("#path-medialib-anime").value = values.medialib_anime_path || "";
+  $("#path-hardlink-enabled").checked = Boolean(values.medialib_hardlink_enabled);
+}
+
 function renderAll() {
   renderMetrics(); renderDownloads(); renderWatchlist(); renderNaming(); renderHardlinks(); renderSites(); renderAutomation();
   const online = state.qb?.connected;
@@ -194,7 +209,7 @@ async function loadAll(silent = false) {
   try {
     const requests = await Promise.allSettled([
       api("/api/downloader/status"), api("/api/downloader/tasks"), api("/api/watchlist"), api("/api/naming/jobs?per_page=100"),
-      api("/api/hardlinks?status=all&per_page=100"), api("/api/settings/sites"),
+      api("/api/hardlinks?status=all&per_page=100"), api("/api/settings/sites"), api("/api/settings/paths"),
     ]);
     const authFailure = requests.find((item) => item.status === "rejected" && item.reason instanceof AuthError);
     if (authFailure) throw authFailure.reason;
@@ -204,6 +219,10 @@ async function loadAll(silent = false) {
     state.naming = requests[3].status === "fulfilled" ? requests[3].value.items : [];
     state.hardlinks = requests[4].status === "fulfilled" ? requests[4].value.items : [];
     state.sites = requests[5].status === "fulfilled" ? requests[5].value.items : [];
+    if (requests[6].status === "fulfilled") {
+      state.paths = requests[6].value.settings;
+      renderPaths();
+    }
     renderAll();
     $("#auth-modal").classList.add("hidden");
     if (!silent && requests.some((item) => item.status === "rejected")) toast("部分数据暂时不可用", true);
@@ -260,6 +279,32 @@ function bindEvents() {
       if (remove && confirm("确定删除这个站点配置吗？")) { await api(`/api/settings/sites/${remove.dataset.deleteSite}`, {method:"DELETE"}); changed = true; }
       if (changed) { toast("站点配置已更新"); await loadAll(true); }
     } catch (error) { toast(error.message, true); }
+  });
+  $("#path-form").addEventListener("input", () => { state.pathsDirty = true; });
+  $("#path-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = $("#save-paths");
+    const payload = {
+      downloads_base_path: $("#path-downloads-base").value.trim(),
+      download_movie_path: $("#path-download-movie").value.trim(),
+      download_tv_path: $("#path-download-tv").value.trim(),
+      download_anime_path: $("#path-download-anime").value.trim(),
+      medialib_movie_path: $("#path-medialib-movie").value.trim(),
+      medialib_tv_path: $("#path-medialib-tv").value.trim(),
+      medialib_anime_path: $("#path-medialib-anime").value.trim(),
+      medialib_hardlink_enabled: $("#path-hardlink-enabled").checked,
+    };
+    button.disabled = true;
+    try {
+      const result = await api("/api/settings/paths", {method:"PATCH", body:JSON.stringify(payload)});
+      state.paths = result.settings;
+      state.pathsDirty = false;
+      renderPaths();
+      toast("目录设置已保存并立即生效");
+      await loadAll(true);
+    } catch (error) {
+      if (error instanceof AuthError) showAuth(error.message); else toast(error.message, true);
+    } finally { button.disabled = false; }
   });
   $("#auth-form").addEventListener("submit", async (event) => {
     event.preventDefault(); state.apiKey = $("#api-key").value.trim(); sessionStorage.setItem("aiNasApiKey", state.apiKey); await loadAll();

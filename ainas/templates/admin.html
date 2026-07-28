@@ -50,6 +50,7 @@
       <button class="tab" data-tab="naming" type="button">规范命名 <span>04</span></button>
       <button class="tab" data-tab="hardlinks" type="button">媒体入库 <span>05</span></button>
       <button class="tab" data-tab="sites" type="button">站点设置 <span>06</span></button>
+      <button class="tab" data-tab="paths" type="button">路径设置 <span>07</span></button>
     </nav>
 
     <section id="panel-overview" class="panel active" data-panel="overview">
@@ -130,6 +131,42 @@
         </header>
         <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="naming-body"></tbody></table></div>
       </article>
+    </section>
+
+    <section id="panel-paths" class="panel" data-panel="paths">
+      <form id="path-form" class="panel-grid">
+        <article class="card span-12 path-intro-card">
+          <header class="card-head"><div><p>DOCKER MOUNT</p><h2>NAS 根挂载</h2></div><span class="count-chip">重启后变更</span></header>
+          <div class="settings-form path-root-grid">
+            <label>宿主机根目录<input id="path-medialib-base" readonly aria-readonly="true"></label>
+            <label>容器内对应目录<input id="path-medialib-mount" readonly aria-readonly="true"></label>
+            <small>以下所有目录都必须位于这个 NAS 根目录内。根目录由 Docker 挂载决定，如需更换，请修改 <code>.env</code> 中的 <code>MEDIALIB_BASE_PATH</code>，然后重建或重启容器。</small>
+          </div>
+        </article>
+
+        <article class="card span-6">
+          <header class="card-head"><div><p>DOWNLOAD DESTINATIONS</p><h2>下载目录</h2></div></header>
+          <div class="settings-form">
+            <label>下载总目录<input id="path-downloads-base" required placeholder="/volume1/video/Downloads"></label>
+            <label>电影下载目录<input id="path-download-movie" required placeholder="/volume1/video/Downloads/Movie"></label>
+            <label>电视剧下载目录<input id="path-download-tv" required placeholder="/volume1/video/Downloads/TV"></label>
+            <label>动漫下载目录<input id="path-download-anime" required placeholder="/volume1/video/Downloads/Anime"></label>
+            <small>新加入 qBittorrent 或 Transmission 的任务会立即使用这里设置的分类目录。</small>
+          </div>
+        </article>
+
+        <article class="card span-6">
+          <header class="card-head"><div><p>EMBY DESTINATIONS</p><h2>硬链接目录</h2></div></header>
+          <div class="settings-form">
+            <label>电影媒体库<input id="path-medialib-movie" required placeholder="/volume1/video/video/movies"></label>
+            <label>电视剧媒体库<input id="path-medialib-tv" required placeholder="/volume1/video/video/tv"></label>
+            <label>动漫媒体库<input id="path-medialib-anime" required placeholder="/volume1/video/video/anime"></label>
+            <label class="toggle-row"><span><b>自动硬链接入库</b><small>命名完成后自动加入 Emby 媒体库</small></span><input id="path-hardlink-enabled" type="checkbox" role="switch"></label>
+            <button id="save-paths" class="primary-button wide" type="submit">保存并立即生效</button>
+            <small>下载目录与媒体库目录需要位于同一文件系统；已有同名文件仍会安全跳过。</small>
+          </div>
+        </article>
+      </form>
     </section>
   </main>
 

@@ -1,6 +1,9 @@
+from urllib.parse import parse_qs
+
 import responses
 
 from ainas.config import Settings
+from ainas.path_settings import PathSettingsRepository
 from ainas.qbittorrent import QBittorrentClient, torrent_hash
 
 
@@ -28,8 +31,11 @@ def test_add_status_and_tasks(tmp_path):
     responses.post(f"{base}/api/v2/torrents/createCategory", body="Ok.", status=200)
     responses.post(f"{base}/api/v2/torrents/add", body="Ok.", status=200)
     client = QBittorrentClient(settings)
-    result = client.add_download(MAGNET, "sixv-movie")
+    PathSettingsRepository(settings).update({"download_movie_path": "/volume1/video/Incoming/Films"})
+    result = client.add_download(MAGNET, settings.qb_movie_category)
     assert result["qb_task_id"] == "a" * 40
+    added_payload = parse_qs(responses.calls[2].request.body)
+    assert added_payload["savepath"] == ["/volume1/video/Incoming/Films"]
 
     responses.post(f"{base}/api/v2/auth/login", body="Ok.", status=200)
     responses.get(f"{base}/api/v2/app/version", body="4.6.7", status=200)
@@ -68,3 +74,18 @@ def test_add_status_and_tasks(tmp_path):
     client.rename_torrent("abc", "剧名")
     client.set_category("abc", "sixv-tv")
     client.resume("abc")
+
+
+@responses.activate
+def test_existing_category_is_updated_to_current_path(tmp_path):
+    settings = Settings(data_dir=tmp_path, qb_host="qb.test", scheduler_enabled=False)
+    client = QBittorrentClient(settings)
+    PathSettingsRepository(settings).update({"download_tv_path": "/volume1/video/Incoming/Series"})
+    base = "http://qb.test:8080"
+    responses.post(f"{base}/api/v2/torrents/createCategory", status=409)
+    responses.post(f"{base}/api/v2/torrents/editCategory", body="Ok.", status=200)
+
+    client.ensure_category(settings.qb_tv_category)
+
+    edited_payload = parse_qs(responses.calls[1].request.body)
+    assert edited_payload["savePath"] == ["/volume1/video/Incoming/Series"]

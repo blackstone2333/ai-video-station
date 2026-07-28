@@ -17,11 +17,13 @@ from .middleware import install_middleware
 from .models import (
     DownloadRequest,
     NamingCheckRequest,
+    PathSettingsPatchRequest,
     SearchRequest,
     SitePatchRequest,
     WatchlistAddRequest,
     WatchlistCheckRequest,
 )
+from .path_settings import PathSettingsRepository
 from .services import AppServices, build_services
 from .sites import SiteConfig
 
@@ -132,6 +134,8 @@ def create_app(
     app = Flask(__name__, static_folder="../static", static_url_path="/static")
     app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=64 * 1024)
     services = services or build_services(settings)
+    if services.path_settings is None:
+        services.path_settings = PathSettingsRepository(settings)
     app.extensions["ai_nas_settings"] = settings
     app.extensions["ai_nas_services"] = services
     install_middleware(app, settings)
@@ -369,6 +373,20 @@ def create_app(
             raise ServiceUnavailableError("site settings are not initialized")
         services.sites.delete(site_id)
         return "", 204
+
+    @app.get("/api/settings/paths")
+    def path_settings_get():
+        if not services.path_settings:
+            raise ServiceUnavailableError("path settings are not initialized")
+        return jsonify({"success": True, "settings": services.path_settings.get()})
+
+    @app.patch("/api/settings/paths")
+    def path_settings_update():
+        if not services.path_settings:
+            raise ServiceUnavailableError("path settings are not initialized")
+        body = _parse_json(PathSettingsPatchRequest)
+        values = services.path_settings.update(body.model_dump(exclude_none=True))
+        return jsonify({"success": True, "settings": values, "message": "目录设置已保存并立即生效"})
 
     scheduler_allowed = settings.scheduler_enabled if start_scheduler is None else start_scheduler
     if scheduler_allowed:

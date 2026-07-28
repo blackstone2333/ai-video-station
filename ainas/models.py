@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 MediaType = Literal["movie", "tv", "anime", "auto"]
@@ -71,3 +72,20 @@ class SitePatchRequest(StrictModel):
     default_type: Optional[Literal["auto", "movie", "tv", "anime"]] = None
     tv_path_patterns: Optional[List[str]] = None
     anime_path_patterns: Optional[List[str]] = None
+
+
+class PathSettingsPatchRequest(StrictModel):
+    downloads_base_path: Optional[Path] = None
+    download_movie_path: Optional[Path] = None
+    download_tv_path: Optional[Path] = None
+    download_anime_path: Optional[Path] = None
+    medialib_movie_path: Optional[Path] = None
+    medialib_tv_path: Optional[Path] = None
+    medialib_anime_path: Optional[Path] = None
+    medialib_hardlink_enabled: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "PathSettingsPatchRequest":
+        if not self.model_fields_set or all(getattr(self, name) is None for name in self.model_fields_set):
+            raise ValueError("at least one path setting is required")
+        return self

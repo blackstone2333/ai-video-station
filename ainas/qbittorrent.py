@@ -106,20 +106,33 @@ class QBittorrentClient:
     def ensure_category(self, category: str) -> None:
         if not category:
             return
+        save_path = str(self.settings.download_path_for_category(category))
         try:
             self._request(
                 "POST",
                 "/api/v2/torrents/createCategory",
-                data={"category": category, "savePath": str(self.settings.download_path_for_category(category))},
+                data={"category": category, "savePath": save_path},
             )
         except UpstreamError:
-            logger.warning("qb_category_creation_failed", extra={"category": category})
+            try:
+                self._request(
+                    "POST",
+                    "/api/v2/torrents/editCategory",
+                    data={"category": category, "savePath": save_path},
+                )
+            except UpstreamError:
+                logger.warning("qb_category_update_failed", extra={"category": category})
 
     def add_download(self, download_link: str, category: str, rename: Optional[str] = None) -> Dict[str, Any]:
         link = self.validate_download_link(download_link)
         self.login()
         self.ensure_category(category)
-        payload = {"urls": link, "category": category, "paused": "false"}
+        payload = {
+            "urls": link,
+            "category": category,
+            "savepath": str(self.settings.download_path_for_category(category)),
+            "paused": "false",
+        }
         if rename:
             payload["rename"] = rename
         response = self._request(
