@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     sixv_address_page: str = "https://www.6v123.net"
     request_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     search_detail_limit: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5; +NAS)"
+    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5.1; +NAS)"
 
     downloader_type: str = "qbittorrent"
     qb_host: Optional[str] = None
@@ -58,7 +58,6 @@ class Settings(BaseSettings):
     watchlist_check_hours: int = Field(default=12, ge=3, le=168)
     watchlist_expire_days: int = Field(default=14, ge=1, le=365)
     scheduler_enabled: bool = True
-    auto_watch_on_empty: bool = True
 
     naming_enabled: bool = True
     naming_check_minutes: int = Field(default=1, ge=1, le=60)

@@ -153,7 +153,7 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert client.get("/api/qb/tasks", headers=headers).json["count"] == 1
 
 
-def test_validation_auto_watch_cors_and_watchlist_crud(tmp_path):
+def test_validation_search_is_read_only_and_watchlist_crud(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
     headers = {"Authorization": "Bearer test-key", "Origin": "https://qclaw.test"}
@@ -163,8 +163,33 @@ def test_validation_auto_watch_cors_and_watchlist_crud(tmp_path):
     assert len(bad.json["errors"]) == 2
 
     missing = client.post("/api/search", json={"keyword": "不存在", "type": "movie"}, headers=headers)
-    assert missing.json["watchlisted"] is True
+    assert missing.json["watchlist_exists"] is False
+    assert missing.json["watchlist_added"] is False
+    assert missing.json["watchlist_id"] is None
+    assert client.get("/api/watchlist", headers=headers).json["count"] == 0
     assert missing.headers["Access-Control-Allow-Origin"] == "https://qclaw.test"
+
+    opted_in = client.post(
+        "/api/search",
+        json={"keyword": "不存在", "type": "movie", "addto_watchlist": True},
+        headers=headers,
+    )
+    assert opted_in.json["watchlist_exists"] is True
+    assert opted_in.json["watchlist_added"] is True
+    repeated = client.post(
+        "/api/search",
+        json={"keyword": "不存在", "type": "movie", "add_to_watchlist": True},
+        headers=headers,
+    )
+    assert repeated.json["watchlist_added"] is False
+    assert repeated.json["watchlist_id"] == opted_in.json["watchlist_id"]
+    read_only_again = client.post(
+        "/api/search",
+        json={"keyword": "不存在", "type": "movie"},
+        headers=headers,
+    )
+    assert read_only_again.json["watchlist_exists"] is True
+    assert read_only_again.json["watchlist_added"] is False
 
     added = client.post("/api/watchlist/add", json={"keyword": "龙之家族", "type": "tv"}, headers=headers)
     assert added.status_code == 201

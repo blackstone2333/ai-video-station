@@ -168,6 +168,8 @@ Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下�
 | `GET /api/settings/system` | 订阅周期设置 |
 | `GET /api/agents` | Agent 连接状态 |
 
+`POST /api/search` 默认是纯读取操作，不会自动创建订阅。响应中的 `watchlist_exists` 和 `watchlist_id` 只提示是否已经存在匹配订阅。新增订阅应调用 `POST /api/watchlist/add`；确需在一次搜索中显式订阅时，也可传入 `"add_to_watchlist": true`。Agent 多轮搜索时应保持该值为 `false` 或直接省略。
+
 旧的 `/api/qb/status` 和 `/api/qb/tasks` 保留为兼容别名。完整契约见 `static/openapi.yaml`。
 
 ## 升级现有安装

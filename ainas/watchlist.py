@@ -63,6 +63,20 @@ class WatchlistRepository:
                     return deepcopy(item)
         raise NotFoundError("watchlist item", item_id)
 
+    def find(self, keyword: str, media_type: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        normalized = keyword.strip().casefold()
+        with self._lock:
+            for item in self._read()["items"]:
+                same_type = (
+                    media_type is None
+                    or item["type"] == media_type
+                    or item["type"] == "auto"
+                    or media_type == "auto"
+                )
+                if item["keyword"].casefold() == normalized and same_type:
+                    return deepcopy(item)
+        return None
+
     def add(self, keyword: str, media_type: str) -> Dict[str, Any]:
         normalized = keyword.strip().casefold()
         with self._lock:

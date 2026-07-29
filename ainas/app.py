@@ -224,17 +224,20 @@ def create_app(
             return "", 204
         body = _parse_json(SearchRequest)
         outcome = services.search.search(body.keyword, body.media_type)
-        watch_item = None
-        if not outcome.releases and settings.auto_watch_on_empty:
-            watch_type = outcome.media_type if outcome.media_type != "auto" else body.media_type
+        watch_type = outcome.media_type if outcome.media_type != "auto" else body.media_type
+        watch_item = services.watchlist.find(body.keyword, watch_type)
+        watchlist_added = False
+        if body.add_to_watchlist and watch_item is None:
             watch_item = services.watchlist.add(body.keyword, watch_type)
+            watchlist_added = True
         response = {
             "success": True,
             "keyword": outcome.keyword,
             "type": outcome.media_type,
             "results": [item.to_api() for item in outcome.releases],
             "count": len(outcome.releases),
-            "watchlisted": watch_item is not None,
+            "watchlist_exists": watch_item is not None,
+            "watchlist_added": watchlist_added,
             "watchlist_id": watch_item["id"] if watch_item else None,
         }
         return jsonify(response)

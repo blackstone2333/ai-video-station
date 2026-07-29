@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 MediaType = Literal["movie", "tv", "anime", "custom", "auto"]
@@ -16,6 +16,10 @@ class StrictModel(BaseModel):
 class SearchRequest(StrictModel):
     keyword: str = Field(min_length=1, max_length=100)
     media_type: MediaType = Field(default="auto", alias="type")
+    add_to_watchlist: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("add_to_watchlist", "addto_watchlist", "addToWatchlist"),
+    )
 
     @field_validator("keyword")
     @classmethod

@@ -45,6 +45,9 @@ def test_repository_crud_is_idempotent(tmp_path):
     first = repository.add("奥本海默", "movie")
     second = repository.add("奥本海默", "movie")
     assert first["id"] == second["id"]
+    assert repository.find(" 奥本海默 ", "movie")["id"] == first["id"]
+    assert repository.find("奥本海默", "auto")["id"] == first["id"]
+    assert repository.find("不存在", "movie") is None
     assert len(repository.list()) == 1
     assert repository.update(first["id"], {"status": "found"})["status"] == "found"
     repository.delete(first["id"])

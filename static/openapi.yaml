@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AI Video Station API
-  version: 1.5.0
+  version: 1.5.1
   description: 多站点媒体搜索、订阅、手动下载、规范命名、目录映射、硬链接入库与 Agent 接入。
 servers:
   - url: http://localhost:16666
@@ -38,6 +38,10 @@ components:
       properties:
         keyword: {type: string, minLength: 1, maxLength: 100, examples: [奥本海默]}
         type: {$ref: '#/components/schemas/MediaType'}
+        add_to_watchlist:
+          type: boolean
+          default: false
+          description: 显式要求创建订阅；省略或 false 时搜索是纯读取操作。也兼容 addto_watchlist 和 addToWatchlist。
     Release:
       type: object
       required: [id, title, download_link, type]
@@ -162,6 +166,7 @@ paths:
   /api/search:
     post:
       summary: 跨已启用站点搜索
+      description: 默认不会创建或修改订阅。订阅建议使用独立的 /api/watchlist/add；add_to_watchlist=true 仅用于显式兼容调用。
       security: [{ApiKey: []}, {AgentToken: []}]
       requestBody:
         required: true
@@ -181,6 +186,9 @@ paths:
                   type: {$ref: '#/components/schemas/MediaType'}
                   results: {type: array, items: {$ref: '#/components/schemas/Release'}}
                   count: {type: integer}
+                  watchlist_exists: {type: boolean}
+                  watchlist_added: {type: boolean}
+                  watchlist_id: {type: [string, 'null']}
         '422': {description: 参数错误}
   /api/download:
     post:

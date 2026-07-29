@@ -16,7 +16,6 @@ def settings(tmp_path: Path) -> Settings:
         sixv_address_page="https://address.test",
         request_timeout_seconds=1,
         scheduler_enabled=False,
-        auto_watch_on_empty=True,
         api_key=None,
         qb_host=None,
     )

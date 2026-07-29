@@ -330,7 +330,7 @@ function manualSourceChanged() {
 
 function agentPrompt(agent) {
   const origin = location.origin;
-  return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 先 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink"]}\n3. 连接后每 5 分钟 POST ${origin}/api/agents/heartbeat 保持在线状态\n4. 读取 OpenAPI 后再调用业务接口；涉及新增下载、删除或修改设置时，先向我确认目标\n5. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
+  return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 先 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink"]}\n3. 连接后每 5 分钟 POST ${origin}/api/agents/heartbeat 保持在线状态\n4. 搜索时省略 add_to_watchlist 或明确传 false；只有用户明确要求订阅时才调用 /api/watchlist/add\n5. 读取 OpenAPI 后再调用业务接口；涉及新增下载、删除或修改设置时，先向我确认目标\n6. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
 }
 
 function bindEvents() {
