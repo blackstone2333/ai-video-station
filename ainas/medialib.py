@@ -6,7 +6,7 @@ import logging
 import os
 import re
 from pathlib import Path, PurePosixPath
-from typing import Any, Dict, Iterable, List, Mapping, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .config import Settings
 from .errors import AppError
@@ -28,8 +28,9 @@ class HardlinkError(AppError):
 class MediaLibraryService:
     """Create idempotent hardlinks using the single ``/medialib`` mount."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, path_rules: Optional[Any] = None) -> None:
         self.settings = settings
+        self.path_rules = path_rules
 
     @property
     def enabled(self) -> bool:
@@ -92,10 +93,13 @@ class MediaLibraryService:
             or path.name.casefold().startswith(PADDING_PREFIXES)
         )
 
-    def _target_root(self, media_type: str) -> Path:
+    def _target_root(self, media_type: str, source_path: Any = None) -> Path:
         if media_type not in {"movie", "tv", "anime", "custom"}:
             raise HardlinkError(f"unsupported media type: {media_type!r}")
-        if media_type == "movie":
+        rule = self.path_rules.match(media_type, source_path) if self.path_rules and source_path else None
+        if rule:
+            host_target = Path(rule["target_path"])
+        elif media_type == "movie":
             host_target = self.settings.medialib_movie_path
         elif media_type == "anime":
             host_target = self.settings.medialib_anime_path
@@ -167,15 +171,16 @@ class MediaLibraryService:
         relative: Path,
         plan: Mapping[str, Any],
         content_root_name: str | None = None,
+        target_root: Optional[Path] = None,
     ) -> Path:
         media_type = str(plan.get("media_type") or "")
         if media_type not in {"movie", "tv", "anime", "custom"}:
             raise HardlinkError(f"unsupported media type: {media_type!r}")
         if media_type == "custom":
-            if content_root_name and relative.parts[0].casefold() != content_root_name.casefold():
-                root = self._safe_component(content_root_name, "custom content root")
-                relative = Path(root) / relative
-            return self._target_root(media_type) / relative
+            root_name = self._safe_component(plan.get("root_name"), "custom resource link name")
+            if content_root_name and relative.parts[0].casefold() == content_root_name.casefold():
+                relative = Path(*relative.parts[1:]) if len(relative.parts) > 1 else Path(relative.name)
+            return (target_root or self._target_root(media_type)) / root_name / relative
         root_name = self._safe_component(plan.get("root_name"), "media root name")
         media_name = self._safe_component(plan.get("media_name") or root_name, "media name")
         removable_roots = [root_name, media_name]
@@ -186,8 +191,8 @@ class MediaLibraryService:
         relative = self._strip_media_root(relative, removable_roots)
 
         if media_type == "movie":
-            return self._target_root(media_type) / root_name / relative
-        return self._target_root(media_type) / media_name / self._tv_relative(relative)
+            return (target_root or self._target_root(media_type)) / root_name / relative
+        return (target_root or self._target_root(media_type)) / root_name / self._tv_relative(relative)
 
     def _preflight_target(self, source: Path, destination: Path, target_root: Path) -> None:
         mount = self.mount_root.resolve(strict=True)
@@ -249,12 +254,13 @@ class MediaLibraryService:
             raise HardlinkError("qBittorrent did not provide save_path or content_path")
 
         prepared: List[tuple[Path, Path]] = []
-        target_root = self._target_root(str(plan_value.get("media_type") or ""))
+        source_rule_path = torrent.get("content_path") or torrent.get("save_path")
+        target_root = self._target_root(str(plan_value.get("media_type") or ""), source_rule_path)
         content_root_name = content_path.name if content_path is not None and content_path.is_dir() else None
         for item in selected:
             relative = self._safe_relative(item["name"])
             source = self._resolve_source(relative, save_path, content_path, len(selected))
-            destination = self._destination(relative, plan_value, content_root_name)
+            destination = self._destination(relative, plan_value, content_root_name, target_root)
             self._preflight_target(source, destination, target_root)
             prepared.append((source, destination))
 
@@ -283,7 +289,7 @@ class MediaLibraryService:
             "linked": linked,
             "skipped": skipped,
             "already_linked": already_linked,
-            "target": str(self._destination(Path("placeholder"), plan_value, content_root_name).parent),
+            "target": str(self._destination(Path("placeholder"), plan_value, content_root_name, target_root).parent),
             "files": results,
         }
 

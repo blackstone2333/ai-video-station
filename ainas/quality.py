@@ -51,6 +51,11 @@ class Release:
     season: Optional[int] = None
     link_name: Optional[str] = None
     provider: Optional[str] = None
+    original_title: Optional[str] = None
+    part: Optional[str] = None
+    edition: Optional[str] = None
+    video_format: Optional[str] = None
+    episode_title: Optional[str] = None
 
     def to_api(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -248,6 +253,46 @@ def _encoding(text: str) -> Optional[str]:
     return None
 
 
+def _edition(text: str) -> Optional[str]:
+    patterns = (
+        (r"(?i)director'?s[ ._-]*cut|导演剪辑版", "Director's Cut"),
+        (r"(?i)extended[ ._-]*(?:cut|edition)?|加长版", "Extended"),
+        (r"(?i)theatrical[ ._-]*(?:cut|edition)?|剧场版", "Theatrical"),
+        (r"(?i)imax", "IMAX"),
+        (r"(?i)criterion|标准收藏版", "Criterion"),
+    )
+    for pattern, label in patterns:
+        if re.search(pattern, text):
+            return label
+    return None
+
+
+def _part(text: str) -> Optional[str]:
+    match = re.search(r"(?i)(?:^|[ ._\-])(?:cd|disc|disk)[ ._\-]*0*(\d+)", text)
+    if match:
+        return f"CD{int(match.group(1))}"
+    match = re.search(r"(?i)(?:^|[ ._\-])(?:part|pt)[ ._\-]*0*(\d+)", text)
+    if match:
+        return f"Part{int(match.group(1))}"
+    return None
+
+
+def _video_format(*values: Optional[str]) -> Optional[str]:
+    selected = list(dict.fromkeys(value for value in values if value))
+    return ".".join(selected) if selected else None
+
+
+def _original_title(page_title: str, media_name: str) -> Optional[str]:
+    if re.search(r"[\u3400-\u9fff]", media_name) is None:
+        return None
+    candidates = re.findall(r"[A-Za-z][A-Za-z0-9'&:,.! ]{2,80}", page_title)
+    for candidate in candidates:
+        value = re.sub(r"\s+", " ", candidate).strip(" .,-")
+        if value and not re.search(r"(?i)season|episode|1080p|2160p|720p|bluray|web[ .-]?dl", value):
+            return value
+    return None
+
+
 def release_id(page_url: str, download_link: str) -> str:
     return hashlib.sha256(f"{page_url}\n{download_link}".encode("utf-8")).hexdigest()[:16]
 
@@ -273,24 +318,33 @@ def build_release(
     season = detect_season(readable) if resolved_media_type in EPISODIC_MEDIA_TYPES else None
     if episode and episode.startswith("S"):
         season = int(episode[1:3])
+    resolution = _resolution(readable)
+    source = _source(readable)
+    hdr = _hdr(readable)
+    encoding = _encoding(readable)
+    media_name = canonical_media_name(page_title)
     return Release(
         id=release_id(page_url, download_link),
         title=title,
         url=page_url,
         download_link=html.unescape(download_link).strip(),
         size=size,
-        resolution=_resolution(readable),
-        source=_source(readable),
+        resolution=resolution,
+        source=source,
         language=_language(readable),
-        hdr=_hdr(readable),
-        encoding=_encoding(readable),
+        hdr=hdr,
+        encoding=encoding,
         media_type=resolved_media_type,
         episode=episode,
         size_bytes=size_bytes,
-        media_name=canonical_media_name(page_title),
+        media_name=media_name,
         year=metadata_year,
         season=season,
         link_name=link_display_name(download_link, label),
+        original_title=_original_title(page_title, media_name),
+        part=_part(readable),
+        edition=_edition(readable),
+        video_format=_video_format(resolution, source, hdr, encoding),
     )
 
 

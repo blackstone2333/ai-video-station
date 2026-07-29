@@ -174,6 +174,23 @@ def test_custom_content_keeps_original_names_and_directories(tmp_path):
     assert (target / video.name).stat().st_ino == video.stat().st_ino
 
 
+def test_custom_uses_link_name_even_when_downloaded_root_is_obfuscated(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    source = mount / "Downloads" / "Custom" / "pack-001" / "lesson.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"lesson")
+    MediaLibraryService(settings).link_completed(
+        {
+            "save_path": str(host / "Downloads" / "Custom"),
+            "content_path": str(host / "Downloads" / "Custom" / "pack-001"),
+        },
+        [{"name": "pack-001/lesson.mp4", "priority": 1}],
+        {"media_type": "custom", "media_name": "课程", "root_name": "Python-Course-Pack"},
+    )
+    target = mount / "video" / "custom" / "Python-Course-Pack" / "lesson.mp4"
+    assert target.stat().st_ino == source.stat().st_ino
+
+
 def test_existing_files_are_skipped_and_same_inode_is_reported(tmp_path):
     settings, host, mount = media_settings(tmp_path)
     source = mount / "Downloads" / "sixv-movie" / "电影 (2024).mkv"

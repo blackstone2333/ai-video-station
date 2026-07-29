@@ -11,19 +11,29 @@ from werkzeug.exceptions import BadRequest, HTTPException
 
 from . import __version__
 from .config import Settings
-from .errors import AppError, ServiceUnavailableError, ValidationAppError
+from .agent_access import AgentAccessRepository
+from .errors import AppError, ForbiddenError, ServiceUnavailableError, ValidationAppError
 from .logging_config import configure_logging
 from .middleware import install_middleware
 from .models import (
     DownloadRequest,
+    DownloaderSettingsPatchRequest,
+    ManualDownloadRequest,
+    ManualTorrentRequest,
     NamingCheckRequest,
+    AgentBootstrapRequest,
+    AgentConnectRequest,
+    PathRulePatchRequest,
     PathSettingsPatchRequest,
     SearchRequest,
     SitePatchRequest,
+    SystemSettingsPatchRequest,
     WatchlistAddRequest,
     WatchlistCheckRequest,
 )
+from .path_rules import PathRuleInput, PathRuleRepository
 from .path_settings import PathSettingsRepository
+from .runtime_settings import DownloaderSettingsRepository, SystemSettingsRepository
 from .services import AppServices, build_services
 from .sites import SiteConfig
 
@@ -53,6 +63,13 @@ def _parse_json(model: Type[ModelT]) -> ModelT:
         payload = request.get_json()
     except BadRequest as exc:
         raise ValidationAppError("Malformed JSON body") from exc
+    try:
+        return model.model_validate(payload)
+    except ValidationError as exc:
+        raise ValidationAppError("Request validation failed", _validation_errors(exc)) from exc
+
+
+def _parse_value(model: Type[ModelT], payload: Any) -> ModelT:
     try:
         return model.model_validate(payload)
     except ValidationError as exc:
@@ -132,13 +149,25 @@ def create_app(
     settings = settings or Settings()
     configure_logging(settings.log_level)
     app = Flask(__name__, static_folder="../static", static_url_path="/static")
-    app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=64 * 1024)
+    app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=settings.max_torrent_upload_bytes + 64 * 1024)
     services = services or build_services(settings)
     if services.path_settings is None:
         services.path_settings = PathSettingsRepository(settings)
+    if services.downloader_settings is None:
+        services.downloader_settings = DownloaderSettingsRepository(settings)
+    if services.system_settings is None:
+        services.system_settings = SystemSettingsRepository(settings)
+    if services.path_rules is None:
+        services.path_rules = PathRuleRepository(settings)
+    if services.agents is None:
+        services.agents = AgentAccessRepository(settings)
     app.extensions["video_station_settings"] = settings
     app.extensions["video_station_services"] = services
-    install_middleware(app, settings)
+    install_middleware(app, settings, services.agents)
+
+    def require_admin() -> None:
+        if getattr(g, "auth_kind", None) != "admin":
+            raise ForbiddenError("此操作仅允许后台管理员执行")
 
     @app.errorhandler(AppError)
     def handle_app_error(exc: AppError):
@@ -217,6 +246,45 @@ def create_app(
         body = _parse_json(DownloadRequest)
         result = services.download.download(body.result_id, body.download_link, body.title, body.media_type)
         return jsonify({"success": True, "message": "已添加到下载队列", **result})
+
+    @app.post("/api/download/manual")
+    def manual_download():
+        if request.is_json:
+            body = _parse_json(ManualDownloadRequest)
+            result = services.download.manual_link(
+                body.download_link,
+                body.title,
+                body.media_type,
+                body.original_title,
+                body.edition,
+                body.episode_title,
+            )
+        else:
+            upload = request.files.get("torrent")
+            if not upload or not upload.filename:
+                raise ValidationAppError(
+                    "请选择 BT 种子文件",
+                    [{"field": "torrent", "message": "torrent file is required", "code": "TORRENT_REQUIRED"}],
+                )
+            if not upload.filename.casefold().endswith(".torrent"):
+                raise ValidationAppError(
+                    "仅支持 .torrent 文件",
+                    [{"field": "torrent", "message": "file extension must be .torrent", "code": "INVALID_TORRENT_FILE"}],
+                )
+            content = upload.stream.read(settings.max_torrent_upload_bytes + 1)
+            if len(content) > settings.max_torrent_upload_bytes:
+                raise ValidationAppError("BT 种子文件过大")
+            form = _parse_value(ManualTorrentRequest, request.form.to_dict())
+            result = services.download.manual_torrent(
+                content,
+                upload.filename,
+                form.title,
+                form.media_type,
+                form.original_title,
+                form.edition,
+                form.episode_title,
+            )
+        return jsonify({"success": True, "message": "已识别并添加到下载队列", **result})
 
     @app.get("/api/downloader/status")
     @app.get("/api/qb/status")
@@ -350,6 +418,7 @@ def create_app(
 
     @app.post("/api/settings/sites")
     def sites_add():
+        require_admin()
         if not services.sites:
             raise ServiceUnavailableError("site settings are not initialized")
         body = _parse_json(SiteConfig)
@@ -361,6 +430,7 @@ def create_app(
 
     @app.patch("/api/settings/sites/<site_id>")
     def sites_update(site_id: str):
+        require_admin()
         if not services.sites:
             raise ServiceUnavailableError("site settings are not initialized")
         body = _parse_json(SitePatchRequest)
@@ -369,6 +439,7 @@ def create_app(
 
     @app.delete("/api/settings/sites/<site_id>")
     def sites_delete(site_id: str):
+        require_admin()
         if not services.sites:
             raise ServiceUnavailableError("site settings are not initialized")
         services.sites.delete(site_id)
@@ -382,11 +453,132 @@ def create_app(
 
     @app.patch("/api/settings/paths")
     def path_settings_update():
+        require_admin()
         if not services.path_settings:
             raise ServiceUnavailableError("path settings are not initialized")
         body = _parse_json(PathSettingsPatchRequest)
         values = services.path_settings.update(body.model_dump(exclude_none=True))
         return jsonify({"success": True, "settings": values, "message": "目录设置已保存并立即生效"})
+
+    @app.get("/api/settings/path-rules")
+    def path_rules_list():
+        if not services.path_rules:
+            raise ServiceUnavailableError("path rules are not initialized")
+        media_type = request.args.get("type")
+        items = services.path_rules.list(media_type)
+        return jsonify({"success": True, "items": items, "count": len(items)})
+
+    @app.post("/api/settings/path-rules")
+    def path_rules_add():
+        require_admin()
+        if not services.path_rules:
+            raise ServiceUnavailableError("path rules are not initialized")
+        body = _parse_json(PathRuleInput)
+        item = services.path_rules.add(body.model_dump())
+        response = jsonify({"success": True, "item": item})
+        response.status_code = 201
+        response.headers["Location"] = f"/api/settings/path-rules/{item['id']}"
+        return response
+
+    @app.patch("/api/settings/path-rules/<rule_id>")
+    def path_rules_update(rule_id: str):
+        require_admin()
+        if not services.path_rules:
+            raise ServiceUnavailableError("path rules are not initialized")
+        body = _parse_json(PathRulePatchRequest)
+        item = services.path_rules.update(rule_id, body.model_dump(exclude_none=True))
+        return jsonify({"success": True, "item": item})
+
+    @app.delete("/api/settings/path-rules/<rule_id>")
+    def path_rules_delete(rule_id: str):
+        require_admin()
+        if not services.path_rules:
+            raise ServiceUnavailableError("path rules are not initialized")
+        services.path_rules.delete(rule_id)
+        return "", 204
+
+    @app.get("/api/settings/downloader")
+    def downloader_settings_get():
+        if not services.downloader_settings:
+            raise ServiceUnavailableError("downloader settings are not initialized")
+        return jsonify({"success": True, "settings": services.downloader_settings.get()})
+
+    @app.patch("/api/settings/downloader")
+    def downloader_settings_update():
+        require_admin()
+        if not services.downloader_settings:
+            raise ServiceUnavailableError("downloader settings are not initialized")
+        body = _parse_json(DownloaderSettingsPatchRequest)
+        values = services.downloader_settings.update(body.model_dump(exclude_none=True))
+        return jsonify({"success": True, "settings": values, "message": "下载器配置已保存并立即生效"})
+
+    @app.post("/api/settings/downloader/test")
+    def downloader_settings_test():
+        status = services.qb.status()
+        return jsonify({"success": bool(status.get("connected")), **status}), 200 if status.get("connected") else 503
+
+    @app.get("/api/settings/system")
+    def system_settings_get():
+        if not services.system_settings:
+            raise ServiceUnavailableError("system settings are not initialized")
+        return jsonify({"success": True, "settings": services.system_settings.get()})
+
+    @app.patch("/api/settings/system")
+    def system_settings_update():
+        require_admin()
+        if not services.system_settings:
+            raise ServiceUnavailableError("system settings are not initialized")
+        body = _parse_json(SystemSettingsPatchRequest)
+        values = services.system_settings.update(body.model_dump())
+        scheduler = app.extensions.get("video_station_scheduler")
+        if scheduler and scheduler.get_job("watchlist-check"):
+            scheduler.reschedule_job("watchlist-check", trigger="interval", hours=values["watchlist_check_hours"])
+        return jsonify({"success": True, "settings": values, "message": "订阅检查周期已更新"})
+
+    @app.get("/api/agents")
+    def agents_list():
+        if not services.agents:
+            raise ServiceUnavailableError("agent access is not initialized")
+        items = services.agents.list()
+        return jsonify(
+            {
+                "success": True,
+                "items": items,
+                "count": len(items),
+                "online": sum(item["online"] for item in items),
+            }
+        )
+
+    @app.post("/api/agents/bootstrap")
+    def agent_bootstrap():
+        require_admin()
+        if not services.agents:
+            raise ServiceUnavailableError("agent access is not initialized")
+        body = _parse_json(AgentBootstrapRequest)
+        item = services.agents.create(body.name)
+        return jsonify({"success": True, "agent": item}), 201
+
+    @app.post("/api/agents/connect")
+    def agent_connect():
+        if getattr(g, "auth_kind", None) != "agent" or not getattr(g, "agent", None):
+            raise ForbiddenError("请使用 Agent 专用令牌连接")
+        body = _parse_json(AgentConnectRequest)
+        item = services.agents.connect(g.agent["id"], body.name, body.capabilities)
+        return jsonify({"success": True, "agent": item})
+
+    @app.post("/api/agents/heartbeat")
+    def agent_heartbeat():
+        if getattr(g, "auth_kind", None) != "agent" or not getattr(g, "agent", None):
+            raise ForbiddenError("请使用 Agent 专用令牌发送心跳")
+        return jsonify({"success": True, "agent": g.agent})
+
+    @app.delete("/api/agents/<agent_id>")
+    def agent_revoke(agent_id: str):
+        require_admin()
+        if not services.agents:
+            raise ServiceUnavailableError("agent access is not initialized")
+        services.agents.revoke(agent_id)
+        return "", 204
 
     scheduler_allowed = settings.scheduler_enabled if start_scheduler is None else start_scheduler
     if scheduler_allowed:

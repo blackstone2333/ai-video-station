@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" data-theme="dark">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="color-scheme" content="dark">
+  <meta name="color-scheme" content="dark light">
   <title>AI Video Station 媒体调度台</title>
   <link rel="stylesheet" href="/static/admin.css?v={{ version }}">
 </head>
@@ -15,7 +15,8 @@
       <span class="brand-copy"><b>Video Station</b><small>MEDIA INTAKE / AUTOMATION</small></span>
     </a>
     <div class="system-strip">
-      <span id="site-status" class="signal"><i></i>服务连接中</span>
+      <span id="site-status" class="signal"><i></i><span>服务连接中</span></span>
+      <button id="agent-connect" class="agent-button" type="button"><i></i><span>连接 Agent</span></button>
       <time id="clock">--:--:--</time>
       <button id="refresh-all" class="icon-button" type="button" title="刷新全部数据" aria-label="刷新全部数据">↻</button>
       <button id="logout" class="text-button" type="button">更换密钥</button>
@@ -37,10 +38,10 @@
     </section>
 
     <section class="metrics" aria-label="系统数据概览">
-      <article class="metric amber"><span>监听订阅</span><strong id="metric-watch">—</strong><small id="metric-watch-note">等待读取</small></article>
-      <article class="metric cyan"><span>正在下载</span><strong id="metric-active">—</strong><small id="metric-speed">0 B/s</small></article>
-      <article class="metric cream"><span>已完成任务</span><strong id="metric-complete">—</strong><small>qB 下载记录</small></article>
-      <article class="metric red"><span>需要处理</span><strong id="metric-errors">—</strong><small>监听或命名异常</small></article>
+      <button class="metric amber" data-go="watchlist" type="button"><span>监听订阅</span><strong id="metric-watch">—</strong><small id="metric-watch-note">等待读取</small></button>
+      <button class="metric cyan" data-go="downloads" type="button"><span>正在下载</span><strong id="metric-active">—</strong><small id="metric-speed">0 B/s</small></button>
+      <button class="metric cream" data-go="naming" type="button"><span>规范命名</span><strong id="metric-complete">—</strong><small>已完成任务</small></button>
+      <button class="metric red" data-go="hardlinks" type="button"><span>硬链接记录</span><strong id="metric-hardlinks">—</strong><small id="metric-hardlink-note">等待读取</small></button>
     </section>
 
     <nav class="tabs" aria-label="后台功能">
@@ -51,20 +52,25 @@
       <button class="tab" data-tab="hardlinks" type="button">媒体入库 <span>05</span></button>
       <button class="tab" data-tab="sites" type="button">站点设置 <span>06</span></button>
       <button class="tab" data-tab="paths" type="button">路径设置 <span>07</span></button>
+      <button class="tab" data-tab="system" type="button">系统设置 <span>08</span></button>
     </nav>
 
     <section id="panel-overview" class="panel active" data-panel="overview">
       <div class="panel-grid">
         <article class="card span-7">
-          <header class="card-head"><div><p>LIVE QUEUE</p><h2>当前下载</h2></div><button class="quiet-button" data-go="downloads" type="button">查看全部 →</button></header>
-          <div id="overview-downloads" class="download-stack"><div class="empty">正在读取 qBittorrent…</div></div>
+          <header class="card-head"><div><p>LIVE QUEUE</p><h2>当前下载</h2></div><div class="head-actions"><button class="quiet-button" data-go="downloads" type="button">查看全部 →</button><button class="primary-button" data-open-download type="button">＋ 新增下载</button></div></header>
+          <div id="overview-downloads" class="download-stack"><div class="empty">正在读取下载器…</div></div>
         </article>
         <article class="card span-5">
           <header class="card-head"><div><p>AUTOMATION</p><h2>自动化状态</h2></div></header>
           <div id="automation-status" class="status-list"></div>
         </article>
         <article class="card span-12">
-          <header class="card-head"><div><p>RECENT ACTIVITY</p><h2>最近命名记录</h2></div><button class="quiet-button" data-go="naming" type="button">查看全部 →</button></header>
+          <header class="card-head"><div><p>MEDIA LIBRARY ACTIVITY</p><h2>最近硬链接记录</h2></div><button class="quiet-button" data-go="hardlinks" type="button">进入媒体入库 →</button></header>
+          <div id="overview-hardlinks" class="activity-row"></div>
+        </article>
+        <article class="card span-12">
+          <header class="card-head"><div><p>NAMING ACTIVITY</p><h2>最近命名记录</h2></div><button class="quiet-button" data-go="naming" type="button">查看全部 →</button></header>
           <div id="overview-naming" class="activity-row"></div>
         </article>
       </div>
@@ -82,8 +88,18 @@
 
     <section id="panel-downloads" class="panel" data-panel="downloads">
       <article class="card">
-        <header class="card-head action-head"><div><p>DOWNLOADER</p><h2>下载队列与记录</h2></div><span id="download-count" class="count-chip">0 条</span></header>
+        <header class="card-head action-head"><div><p>DOWNLOADER</p><h2>下载队列与记录</h2></div><div class="head-actions"><span id="download-count" class="count-chip">0 条</span><button class="primary-button" data-open-download type="button">＋ 新增下载</button></div></header>
         <div id="downloads-list" class="download-stack roomy"></div>
+      </article>
+    </section>
+
+    <section id="panel-naming" class="panel" data-panel="naming">
+      <article class="card">
+        <header class="card-head action-head">
+          <div><p>EMBY NORMALIZER</p><h2>规范命名任务</h2></div>
+          <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="completed">命名完成</option><option value="waiting_metadata">等待元数据</option><option value="waiting_download">等待下载</option><option value="done">硬链接完成</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
+        </header>
+        <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="naming-body"></tbody></table></div>
       </article>
     </section>
 
@@ -123,52 +139,73 @@
       </div>
     </section>
 
-    <section id="panel-naming" class="panel" data-panel="naming">
-      <article class="card">
-        <header class="card-head action-head">
-          <div><p>EMBY NORMALIZER</p><h2>规范命名任务</h2></div>
-          <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="completed">命名完成</option><option value="waiting_metadata">等待元数据</option><option value="waiting_download">等待下载</option><option value="done">硬链接完成</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
-        </header>
-        <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="naming-body"></tbody></table></div>
-      </article>
-    </section>
-
     <section id="panel-paths" class="panel" data-panel="paths">
-      <form id="path-form" class="panel-grid">
+      <div class="panel-grid">
         <article class="card span-12 path-intro-card">
-          <header class="card-head"><div><p>DOCKER MOUNT</p><h2>NAS 根挂载</h2></div><span class="count-chip">重启后变更</span></header>
+          <header class="card-head"><div><p>DOCKER MOUNT</p><h2>NAS 根挂载与入库开关</h2></div><span class="count-chip">根挂载需重启</span></header>
           <div class="settings-form path-root-grid">
             <label>宿主机根目录<input id="path-medialib-base" readonly aria-readonly="true"></label>
             <label>容器内对应目录<input id="path-medialib-mount" readonly aria-readonly="true"></label>
-            <small>以下所有目录都必须位于这个 NAS 根目录内。根目录由 Docker 挂载决定，如需更换，请修改 <code>.env</code> 中的 <code>MEDIALIB_BASE_PATH</code>，然后重建或重启容器。</small>
-          </div>
-        </article>
-
-        <article class="card span-6">
-          <header class="card-head"><div><p>DOWNLOAD DESTINATIONS</p><h2>下载目录</h2></div></header>
-          <div class="settings-form">
-            <label>下载总目录<input id="path-downloads-base" required placeholder="/volume1/video/Downloads"></label>
-            <div class="path-slot"><span>槽位 1 · 电影整理规则</span><label>分类名称<input id="path-category-movie" required maxlength="100" placeholder="Movie"></label><label>下载目录<input id="path-download-movie" required placeholder="/volume1/video/Downloads/Movie"></label></div>
-            <div class="path-slot"><span>槽位 2 · 剧集整理规则</span><label>分类名称<input id="path-category-tv" required maxlength="100" placeholder="TV"></label><label>下载目录<input id="path-download-tv" required placeholder="/volume1/video/Downloads/TV"></label></div>
-            <div class="path-slot"><span>槽位 3 · 动漫整理规则</span><label>分类名称<input id="path-category-anime" required maxlength="100" placeholder="Anime"></label><label>下载目录<input id="path-download-anime" required placeholder="/volume1/video/Downloads/Anime"></label></div>
-            <div class="path-slot"><span>槽位 4 · 原样整理</span><label>分类名称<input id="path-category-custom" required maxlength="100" placeholder="学习资料"></label><label>下载目录<input id="path-download-custom" required placeholder="/volume1/video/Downloads/Custom"></label></div>
-            <small>四个分类名称和目录都可以修改。前三个槽位保留电影、剧集、动漫的命名规则；第四个槽位适合学习资料等内容，文件名和目录结构保持原样。</small>
-          </div>
-        </article>
-
-        <article class="card span-6">
-          <header class="card-head"><div><p>HARDLINK DESTINATIONS</p><h2>硬链接目录</h2></div></header>
-          <div class="settings-form">
-            <label>电影目标目录<input id="path-medialib-movie" required placeholder="/volume1/video/video/movies"></label>
-            <label>电视剧目标目录<input id="path-medialib-tv" required placeholder="/volume1/video/video/tv"></label>
-            <label>动漫目标目录<input id="path-medialib-anime" required placeholder="/volume1/video/video/anime"></label>
-            <label>自定义内容目录<input id="path-medialib-custom" required placeholder="/volume1/video/video/custom"></label>
             <label class="toggle-row"><span><b>自动硬链接整理</b><small>命名或下载完成后自动进入对应目标目录</small></span><input id="path-hardlink-enabled" type="checkbox" role="switch"></label>
-            <button id="save-paths" class="primary-button wide" type="submit">保存并立即生效</button>
-            <small>下载目录与媒体库目录需要位于同一文件系统；已有同名文件仍会安全跳过。</small>
+            <button id="save-hardlink-toggle" class="primary-button" type="button">保存入库开关</button>
+            <small>所有下载源目录和媒体库目标目录都必须位于 NAS 根挂载内，并处于同一文件系统。</small>
           </div>
         </article>
-      </form>
+        <article class="card span-12">
+          <header class="card-head action-head"><div><p>PATH MAPPINGS</p><h2>下载目录 → 硬链接目标</h2></div><button id="add-path-rule" class="primary-button" type="button">＋ 新增目录映射</button></header>
+          <div id="path-rules-groups" class="rule-groups"><div class="empty">正在读取目录映射…</div></div>
+        </article>
+      </div>
+    </section>
+
+    <section id="panel-system" class="panel" data-panel="system">
+      <div class="panel-grid">
+        <article class="card span-5">
+          <header class="card-head"><div><p>APPEARANCE</p><h2>界面主题</h2></div></header>
+          <form id="theme-form" class="settings-form">
+            <label>主题模式<select id="theme-mode"><option value="dark">深色</option><option value="light">浅色</option><option value="system">跟随系统</option><option value="schedule">按时间切换</option></select></label>
+            <div id="theme-schedule" class="field-pair">
+              <label>浅色开始<input id="theme-light-start" type="time" value="07:00"></label>
+              <label>深色开始<input id="theme-dark-start" type="time" value="19:00"></label>
+            </div>
+            <button class="primary-button wide" type="submit">保存主题设置</button>
+            <small>主题保存在当前浏览器中；“按时间切换”会按照本机时区自动变化。</small>
+          </form>
+        </article>
+        <article class="card span-7">
+          <header class="card-head"><div><p>SCHEDULER</p><h2>订阅检查周期</h2></div></header>
+          <form id="system-form" class="settings-form">
+            <label>自动检查间隔（小时）<input id="watchlist-hours" type="number" min="3" max="168" required></label>
+            <div class="range-note"><span>最短 3 小时</span><span>最长 7 天（168 小时）</span></div>
+            <button class="primary-button wide" type="submit">保存检查周期</button>
+            <small>保存后立即调整后台定时任务，无需重启服务。</small>
+          </form>
+        </article>
+        <article class="card span-12">
+          <header class="card-head action-head"><div><p>DOWNLOADER CONNECTION</p><h2>下载器连接</h2></div><button id="test-downloader" class="quiet-button" type="button">测试当前连接 →</button></header>
+          <form id="downloader-form" class="settings-form downloader-form">
+            <label>当前下载器<select id="downloader-type"><option value="qbittorrent">qBittorrent</option><option value="transmission">Transmission</option></select></label>
+            <div class="downloader-fields" data-downloader="qbittorrent">
+              <label>主机地址<input id="qb-host" placeholder="192.168.1.10 或 https://qb.example.com"></label>
+              <label>端口<input id="qb-port" type="number" min="1" max="65535" value="8080"></label>
+              <label>用户名<input id="qb-username" autocomplete="username"></label>
+              <label>密码<input id="qb-password" type="password" autocomplete="new-password" placeholder="留空保持原密码"></label>
+              <label class="toggle-row compact"><span><b>使用 HTTPS</b></span><input id="qb-https" type="checkbox"></label>
+              <label class="toggle-row compact"><span><b>校验证书</b></span><input id="qb-verify" type="checkbox"></label>
+            </div>
+            <div class="downloader-fields" data-downloader="transmission">
+              <label>主机地址<input id="tr-host" placeholder="192.168.1.10 或 https://tr.example.com"></label>
+              <label>端口<input id="tr-port" type="number" min="1" max="65535" value="9091"></label>
+              <label>用户名<input id="tr-username" autocomplete="username"></label>
+              <label>密码<input id="tr-password" type="password" autocomplete="new-password" placeholder="留空保持原密码"></label>
+              <label>RPC 路径<input id="tr-rpc-path" value="/transmission/rpc"></label>
+              <label class="toggle-row compact"><span><b>使用 HTTPS</b></span><input id="tr-https" type="checkbox"></label>
+              <label class="toggle-row compact"><span><b>校验证书</b></span><input id="tr-verify" type="checkbox"></label>
+            </div>
+            <button id="save-downloader" class="primary-button wide" type="submit">保存并切换下载器</button>
+          </form>
+        </article>
+      </div>
     </section>
   </main>
 
@@ -176,14 +213,47 @@
 
   <div id="auth-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="auth-title">
     <form id="auth-form" class="auth-card">
-      <span class="auth-kicker">CONTROL ACCESS</span>
-      <h2 id="auth-title">输入后台 API Key</h2>
+      <span class="auth-kicker">CONTROL ACCESS</span><h2 id="auth-title">输入后台 API Key</h2>
       <p>密钥只保存在当前浏览器标签页，关闭页面后自动清除。</p>
       <label>API Key<input id="api-key" type="password" autocomplete="off" placeholder="在 .env 中设置的 API_KEY" required></label>
-      <button class="primary-button wide" type="submit">进入调度台</button>
-      <small id="auth-error"></small>
+      <button class="primary-button wide" type="submit">进入调度台</button><small id="auth-error"></small>
     </form>
   </div>
+
+  <div id="download-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="download-title">
+    <form id="manual-download-form" class="modal-card">
+      <header><div><span class="auth-kicker">MANUAL INTAKE</span><h2 id="download-title">新增下载</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <div class="source-switch"><label><input type="radio" name="download-source" value="magnet" checked> 磁力 / 种子链接</label><label><input type="radio" name="download-source" value="torrent"> BT 种子文件</label></div>
+      <div data-source-panel="magnet"><label>下载链接<textarea id="manual-link" rows="3" placeholder="magnet:?xt=urn:btih:…"></textarea></label></div>
+      <div data-source-panel="torrent" class="hidden"><label>BT 种子<input id="manual-torrent" type="file" accept=".torrent,application/x-bittorrent"></label></div>
+      <div class="field-pair"><label>媒体类型<select id="manual-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>中文标题（可选）<input id="manual-title" maxlength="500" placeholder="不填则读取链接/种子名称"></label></div>
+      <details><summary>补充命名信息（可选）</summary><div class="field-pair detail-fields"><label>原始标题<input id="manual-original-title" maxlength="300"></label><label>版本<input id="manual-edition" maxlength="100" placeholder="IMAX / Director's Cut"></label><label>集标题<input id="manual-episode-title" maxlength="300"></label></div></details>
+      <button id="submit-manual-download" class="primary-button wide" type="submit">识别并加入下载</button>
+    </form>
+  </div>
+
+  <div id="path-rule-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="path-rule-title">
+    <form id="path-rule-form" class="modal-card">
+      <header><div><span class="auth-kicker">PATH MAPPING</span><h2 id="path-rule-title">新增目录映射</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <input id="path-rule-id" type="hidden">
+      <div class="field-pair"><label>媒体类型<select id="path-rule-type"><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>映射名称<input id="path-rule-name" required maxlength="100" placeholder="例如：国内电影"></label></div>
+      <label>下载源目录<input id="path-rule-source" required placeholder="/volume1/video/Downloads/Movie"></label>
+      <label>硬链接目标目录<input id="path-rule-target" required placeholder="/volume1/video/video/movies"></label>
+      <div class="check-grid"><label><input id="path-rule-enabled" type="checkbox" checked> 启用映射</label><label><input id="path-rule-rename" type="checkbox" checked> 自动规范命名</label><label><input id="path-rule-default" type="checkbox"> 设为默认下载目录</label></div>
+      <button class="primary-button wide" type="submit">保存目录映射</button>
+    </form>
+  </div>
+
+  <div id="agent-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="agent-title">
+    <div class="modal-card agent-card">
+      <header><div><span class="auth-kicker">AGENT BRIDGE</span><h2 id="agent-title">连接你的 Agent</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <p>生成一枚独立、可随时撤销的 Agent 令牌。配置只显示一次，不会复制后台 API Key。</p>
+      <button id="create-agent-config" class="primary-button wide" type="button">生成并复制连接方案</button>
+      <div id="agent-config-wrap" class="hidden"><label>把下面内容发给你的 Agent<textarea id="agent-config" rows="10" readonly></textarea></label><button id="copy-agent-config" class="quiet-button" type="button">再次复制</button></div>
+      <div class="agent-list-head"><b>已授权 Agent</b><span id="agent-count">0 个</span></div><div id="agent-list" class="agent-list"></div>
+    </div>
+  </div>
+
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/static/admin.js?v={{ version }}" defer></script>
 </body>

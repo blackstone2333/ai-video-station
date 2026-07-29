@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -70,14 +71,15 @@ def test_movie_plan_corrects_obfuscated_link_name_and_subtitle():
         plan,
     )
     renamed = {item["old_path"]: item["new_path"] for item in preview["operations"]}
-    assert renamed["DHF.2018.1080p.mp4"] == "大黄蜂 (2018).mp4"
-    assert renamed["DHF.2018.1080p.chs.srt"] == "大黄蜂 (2018).zh-CN.srt"
-    assert renamed["sample.mp4"] == "大黄蜂 (2018) - sample.mp4"
+    assert renamed["DHF.2018.1080p.mp4"] == "大黄蜂 (2018) - 1080p.mp4"
+    assert renamed["DHF.2018.1080p.chs.srt"] == "大黄蜂 (2018) - 1080p.zh-CN.srt"
+    assert renamed["sample.mp4"] == "大黄蜂-Sample (2018) - 1080p.mp4"
 
 
 def test_tv_plan_turns_bare_numbers_into_emby_episode_names():
     plan = EmbyNamingPlanner.from_release(tv_release())
     assert plan.media_name == "漫长的季节"
+    assert plan.root_name == "漫长的季节 (2026)"
     assert plan.season == 2
     preview = EmbyNamingPlanner().plan_files(
         [
@@ -98,7 +100,29 @@ def test_anime_uses_tv_style_emby_naming():
     plan = EmbyNamingPlanner.from_release(anime_release())
     preview = EmbyNamingPlanner().plan_files([{"name": "01.mkv", "size": 100}], plan)
     assert plan.media_type == "anime"
+    assert plan.root_name == "Rick and Morty (2026)"
     assert preview["operations"][0]["new_path"] == "Rick and Morty - S07E01.mkv"
+
+
+def test_optional_template_fields_render_without_empty_separators():
+    movie_plan = replace(
+        EmbyNamingPlanner.from_release(movie_release()),
+        original_title="Bumblebee",
+        part="Part1",
+        edition="IMAX",
+        video_format="1080p.BluRay.x265",
+    )
+    movie = EmbyNamingPlanner().plan_files([{"name": "DHF.2160p.mkv", "size": 100}], movie_plan)
+    assert movie["operations"][0]["new_path"] == "大黄蜂.Bumblebee-Part1 (2018) - IMAX - 2160p.BluRay.x265.mkv"
+
+    episode_plan = replace(
+        EmbyNamingPlanner.from_release(tv_release()),
+        original_title="The Long Season",
+        episode_title="重逢",
+        video_format="1080p.WEB-DL",
+    )
+    episode = EmbyNamingPlanner().plan_files([{"name": "02.mkv", "size": 100}], episode_plan)
+    assert episode["operations"][0]["new_path"] == "漫长的季节.The Long Season - S02E02 - 重逢 - 1080p.WEB-DL.mkv"
 
 
 def test_custom_plan_does_not_rename_files_or_folders():
@@ -124,9 +148,9 @@ def test_movie_multiversion_and_safe_name_rules():
         plan,
     )
     targets = [item["new_path"] for item in preview["operations"]]
-    assert "大黄蜂 (2018) - 2160p.mkv" in targets
-    assert "大黄蜂 (2018) - 1080p.mkv" in targets
-    assert "大黄蜂 (2018) - trailer.mkv" in targets
+    assert "大黄蜂-Part1 (2018) - 2160p.mkv" in targets
+    assert "大黄蜂-Part2 (2018) - 1080p.mkv" in targets
+    assert "大黄蜂-Trailer (2018) - 1080p.mkv" in targets
     assert safe_name('A/B:C*D?"E<>|') == "A B C D E"
 
 
@@ -148,10 +172,17 @@ class FakeQB:
         self.torrent_value = {"hash": HASH} if torrent else None
         self.fail_rename = fail_rename
         self.calls = []
+        self.save_paths = []
 
-    def add_download(self, link, category, rename=None):
+    def add_download(self, link, category, rename=None, save_path=None):
         self.calls.append(("add", category, rename))
+        self.save_paths.append(save_path)
         return {"qb_task_id": HASH, "category": category}
+
+    def add_torrent_file(self, content, filename, category, rename=None, save_path=None):
+        self.calls.append(("add_torrent", category, rename))
+        self.save_paths.append(save_path)
+        return {"qb_task_id": HASH, "category": category, "torrent_name": filename}
 
     def torrent_info(self, hash_value):
         self.calls.append(("info", hash_value))
@@ -212,6 +243,16 @@ def test_naming_service_stages_renames_and_releases_torrent(tmp_path):
     assert result["naming_status"] == "completed"
     assert ("category", "sixv-movie") in qb.calls
     assert any(call[0] == "rename_file" for call in qb.calls)
+
+
+def test_torrent_upload_keeps_staging_label_but_uses_final_download_path(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb)
+    result = service.add_torrent_file(movie_release(), settings.qb_movie_category, b"torrent", "movie.torrent", HASH)
+    assert result["current_category"] == settings.qb_naming_category
+    assert qb.save_paths == [settings.download_movie_path]
 
 
 def test_naming_service_waits_for_metadata_then_completes(tmp_path):
@@ -282,6 +323,7 @@ def test_custom_download_uses_final_category_and_hardlinks_without_rename(tmp_pa
     assert result["naming_status"] == "completed"
     assert result["hardlink_status"] == "done"
     assert ("add", settings.qb_custom_category, None) in qb.calls
+    assert qb.save_paths == [settings.download_custom_path]
     assert not any(call[0].startswith("rename") for call in qb.calls)
     assert hardlinker.calls[0][2].media_type == "custom"
 

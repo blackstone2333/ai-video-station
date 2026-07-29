@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
@@ -9,6 +10,7 @@ import requests
 from .config import Settings
 from .errors import ServiceUnavailableError, UpstreamError
 from .qbittorrent import QBittorrentClient, torrent_hash
+from .torrent_meta import parse_torrent_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -78,11 +80,17 @@ class TransmissionClient:
             raise UpstreamError("Transmission", str(payload.get("result") or "RPC request failed"))
         return dict(payload.get("arguments") or {})
 
-    def add_download(self, download_link: str, category: str, rename: Optional[str] = None) -> Dict[str, Any]:
+    def add_download(
+        self,
+        download_link: str,
+        category: str,
+        rename: Optional[str] = None,
+        save_path: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         link = QBittorrentClient.validate_download_link(download_link)
         arguments: Dict[str, Any] = {
             "filename": link,
-            "download-dir": str(self.settings.download_path_for_category(category)),
+            "download-dir": str(save_path or self.settings.download_path_for_category(category)),
             "paused": False,
             "labels": [category],
         }
@@ -91,6 +99,34 @@ class TransmissionClient:
         task_hash = value.get("hashString") or torrent_hash(link)
         logger.info("transmission_download_added", extra={"task_hash": task_hash, "category": category})
         return {"qb_task_id": task_hash, "category": category, "downloader": "transmission"}
+
+    def add_torrent_file(
+        self,
+        content: bytes,
+        filename: str,
+        category: str,
+        rename: Optional[str] = None,
+        save_path: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        metadata = parse_torrent_metadata(content)
+        result = self._rpc(
+            "torrent-add",
+            {
+                "metainfo": base64.b64encode(content).decode("ascii"),
+                "download-dir": str(save_path or self.settings.download_path_for_category(category)),
+                "paused": False,
+                "labels": [category],
+            },
+        )
+        value = result.get("torrent-added") or result.get("torrent-duplicate") or {}
+        task_hash = value.get("hashString") or metadata.info_hash
+        logger.info("transmission_torrent_file_added", extra={"task_hash": task_hash, "category": category})
+        return {
+            "qb_task_id": task_hash,
+            "category": category,
+            "downloader": "transmission",
+            "torrent_name": metadata.name,
+        }
 
     def _get(self, hash_value: str, fields: List[str]) -> Optional[Dict[str, Any]]:
         values = self._rpc("torrent-get", {"ids": [hash_value], "fields": fields}).get("torrents", [])

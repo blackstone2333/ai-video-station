@@ -38,6 +38,23 @@ class DownloadRequest(StrictModel):
         return value.strip()
 
 
+class ManualDownloadRequest(StrictModel):
+    download_link: str = Field(min_length=8, max_length=8192)
+    title: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    media_type: MediaType = Field(default="auto", alias="type")
+    original_title: Optional[str] = Field(default=None, max_length=300)
+    edition: Optional[str] = Field(default=None, max_length=100)
+    episode_title: Optional[str] = Field(default=None, max_length=300)
+
+
+class ManualTorrentRequest(StrictModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    media_type: MediaType = Field(default="auto", alias="type")
+    original_title: Optional[str] = Field(default=None, max_length=300)
+    edition: Optional[str] = Field(default=None, max_length=100)
+    episode_title: Optional[str] = Field(default=None, max_length=300)
+
+
 class WatchlistAddRequest(StrictModel):
     keyword: str = Field(min_length=1, max_length=100)
     media_type: MediaType = Field(default="auto", alias="type")
@@ -95,3 +112,55 @@ class PathSettingsPatchRequest(StrictModel):
         if not self.model_fields_set or all(getattr(self, name) is None for name in self.model_fields_set):
             raise ValueError("at least one path setting is required")
         return self
+
+
+class PathRulePatchRequest(StrictModel):
+    media_type: Optional[Literal["movie", "tv", "anime", "custom"]] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=100)
+    source_path: Optional[Path] = None
+    target_path: Optional[Path] = None
+    enabled: Optional[bool] = None
+    rename_enabled: Optional[bool] = None
+    default_download: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "PathRulePatchRequest":
+        if not self.model_fields_set:
+            raise ValueError("at least one path rule setting is required")
+        return self
+
+
+class DownloaderSettingsPatchRequest(StrictModel):
+    downloader_type: Optional[Literal["qbittorrent", "transmission"]] = None
+    qb_host: Optional[str] = Field(default=None, max_length=500)
+    qb_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    qb_username: Optional[str] = Field(default=None, max_length=200)
+    qb_password: Optional[str] = Field(default=None, max_length=1000)
+    qb_use_https: Optional[bool] = None
+    qb_verify_ssl: Optional[bool] = None
+    transmission_host: Optional[str] = Field(default=None, max_length=500)
+    transmission_port: Optional[int] = Field(default=None, ge=1, le=65535)
+    transmission_username: Optional[str] = Field(default=None, max_length=200)
+    transmission_password: Optional[str] = Field(default=None, max_length=1000)
+    transmission_use_https: Optional[bool] = None
+    transmission_verify_ssl: Optional[bool] = None
+    transmission_rpc_path: Optional[str] = Field(default=None, min_length=1, max_length=200)
+
+    @model_validator(mode="after")
+    def require_change(self) -> "DownloaderSettingsPatchRequest":
+        if not self.model_fields_set:
+            raise ValueError("at least one downloader setting is required")
+        return self
+
+
+class SystemSettingsPatchRequest(StrictModel):
+    watchlist_check_hours: int = Field(ge=3, le=168)
+
+
+class AgentBootstrapRequest(StrictModel):
+    name: str = Field(default="My Agent", min_length=1, max_length=100)
+
+
+class AgentConnectRequest(StrictModel):
+    name: str = Field(default="My Agent", min_length=1, max_length=100)
+    capabilities: List[str] = Field(default_factory=list, max_length=50)

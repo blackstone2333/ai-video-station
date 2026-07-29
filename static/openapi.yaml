@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AI Video Station API
-  version: 1.4.0
-  description: 多站点媒体搜索、订阅、下载器调度、规范命名和硬链接入库。
+  version: 1.5.0
+  description: 多站点媒体搜索、订阅、手动下载、规范命名、目录映射、硬链接入库与 Agent 接入。
 servers:
   - url: http://localhost:16666
 components:
@@ -11,6 +11,12 @@ components:
       type: apiKey
       in: header
       name: X-Api-Key
+      description: 后台管理员 API Key。
+    AgentToken:
+      type: http
+      scheme: bearer
+      bearerFormat: avs_agent
+      description: 后台生成的可撤销 avs_agent_* 专用令牌。
   schemas:
     Problem:
       type: object
@@ -22,19 +28,23 @@ components:
         detail: {type: string}
         instance: {type: string}
         request_id: {type: string}
+        errors: {type: array, items: {type: object}}
+    MediaType:
+      type: string
+      enum: [movie, tv, anime, custom, auto]
     SearchRequest:
       type: object
       required: [keyword]
       properties:
         keyword: {type: string, minLength: 1, maxLength: 100, examples: [奥本海默]}
-        type: {type: string, enum: [movie, tv, anime, custom, auto], default: auto}
+        type: {$ref: '#/components/schemas/MediaType'}
     Release:
       type: object
-      required: [id, title, url, download_link, type]
+      required: [id, title, download_link, type]
       properties:
         id: {type: string}
         title: {type: string}
-        url: {type: string, format: uri}
+        url: {type: string}
         download_link: {type: string}
         size: {type: [string, 'null']}
         resolution: {type: [string, 'null']}
@@ -42,66 +52,101 @@ components:
         language: {type: [string, 'null']}
         hdr: {type: [string, 'null']}
         encoding: {type: [string, 'null']}
-        type: {type: string, enum: [movie, tv, anime, custom, auto]}
-        provider: {type: [string, 'null']}
+        type: {$ref: '#/components/schemas/MediaType'}
         episode: {type: [string, 'null']}
         media_name: {type: [string, 'null']}
+        original_title: {type: [string, 'null']}
         year: {type: [integer, 'null']}
         season: {type: [integer, 'null']}
         link_name: {type: [string, 'null']}
+        part: {type: [string, 'null']}
+        edition: {type: [string, 'null']}
+        video_format: {type: [string, 'null']}
+        episode_title: {type: [string, 'null']}
+    ManualDownload:
+      type: object
+      required: [download_link]
+      properties:
+        download_link: {type: string, minLength: 8}
+        title: {type: [string, 'null'], maxLength: 500}
+        type: {$ref: '#/components/schemas/MediaType'}
+        original_title: {type: [string, 'null'], maxLength: 300}
+        edition: {type: [string, 'null'], maxLength: 100}
+        episode_title: {type: [string, 'null'], maxLength: 300}
     Site:
       type: object
-      required: [name, adapter, enabled, base_urls]
+      required: [name, adapter, base_urls]
+      properties:
+        id: {type: string, readOnly: true}
+        name: {type: string}
+        adapter: {type: string, enum: [sixv, generic]}
+        enabled: {type: boolean, default: true}
+        base_urls: {type: array, items: {type: string, format: uri}}
+        search_url: {type: [string, 'null']}
+        result_selector: {type: [string, 'null']}
+        title_selector: {type: [string, 'null']}
+        link_selector: {type: [string, 'null']}
+        download_selector: {type: [string, 'null']}
+        default_type: {$ref: '#/components/schemas/MediaType'}
+        tv_path_patterns: {type: array, items: {type: string}}
+        anime_path_patterns: {type: array, items: {type: string}}
+    PathRule:
+      type: object
+      required: [media_type, name, source_path, target_path]
+      properties:
+        id: {type: string, readOnly: true}
+        media_type: {type: string, enum: [movie, tv, anime, custom]}
+        name: {type: string, minLength: 1, maxLength: 100}
+        source_path: {type: string, examples: [/volume1/video/Downloads/Movie]}
+        target_path: {type: string, examples: [/volume1/video/video/movies]}
+        enabled: {type: boolean, default: true}
+        rename_enabled: {type: boolean, default: true}
+        default_download: {type: boolean, default: false}
+        created_at: {type: string, readOnly: true}
+        updated_at: {type: string, readOnly: true}
+    DownloaderSettings:
+      type: object
+      properties:
+        downloader_type: {type: string, enum: [qbittorrent, transmission]}
+        qb_host: {type: [string, 'null']}
+        qb_port: {type: integer, minimum: 1, maximum: 65535}
+        qb_username: {type: string}
+        qb_password: {type: string, writeOnly: true}
+        qb_password_configured: {type: boolean, readOnly: true}
+        qb_use_https: {type: boolean}
+        qb_verify_ssl: {type: boolean}
+        transmission_host: {type: [string, 'null']}
+        transmission_port: {type: integer, minimum: 1, maximum: 65535}
+        transmission_username: {type: string}
+        transmission_password: {type: string, writeOnly: true}
+        transmission_password_configured: {type: boolean, readOnly: true}
+        transmission_use_https: {type: boolean}
+        transmission_verify_ssl: {type: boolean}
+        transmission_rpc_path: {type: string}
+    Agent:
+      type: object
       properties:
         id: {type: string}
         name: {type: string}
-        adapter: {type: string, enum: [sixv, generic]}
-        enabled: {type: boolean}
-        base_urls: {type: array, items: {type: string, format: uri}}
-        search_url: {type: [string, 'null']}
-        result_selector: {type: string}
-        title_selector: {type: string}
-        link_selector: {type: string}
-        download_selector: {type: string}
-        default_type: {type: string, enum: [movie, tv, anime, custom, auto]}
-    PathSettings:
-      type: object
-      required: [qb_movie_category, qb_tv_category, qb_anime_category, qb_custom_category, downloads_base_path, download_movie_path, download_tv_path, download_anime_path, download_custom_path, medialib_base_path, medialib_mount_path, medialib_movie_path, medialib_tv_path, medialib_anime_path, medialib_custom_path, medialib_hardlink_enabled]
-      properties:
-        qb_movie_category: {type: string, examples: [Movie]}
-        qb_tv_category: {type: string, examples: [TV]}
-        qb_anime_category: {type: string, examples: [Anime]}
-        qb_custom_category: {type: string, examples: [学习资料]}
-        downloads_base_path: {type: string, examples: [/volume1/video/Downloads]}
-        download_movie_path: {type: string, examples: [/volume1/video/Downloads/Movie]}
-        download_tv_path: {type: string, examples: [/volume1/video/Downloads/TV]}
-        download_anime_path: {type: string, examples: [/volume1/video/Downloads/Anime]}
-        download_custom_path: {type: string, examples: [/volume1/video/Downloads/Custom]}
-        medialib_base_path: {type: string, readOnly: true, examples: [/volume1/video]}
-        medialib_mount_path: {type: string, readOnly: true, examples: [/medialib]}
-        medialib_movie_path: {type: string, examples: [/volume1/video/video/movies]}
-        medialib_tv_path: {type: string, examples: [/volume1/video/video/tv]}
-        medialib_anime_path: {type: string, examples: [/volume1/video/video/anime]}
-        medialib_custom_path: {type: string, examples: [/volume1/video/video/custom]}
-        medialib_hardlink_enabled: {type: boolean}
-    PathSettingsPatch:
-      type: object
-      minProperties: 1
-      properties:
-        qb_movie_category: {type: string, minLength: 1, maxLength: 100}
-        qb_tv_category: {type: string, minLength: 1, maxLength: 100}
-        qb_anime_category: {type: string, minLength: 1, maxLength: 100}
-        qb_custom_category: {type: string, minLength: 1, maxLength: 100}
-        downloads_base_path: {type: string}
-        download_movie_path: {type: string}
-        download_tv_path: {type: string}
-        download_anime_path: {type: string}
-        download_custom_path: {type: string}
-        medialib_movie_path: {type: string}
-        medialib_tv_path: {type: string}
-        medialib_anime_path: {type: string}
-        medialib_custom_path: {type: string}
-        medialib_hardlink_enabled: {type: boolean}
+        token: {type: string, writeOnly: true, description: 仅创建响应返回一次。}
+        created_at: {type: string}
+        connected_at: {type: [string, 'null']}
+        last_seen: {type: [string, 'null']}
+        capabilities: {type: array, items: {type: string}}
+        revoked: {type: boolean}
+        online: {type: boolean}
+  responses:
+    Unauthorized:
+      description: 未提供有效的后台 API Key 或 Agent 令牌。
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+    Forbidden:
+      description: 此操作仅允许后台管理员执行。
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/Problem'}
+
 paths:
   /health:
     get:
@@ -113,11 +158,11 @@ paths:
       summary: 依赖就绪检查
       responses:
         '200': {description: 依赖正常或可选依赖未配置}
-        '503': {description: 已配置的依赖不可用}
+        '503': {description: 已配置依赖不可用}
   /api/search:
     post:
-      summary: 跨已启用站点搜索电影、电视剧或动漫
-      security: [{ApiKey: []}]
+      summary: 跨已启用站点搜索
+      security: [{ApiKey: []}, {AgentToken: []}]
       requestBody:
         required: true
         content:
@@ -133,17 +178,14 @@ paths:
                 properties:
                   success: {type: boolean}
                   keyword: {type: string}
-                  type: {type: string}
+                  type: {$ref: '#/components/schemas/MediaType'}
                   results: {type: array, items: {$ref: '#/components/schemas/Release'}}
                   count: {type: integer}
-                  watchlisted: {type: boolean}
-                  watchlist_id: {type: [string, 'null']}
         '422': {description: 参数错误}
-        '502': {description: 已配置媒体站点不可用}
   /api/download:
     post:
-      summary: 将所选版本推送到当前下载器
-      security: [{ApiKey: []}]
+      summary: 下载选中的搜索结果
+      security: [{ApiKey: []}, {AgentToken: []}]
       requestBody:
         required: true
         content:
@@ -155,38 +197,68 @@ paths:
                 result_id: {type: string}
                 download_link: {type: string}
                 title: {type: string}
-                type: {type: string, enum: [movie, tv, anime, custom, auto], default: auto}
+                type: {$ref: '#/components/schemas/MediaType'}
       responses:
         '200': {description: 已加入队列}
-        '503': {description: 当前下载器未配置}
-  /api/qb/status:
-    get:
-      summary: 查询 qBittorrent 连接状态
-      security: [{ApiKey: []}]
+  /api/download/manual:
+    post:
+      summary: 手动导入磁力/种子链接或上传 BT 种子文件
+      security: [{ApiKey: []}, {AgentToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ManualDownload'}
+          multipart/form-data:
+            schema:
+              type: object
+              required: [torrent]
+              properties:
+                torrent: {type: string, format: binary}
+                title: {type: string}
+                type: {$ref: '#/components/schemas/MediaType'}
+                original_title: {type: string}
+                edition: {type: string}
+                episode_title: {type: string}
       responses:
-        '200': {description: 状态信息}
-  /api/qb/tasks:
-    get:
-      summary: 查询 qBittorrent 任务
-      security: [{ApiKey: []}]
-      responses:
-        '200': {description: 任务列表}
+        '200': {description: 已识别并加入队列}
+        '422': {description: 链接或种子无效}
   /api/downloader/status:
     get:
-      summary: 查询当前下载器（qBittorrent 或 Transmission）连接状态
-      security: [{ApiKey: []}]
+      summary: 当前下载器连接状态
+      security: [{ApiKey: []}, {AgentToken: []}]
       responses:
         '200': {description: 下载器状态}
   /api/downloader/tasks:
     get:
-      summary: 查询当前下载器任务
-      security: [{ApiKey: []}]
+      summary: 当前下载器任务列表
+      security: [{ApiKey: []}, {AgentToken: []}]
       responses:
         '200': {description: 下载任务列表}
+  /api/qb/status:
+    get:
+      summary: 下载器状态兼容别名
+      deprecated: true
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses:
+        '200': {description: 下载器状态}
+  /api/qb/tasks:
+    get:
+      summary: 下载任务兼容别名
+      deprecated: true
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses:
+        '200': {description: 下载任务列表}
+  /api/watchlist:
+    get:
+      summary: 获取订阅监听列表
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses:
+        '200': {description: 监听列表}
   /api/watchlist/add:
     post:
       summary: 添加监听项目
-      security: [{ApiKey: []}]
+      security: [{ApiKey: []}, {AgentToken: []}]
       requestBody:
         required: true
         content:
@@ -194,28 +266,19 @@ paths:
             schema: {$ref: '#/components/schemas/SearchRequest'}
       responses:
         '201': {description: 已添加或返回现有项目}
-  /api/watchlist:
-    get:
-      summary: 获取监听列表
-      security: [{ApiKey: []}]
-      responses:
-        '200': {description: 监听列表}
   /api/watchlist/{item_id}:
     delete:
       summary: 删除监听项目
-      security: [{ApiKey: []}]
+      security: [{ApiKey: []}, {AgentToken: []}]
       parameters:
-        - in: path
-          name: item_id
-          required: true
-          schema: {type: string}
+        - {in: path, name: item_id, required: true, schema: {type: string}}
       responses:
         '204': {description: 已删除}
         '404': {description: 项目不存在}
   /api/watchlist/check:
     post:
-      summary: 手动检查全部或单个监听项目
-      security: [{ApiKey: []}]
+      summary: 立即检查全部或单个监听项目
+      security: [{ApiKey: []}, {AgentToken: []}]
       requestBody:
         required: true
         content:
@@ -228,8 +291,8 @@ paths:
         '200': {description: 检查报告}
   /api/naming/jobs:
     get:
-      summary: 分页查看 Emby 规范命名任务
-      security: [{ApiKey: []}]
+      summary: 分页查看规范命名任务
+      security: [{ApiKey: []}, {AgentToken: []}]
       parameters:
         - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
         - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
@@ -239,7 +302,7 @@ paths:
   /api/naming/jobs/{job_id}:
     get:
       summary: 查看单个命名任务
-      security: [{ApiKey: []}]
+      security: [{ApiKey: []}, {AgentToken: []}]
       parameters:
         - {in: path, name: job_id, required: true, schema: {type: string}}
       responses:
@@ -247,8 +310,8 @@ paths:
         '404': {description: 任务不存在}
   /api/naming/jobs/check:
     post:
-      summary: 立即处理全部或指定命名任务
-      security: [{ApiKey: []}]
+      summary: 立即处理或重试命名/硬链接任务
+      security: [{ApiKey: []}, {AgentToken: []}]
       requestBody:
         required: true
         content:
@@ -262,7 +325,7 @@ paths:
   /api/hardlinks:
     get:
       summary: 分页查看硬链接入库任务
-      security: [{ApiKey: []}]
+      security: [{ApiKey: []}, {AgentToken: []}]
       parameters:
         - {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
         - {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
@@ -272,11 +335,11 @@ paths:
   /api/settings/sites:
     get:
       summary: 获取媒体站点配置
-      security: [{ApiKey: []}]
+      security: [{ApiKey: []}, {AgentToken: []}]
       responses:
         '200': {description: 站点列表}
     post:
-      summary: 添加通用 HTML 媒体站点
+      summary: 添加通用 HTML 站点（管理员）
       security: [{ApiKey: []}]
       requestBody:
         required: true
@@ -284,11 +347,11 @@ paths:
           application/json:
             schema: {$ref: '#/components/schemas/Site'}
       responses:
-        '201': {description: 站点已创建}
-        '422': {description: 配置无效}
+        '201': {description: 已创建}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /api/settings/sites/{site_id}:
     patch:
-      summary: 更新站点配置
+      summary: 更新站点（管理员）
       security: [{ApiKey: []}]
       parameters:
         - {in: path, name: site_id, required: true, schema: {type: string}}
@@ -298,38 +361,184 @@ paths:
           application/json:
             schema: {type: object}
       responses:
-        '200': {description: 站点已更新}
-        '404': {description: 站点不存在}
+        '200': {description: 已更新}
+        '403': {$ref: '#/components/responses/Forbidden'}
     delete:
-      summary: 删除站点配置
+      summary: 删除站点（管理员）
       security: [{ApiKey: []}]
       parameters:
         - {in: path, name: site_id, required: true, schema: {type: string}}
       responses:
-        '204': {description: 站点已删除}
+        '204': {description: 已删除}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /api/settings/paths:
     get:
-      summary: 获取当前下载目录和硬链接目录
+      summary: 获取根挂载与兼容路径设置
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses:
+        '200': {description: 路径设置}
+    patch:
+      summary: 更新兼容路径设置或硬链接总开关（管理员）
       security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, minProperties: 1}
+      responses:
+        '200': {description: 已保存}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/settings/path-rules:
+    get:
+      summary: 获取四类多目录映射
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters:
+        - {in: query, name: type, schema: {type: string, enum: [movie, tv, anime, custom]}}
+      responses:
+        '200': {description: 映射列表}
+    post:
+      summary: 新增目录映射（管理员）
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/PathRule'}
+      responses:
+        '201': {description: 已创建}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/settings/path-rules/{rule_id}:
+    patch:
+      summary: 更新目录映射（管理员）
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: path, name: rule_id, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, minProperties: 1}
+      responses:
+        '200': {description: 已更新}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    delete:
+      summary: 删除目录映射（管理员）
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: path, name: rule_id, required: true, schema: {type: string}}
+      responses:
+        '204': {description: 已删除}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/settings/downloader:
+    get:
+      summary: 获取已脱敏的下载器设置
+      security: [{ApiKey: []}, {AgentToken: []}]
       responses:
         '200':
-          description: 当前运行时路径设置
+          description: 下载器设置
           content:
             application/json:
               schema:
                 type: object
                 properties:
                   success: {type: boolean}
-                  settings: {$ref: '#/components/schemas/PathSettings'}
+                  settings: {$ref: '#/components/schemas/DownloaderSettings'}
     patch:
-      summary: 更新下载目录和硬链接目录并立即生效
-      description: 四个分类名称和对应目录可独立设置；所有目录必须是位于 MEDIALIB_BASE_PATH 内的绝对宿主机路径。MEDIALIB_BASE_PATH 本身由 Docker volume 决定，不能通过此接口修改。
+      summary: 保存并切换下载器（管理员）
       security: [{ApiKey: []}]
       requestBody:
         required: true
         content:
           application/json:
-            schema: {$ref: '#/components/schemas/PathSettingsPatch'}
+            schema: {$ref: '#/components/schemas/DownloaderSettings'}
       responses:
-        '200': {description: 路径设置已保存并立即生效}
-        '422': {description: 路径为空、不是绝对路径、超出根挂载或包含只读设置}
+        '200': {description: 已切换}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/settings/downloader/test:
+    post:
+      summary: 测试当前下载器连接
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses:
+        '200': {description: 连接成功}
+        '503': {description: 连接失败}
+  /api/settings/system:
+    get:
+      summary: 获取订阅检查周期
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses:
+        '200': {description: 系统设置}
+    patch:
+      summary: 修改订阅检查周期（管理员）
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [watchlist_check_hours]
+              properties:
+                watchlist_check_hours: {type: integer, minimum: 3, maximum: 168}
+      responses:
+        '200': {description: 已立即生效}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/agents:
+    get:
+      summary: 获取 Agent 授权和在线状态
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses:
+        '200': {description: Agent 列表，不返回令牌或哈希}
+  /api/agents/bootstrap:
+    post:
+      summary: 创建一次性可见的 Agent 令牌（管理员）
+      security: [{ApiKey: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, default: My Agent}
+      responses:
+        '201':
+          description: 令牌只在本次响应中返回
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: {type: boolean}
+                  agent: {$ref: '#/components/schemas/Agent'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/agents/connect:
+    post:
+      summary: Agent 首次登记名称与能力
+      security: [{AgentToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: {type: string, default: My Agent}
+                capabilities: {type: array, items: {type: string}, maxItems: 50}
+      responses:
+        '200': {description: 已连接}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/agents/heartbeat:
+    post:
+      summary: Agent 在线心跳
+      security: [{AgentToken: []}]
+      responses:
+        '200': {description: 心跳已记录}
+  /api/agents/{agent_id}:
+    delete:
+      summary: 撤销 Agent 令牌（管理员）
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: path, name: agent_id, required: true, schema: {type: string}}
+      responses:
+        '204': {description: 已撤销}
+        '403': {$ref: '#/components/responses/Forbidden'}

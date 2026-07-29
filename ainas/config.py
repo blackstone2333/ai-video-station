@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     sixv_address_page: str = "https://www.6v123.net"
     request_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     search_detail_limit: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.4; +NAS)"
+    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5; +NAS)"
 
     downloader_type: str = "qbittorrent"
     qb_host: Optional[str] = None
@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     download_anime_path: Path = Path("/volume1/video/Downloads/Anime")
     download_custom_path: Path = Path("/volume1/video/Downloads/Custom")
 
-    watchlist_check_hours: int = Field(default=12, ge=1, le=168)
+    watchlist_check_hours: int = Field(default=12, ge=3, le=168)
     watchlist_expire_days: int = Field(default=14, ge=1, le=365)
     scheduler_enabled: bool = True
     auto_watch_on_empty: bool = True
@@ -76,6 +76,8 @@ class Settings(BaseSettings):
     api_key: Optional[SecretStr] = None
     cors_origins: str = ""
     rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
+    max_torrent_upload_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
+    agent_offline_minutes: int = Field(default=10, ge=2, le=1440)
 
     @field_validator("sixv_base_url", "sixv_address_page")
     @classmethod
@@ -226,6 +228,22 @@ class Settings(BaseSettings):
     @property
     def path_settings_path(self) -> Path:
         return self.data_dir / "path_settings.json"
+
+    @property
+    def path_rules_path(self) -> Path:
+        return self.data_dir / "path_rules.json"
+
+    @property
+    def downloader_settings_path(self) -> Path:
+        return self.data_dir / "downloader_settings.json"
+
+    @property
+    def system_settings_path(self) -> Path:
+        return self.data_dir / "system_settings.json"
+
+    @property
+    def agents_path(self) -> Path:
+        return self.data_dir / "agents.json"
 
     def api_key_value(self) -> Optional[str]:
         if self.api_key is None:

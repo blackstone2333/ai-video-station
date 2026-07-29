@@ -5,6 +5,7 @@ import responses
 from ainas.config import Settings
 from ainas.path_settings import PathSettingsRepository
 from ainas.qbittorrent import QBittorrentClient, torrent_hash
+from tests.unit.test_torrent_meta import TORRENT
 
 
 MAGNET = "magnet:?xt=urn:btih:" + "a" * 40
@@ -89,3 +90,23 @@ def test_existing_category_is_updated_to_current_path(tmp_path):
 
     edited_payload = parse_qs(responses.calls[1].request.body)
     assert edited_payload["savePath"] == ["/volume1/video/Incoming/Series"]
+
+
+@responses.activate
+def test_qbittorrent_uploads_torrent_files(tmp_path):
+    settings = Settings(data_dir=tmp_path, qb_host="qb.test", qb_password="secret", scheduler_enabled=False)
+    base = "http://qb.test:8080"
+    responses.post(f"{base}/api/v2/auth/login", body="Ok.")
+    responses.post(f"{base}/api/v2/torrents/createCategory", body="Ok.")
+    responses.post(f"{base}/api/v2/torrents/add", body="Ok.")
+    result = QBittorrentClient(settings).add_torrent_file(
+        TORRENT,
+        "movie.torrent",
+        settings.qb_movie_category,
+        save_path="/volume1/video/Incoming/Films",
+    )
+    assert result["torrent_name"] == "Movie.mkv"
+    assert result["qb_task_id"]
+    body = responses.calls[2].request.body
+    assert b"movie.torrent" in body and b"Movie.mkv" in body
+    assert b"/volume1/video/Incoming/Films" in body

@@ -5,6 +5,7 @@ import responses
 from ainas.config import Settings
 from ainas.path_settings import PathSettingsRepository
 from ainas.transmission import TransmissionClient
+from tests.unit.test_torrent_meta import TORRENT
 
 
 RPC = "http://transmission.test:9091/transmission/rpc"
@@ -136,3 +137,18 @@ def test_transmission_maps_torrent_info_and_rename_resume(tmp_path):
     responses.post(RPC, json={"result": "success", "arguments": {}})
     client.resume("hash")
     assert len(responses.calls) == 3
+
+
+@responses.activate
+def test_transmission_uploads_torrent_files(tmp_path):
+    responses.post(
+        RPC,
+        json={"result": "success", "arguments": {"torrent-added": {"hashString": "f" * 40}}},
+    )
+    result = TransmissionClient(transmission_settings(tmp_path)).add_torrent_file(
+        TORRENT, "movie.torrent", "Movie", save_path="/volume1/video/Incoming/Films"
+    )
+    assert result["qb_task_id"] == "f" * 40
+    assert result["torrent_name"] == "Movie.mkv"
+    body = responses.calls[0].request.body.decode()
+    assert "metainfo" in body and "/volume1/video/Incoming/Films" in body

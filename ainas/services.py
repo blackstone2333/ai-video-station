@@ -4,7 +4,7 @@ import logging
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -12,9 +12,9 @@ from .config import Settings
 from .crawler import SixVClient
 from .errors import AppError, NotFoundError, ValidationAppError
 from .medialib import MediaLibraryService
-from .path_settings import PathSettingsRepository
 from .naming import NamingJobRepository, NamingService
-from .qbittorrent import QBittorrentClient
+from .path_rules import PathRuleRepository
+from .path_settings import PathSettingsRepository
 from .quality import (
     EPISODIC_MEDIA_TYPES,
     Release,
@@ -23,10 +23,19 @@ from .quality import (
     detect_season,
     infer_media_type,
     link_display_name,
+    build_release,
+    release_id,
 )
+from .torrent_meta import parse_torrent_metadata
 from .watchlist import WatchlistRepository, utc_now_iso
 from .sites import ProviderRegistry, SiteRepository
 from .transmission import TransmissionClient
+from .runtime_settings import (
+    DownloaderManager,
+    DownloaderSettingsRepository,
+    SystemSettingsRepository,
+)
+from .agent_access import AgentAccessRepository
 
 
 logger = logging.getLogger(__name__)
@@ -154,6 +163,85 @@ class DownloadService:
         release = cached or self._fallback_release(result_id, download_link, title, resolved_type)
         result = self.naming.add_download(release, category) if self.naming else self.qb.add_download(download_link, category)
         return {**result, "title": title, "type": resolved_type}
+
+    def _category_for(self, media_type: str) -> str:
+        return {
+            "movie": self.settings.qb_movie_category,
+            "tv": self.settings.qb_tv_category,
+            "anime": self.settings.qb_anime_category,
+            "custom": self.settings.qb_custom_category,
+        }[media_type]
+
+    @staticmethod
+    def _manual_type(title: str, source_name: str, media_type: str) -> str:
+        resolved = infer_media_type(f"{title} {source_name}", source_name, media_type)
+        return "custom" if resolved == "auto" else resolved
+
+    @staticmethod
+    def _with_manual_metadata(
+        release: Release,
+        original_title: Optional[str],
+        edition: Optional[str],
+        episode_title: Optional[str],
+    ) -> Release:
+        return replace(
+            release,
+            original_title=original_title.strip() if original_title else release.original_title,
+            edition=edition.strip() if edition else release.edition,
+            episode_title=episode_title.strip() if episode_title else release.episode_title,
+        )
+
+    def manual_link(
+        self,
+        download_link: str,
+        title: Optional[str],
+        media_type: str,
+        original_title: Optional[str] = None,
+        edition: Optional[str] = None,
+        episode_title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        source_name = link_display_name(download_link, title or "手动下载")
+        selected_title = (title or source_name).strip()
+        resolved_type = self._manual_type(selected_title, source_name, media_type)
+        result_id = release_id("manual", download_link)
+        release = build_release(selected_title, source_name, "", download_link, resolved_type)
+        if release is None:
+            release = self._fallback_release(result_id, download_link, selected_title, resolved_type)
+        release = self._with_manual_metadata(release, original_title, edition, episode_title)
+        category = self._category_for(resolved_type)
+        result = self.naming.add_download(release, category) if self.naming else self.qb.add_download(download_link, category)
+        return {**result, "title": selected_title, "type": resolved_type, "source_name": source_name}
+
+    def manual_torrent(
+        self,
+        content: bytes,
+        filename: str,
+        title: Optional[str],
+        media_type: str,
+        original_title: Optional[str] = None,
+        edition: Optional[str] = None,
+        episode_title: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        metadata = parse_torrent_metadata(content)
+        selected_title = (title or metadata.name).strip()
+        resolved_type = self._manual_type(selected_title, metadata.name, media_type)
+        magnet = f"magnet:?xt=urn:btih:{metadata.info_hash}&dn={metadata.name}"
+        release = build_release(selected_title, metadata.name, "", magnet, resolved_type)
+        if release is None:
+            release = self._fallback_release(metadata.info_hash[:16], magnet, selected_title, resolved_type)
+        release = self._with_manual_metadata(release, original_title, edition, episode_title)
+        category = self._category_for(resolved_type)
+        if self.naming:
+            result = self.naming.add_torrent_file(
+                release,
+                category,
+                content,
+                filename,
+                metadata.info_hash,
+            )
+        else:
+            result = self.qb.add_torrent_file(content, filename, category)
+        return {**result, "title": selected_title, "type": resolved_type, "source_name": metadata.name}
 
 
 class WatchlistService:
@@ -305,10 +393,18 @@ class AppServices:
     naming: Optional[NamingService] = None
     sites: Optional[SiteRepository] = None
     path_settings: Optional[PathSettingsRepository] = None
+    path_rules: Optional[PathRuleRepository] = None
+    downloader_settings: Optional[DownloaderSettingsRepository] = None
+    system_settings: Optional[SystemSettingsRepository] = None
+    agents: Optional[AgentAccessRepository] = None
 
 
 def build_services(settings: Settings) -> AppServices:
     path_settings = PathSettingsRepository(settings)
+    downloader_settings = DownloaderSettingsRepository(settings)
+    system_settings = SystemSettingsRepository(settings)
+    path_rules = PathRuleRepository(settings)
+    agents = AgentAccessRepository(settings)
     default_site = {
         "id": "sixv",
         "name": "6v",
@@ -320,13 +416,13 @@ def build_services(settings: Settings) -> AppServices:
     }
     sites = SiteRepository(settings.sites_path, default_site)
     crawler = ProviderRegistry(settings, sites)
-    qb = TransmissionClient(settings) if settings.downloader_type == "transmission" else QBittorrentClient(settings)
+    qb = DownloaderManager(settings)
     watchlist = WatchlistRepository(settings.watchlist_path)
     cache = ResultCache()
     search = SearchService(crawler, cache)
     naming_jobs = NamingJobRepository(settings.naming_jobs_path)
-    hardlinker = MediaLibraryService(settings)
-    naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker)
+    hardlinker = MediaLibraryService(settings, path_rules=path_rules)
+    naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker, path_rules=path_rules)
     download = DownloadService(settings, qb, cache, naming)
     watchlist_service = WatchlistService(settings, watchlist, search, qb, naming)
     return AppServices(
@@ -341,4 +437,8 @@ def build_services(settings: Settings) -> AppServices:
         naming=naming,
         sites=sites,
         path_settings=path_settings,
+        path_rules=path_rules,
+        downloader_settings=downloader_settings,
+        system_settings=system_settings,
+        agents=agents,
     )

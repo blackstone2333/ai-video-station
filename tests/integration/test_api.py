@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 from pathlib import Path
 
 from ainas.app import create_app
@@ -9,6 +10,7 @@ from ainas.quality import build_release
 from ainas.services import AppServices, ResultCache, SearchOutcome
 from ainas.sites import SiteRepository
 from ainas.watchlist import WatchlistRepository
+from tests.unit.test_torrent_meta import TORRENT
 
 
 MAGNET = "magnet:?xt=urn:btih:" + "a" * 40
@@ -56,10 +58,19 @@ class StubSearch:
 class StubDownload:
     def __init__(self, qb):
         self.qb = qb
+        self.manual_calls = []
 
     def download(self, result_id, link, title, media_type):
         self.qb.add_download(link, "sixv-movie")
         return {"qb_task_id": "a" * 40, "category": "sixv-movie", "title": title, "type": "movie"}
+
+    def manual_link(self, download_link, title, media_type, original_title=None, edition=None, episode_title=None):
+        self.manual_calls.append(("link", download_link, title, media_type))
+        return {"qb_task_id": "b" * 40, "category": "Movie", "title": title or "Manual", "type": media_type}
+
+    def manual_torrent(self, content, filename, title, media_type, original_title=None, edition=None, episode_title=None):
+        self.manual_calls.append(("torrent", filename, title, media_type))
+        return {"qb_task_id": "c" * 40, "category": "Movie", "title": title or "Movie.mkv", "type": media_type}
 
 
 class StubWatchlistService:
@@ -290,3 +301,97 @@ def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
         headers=headers,
     )
     assert duplicate.status_code == 422
+
+
+def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "test-key"}
+
+    magnet = "magnet:?xt=urn:btih:" + "b" * 40 + "&dn=Show.S01E01.mkv"
+    manual = client.post(
+        "/api/download/manual",
+        json={"download_link": magnet, "title": "剧集", "type": "tv", "episode_title": "第一集"},
+        headers=headers,
+    )
+    assert manual.status_code == 200
+    assert manual.json["qb_task_id"] == "b" * 40
+    uploaded = client.post(
+        "/api/download/manual",
+        data={"torrent": (io.BytesIO(TORRENT), "movie.torrent"), "type": "movie", "title": "电影"},
+        headers=headers,
+        content_type="multipart/form-data",
+    )
+    assert uploaded.status_code == 200
+    assert uploaded.json["qb_task_id"] == "c" * 40
+    assert [call[0] for call in services.download.manual_calls] == ["link", "torrent"]
+
+    rules = client.get("/api/settings/path-rules", headers=headers)
+    assert rules.json["count"] == 4
+    created = client.post(
+        "/api/settings/path-rules",
+        json={
+            "media_type": "movie",
+            "name": "国内电影",
+            "source_path": "/volume1/video/Downloads/Movie/CN",
+            "target_path": "/volume1/video/video/movies/CN",
+            "enabled": True,
+            "rename_enabled": True,
+            "default_download": False,
+        },
+        headers=headers,
+    )
+    assert created.status_code == 201
+    rule_id = created.json["item"]["id"]
+    changed = client.patch(
+        f"/api/settings/path-rules/{rule_id}",
+        json={"rename_enabled": False},
+        headers=headers,
+    )
+    assert changed.json["item"]["rename_enabled"] is False
+    assert client.delete(f"/api/settings/path-rules/{rule_id}", headers=headers).status_code == 204
+
+    assert client.get("/api/settings/system", headers=headers).json["settings"]["watchlist_check_hours"] == 12
+    period = client.patch(
+        "/api/settings/system", json={"watchlist_check_hours": 72}, headers=headers
+    )
+    assert period.json["settings"]["watchlist_check_hours"] == 72
+    downloader = client.patch(
+        "/api/settings/downloader",
+        json={"downloader_type": "qbittorrent", "qb_host": "qb.local", "qb_password": "secret"},
+        headers=headers,
+    )
+    assert downloader.status_code == 200
+    assert downloader.json["settings"]["qb_password_configured"] is True
+    assert "qb_password" not in downloader.json["settings"]
+    assert client.post("/api/settings/downloader/test", json={}, headers=headers).status_code == 200
+
+
+def test_agent_bootstrap_connect_heartbeat_permissions_and_revoke(tmp_path):
+    app, _ = build_test_app(tmp_path)
+    client = app.test_client()
+    admin = {"X-Api-Key": "test-key"}
+    created = client.post("/api/agents/bootstrap", json={"name": "Codex"}, headers=admin)
+    assert created.status_code == 201
+    agent = created.json["agent"]
+    token = agent["token"]
+    bearer = {"Authorization": f"Bearer {token}"}
+
+    connected = client.post(
+        "/api/agents/connect",
+        json={"name": "Codex", "capabilities": ["search", "download", "hardlink"]},
+        headers=bearer,
+    )
+    assert connected.status_code == 200
+    assert connected.json["agent"]["online"] is True
+    assert client.post("/api/agents/heartbeat", json={}, headers=bearer).status_code == 200
+    listing = client.get("/api/agents", headers=admin)
+    assert listing.json["online"] == 1
+    assert "token" not in listing.json["items"][0]
+
+    forbidden = client.patch(
+        "/api/settings/system", json={"watchlist_check_hours": 24}, headers=bearer
+    )
+    assert forbidden.status_code == 403
+    assert client.delete(f"/api/agents/{agent['id']}", headers=admin).status_code == 204
+    assert client.post("/api/agents/heartbeat", json={}, headers=bearer).status_code == 401

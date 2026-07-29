@@ -9,6 +9,7 @@ import requests
 
 from .config import Settings
 from .errors import ServiceUnavailableError, UpstreamError, ValidationAppError
+from .torrent_meta import parse_torrent_metadata
 
 
 logger = logging.getLogger(__name__)
@@ -123,14 +124,20 @@ class QBittorrentClient:
             except UpstreamError:
                 logger.warning("qb_category_update_failed", extra={"category": category})
 
-    def add_download(self, download_link: str, category: str, rename: Optional[str] = None) -> Dict[str, Any]:
+    def add_download(
+        self,
+        download_link: str,
+        category: str,
+        rename: Optional[str] = None,
+        save_path: Optional[Any] = None,
+    ) -> Dict[str, Any]:
         link = self.validate_download_link(download_link)
         self.login()
         self.ensure_category(category)
         payload = {
             "urls": link,
             "category": category,
-            "savepath": str(self.settings.download_path_for_category(category)),
+            "savepath": str(save_path or self.settings.download_path_for_category(category)),
             "paused": "false",
         }
         if rename:
@@ -145,6 +152,35 @@ class QBittorrentClient:
         task_hash = torrent_hash(link)
         logger.info("qb_download_added", extra={"task_hash": task_hash, "category": category})
         return {"qb_task_id": task_hash, "category": category}
+
+    def add_torrent_file(
+        self,
+        content: bytes,
+        filename: str,
+        category: str,
+        rename: Optional[str] = None,
+        save_path: Optional[Any] = None,
+    ) -> Dict[str, Any]:
+        metadata = parse_torrent_metadata(content)
+        self.login()
+        self.ensure_category(category)
+        payload = {
+            "category": category,
+            "savepath": str(save_path or self.settings.download_path_for_category(category)),
+            "paused": "false",
+        }
+        if rename:
+            payload["rename"] = rename
+        response = self._request(
+            "POST",
+            "/api/v2/torrents/add",
+            data=payload,
+            files={"torrents": (filename, content, "application/x-bittorrent")},
+        )
+        if response.text.strip() != "Ok.":
+            raise UpstreamError("qBittorrent", "torrent file was not accepted")
+        logger.info("qb_torrent_file_added", extra={"task_hash": metadata.info_hash, "category": category})
+        return {"qb_task_id": metadata.info_hash, "category": category, "torrent_name": metadata.name}
 
     def torrent_info(self, hash_value: str) -> Optional[Dict[str, Any]]:
         self.login()

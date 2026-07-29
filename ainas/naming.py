@@ -9,7 +9,7 @@ import threading
 import unicodedata
 import uuid
 from copy import deepcopy
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
@@ -52,6 +52,12 @@ class NamingPlan:
     season: Optional[int]
     episode: Optional[str]
     link_name: Optional[str]
+    original_title: Optional[str] = None
+    part: Optional[str] = None
+    edition: Optional[str] = None
+    video_format: Optional[str] = None
+    episode_title: Optional[str] = None
+    rename_enabled: bool = True
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -62,7 +68,13 @@ class EmbyNamingPlanner:
     def from_release(release: Release) -> NamingPlan:
         media_name = safe_name(release.media_name or canonical_media_name(release.title))
         year = release.year
-        root_name = f"{media_name} ({year})" if release.media_type == "movie" and year else media_name
+        if release.media_type == "custom":
+            link_name = release.link_name or media_name
+            root_name = safe_name(PurePosixPath(link_name.replace("\\", "/")).name)
+            if root_name.casefold().endswith(".torrent"):
+                root_name = safe_name(root_name[:-8])
+        else:
+            root_name = f"{media_name} ({year})" if year else media_name
         episode = _episode_with_default_season(release.episode, release.season)
         return NamingPlan(
             media_type=release.media_type,
@@ -72,6 +84,12 @@ class EmbyNamingPlanner:
             season=release.season,
             episode=episode,
             link_name=release.link_name,
+            original_title=safe_name(release.original_title) if release.original_title else None,
+            part=safe_name(release.part) if release.part else None,
+            edition=safe_name(release.edition) if release.edition else None,
+            video_format=safe_name(release.video_format) if release.video_format else None,
+            episode_title=safe_name(release.episode_title) if release.episode_title else None,
+            rename_enabled=release.media_type != "custom",
         )
 
     @staticmethod
@@ -94,24 +112,78 @@ class EmbyNamingPlanner:
             counter += 1
 
     @staticmethod
-    def _movie_basename(item: Dict[str, Any], plan: NamingPlan, index: int, main_count: int) -> str:
+    def _title_prefix(plan: NamingPlan, part: Optional[str] = None) -> str:
+        value = plan.media_name
+        if plan.original_title and plan.original_title.casefold() != plan.media_name.casefold():
+            value += f".{plan.original_title}"
+        selected_part = part or plan.part
+        if selected_part:
+            value += f"-{selected_part}"
+        return value
+
+    @staticmethod
+    def _file_part(
+        path: PurePosixPath,
+        index: int,
+        main_count: int,
+        *,
+        auto_number: bool,
+    ) -> Optional[str]:
+        stem = path.stem
+        disc = re.search(r"(?i)(?:^|[ ._\-])(?:cd|disc|disk)[ ._\-]*0*(\d+)", stem)
+        if disc:
+            return f"CD{int(disc.group(1))}"
+        part = re.search(r"(?i)(?:^|[ ._\-])(?:part|pt)[ ._\-]*0*(\d+)", stem)
+        if part:
+            return f"Part{int(part.group(1))}"
+        return f"Part{index + 1}" if auto_number and main_count > 1 else None
+
+    @staticmethod
+    def _file_video_format(path: PurePosixPath, fallback: Optional[str]) -> Optional[str]:
+        """Prefer a video's own resolution while retaining release-level format details."""
+        lowered = path.stem.casefold()
+        resolution = next(
+            (value for value in ("4320p", "2160p", "1080p", "720p", "480p") if value in lowered),
+            None,
+        )
+        if resolution is None and re.search(r"(?:^|[ ._\-])(?:4k|uhd)(?:$|[ ._\-])", lowered):
+            resolution = "2160p"
+        if not resolution:
+            return fallback
+        details = [
+            value
+            for value in (fallback or "").split(".")
+            if value and value.casefold() not in {"4320p", "2160p", "1080p", "720p", "480p"}
+        ]
+        return ".".join([resolution, *details])
+
+    @classmethod
+    def _movie_basename(
+        cls,
+        item: Dict[str, Any],
+        plan: NamingPlan,
+        index: int,
+        main_count: int,
+    ) -> str:
         path = PurePosixPath(item["name"])
         stem = path.stem
         lowered = stem.casefold()
         extension = path.suffix.lower()
         if re.search(r"(?:^|[ ._\-])trailer(?:$|[ ._\-])|预告", lowered):
-            return f"{plan.root_name} - trailer{extension}"
-        if re.search(r"(?:^|[ ._\-])sample(?:$|[ ._\-])|样片", lowered):
-            return f"{plan.root_name} - sample{extension}"
-        if main_count <= 1:
-            return f"{plan.root_name}{extension}"
-        quality = re.search(r"(?i)(2160p|1080p|720p|480p|4k)", stem)
-        if quality:
-            return f"{plan.root_name} - {quality.group(1)}{extension}"
-        disc = re.search(r"(?i)(?:^|[ ._\-])(?:cd|part|pt|disc|disk)[ ._\-]*0*(\d+)", stem)
-        if disc:
-            return f"{plan.root_name} - cd{int(disc.group(1))}{extension}"
-        return f"{plan.root_name}{extension}" if index == 0 else f"{plan.root_name} - part {index + 1}{extension}"
+            part = "Trailer"
+        elif re.search(r"(?:^|[ ._\-])sample(?:$|[ ._\-])|样片", lowered):
+            part = "Sample"
+        else:
+            part = cls._file_part(path, index, main_count, auto_number=True)
+        value = cls._title_prefix(plan, part)
+        if plan.year:
+            value += f" ({plan.year})"
+        if plan.edition:
+            value += f" - {plan.edition}"
+        video_format = cls._file_video_format(path, plan.video_format)
+        if video_format:
+            value += f" - {video_format}"
+        return f"{value}{extension}"
 
     @staticmethod
     def _subtitle_language_suffix(old_stem: str, video_stem: str) -> str:
@@ -126,7 +198,7 @@ class EmbyNamingPlanner:
 
     def plan_files(self, files: Iterable[Dict[str, Any]], plan: NamingPlan) -> Dict[str, Any]:
         values = [item for item in files if item.get("name")]
-        if plan.media_type == "custom":
+        if not plan.rename_enabled:
             return {
                 "root_name": plan.root_name,
                 "video_count": sum(
@@ -157,7 +229,16 @@ class EmbyNamingPlanner:
                 episode = _episode_with_default_season(detected, season)
                 if not episode:
                     continue
-                new_basename = f"{plan.media_name} - {episode}{old_value.suffix.lower()}"
+                # Episodic files are separate episodes, not automatically numbered movie parts.
+                part = self._file_part(old_value, index, len(videos), auto_number=False)
+                value = self._title_prefix(plan, part)
+                value += f" - {episode}"
+                if plan.episode_title:
+                    value += f" - {plan.episode_title}"
+                video_format = self._file_video_format(old_value, plan.video_format)
+                if video_format:
+                    value += f" - {video_format}"
+                new_basename = f"{value}{old_value.suffix.lower()}"
             else:
                 main_index = main_videos.index(item) if item in main_videos else index
                 new_basename = self._movie_basename(item, plan, main_index, len(main_videos))
@@ -197,6 +278,7 @@ class EmbyNamingPlanner:
         return {
             "root_name": plan.root_name,
             "video_count": len(videos),
+            "file_count": len(values),
             "operations": operations,
             "folder_operations": folder_operations,
         }
@@ -297,28 +379,35 @@ class NamingService:
         qb: QBittorrentClient,
         planner: Optional[EmbyNamingPlanner] = None,
         hardlinker: Optional[Any] = None,
+        path_rules: Optional[Any] = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.qb = qb
         self.planner = planner or EmbyNamingPlanner()
         self.hardlinker = hardlinker
+        self.path_rules = path_rules
         self._lock = threading.Lock()
 
     def add_download(self, release: Release, final_category: str) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
+        if self.path_rules:
+            source = self.settings.download_path_for_category(final_category)
+            rule = self.path_rules.match(release.media_type, source)
+            if rule:
+                plan = replace(plan, rename_enabled=bool(rule["rename_enabled"]) and release.media_type != "custom")
         hash_value = torrent_hash(release.download_link)
-        is_custom = release.media_type == "custom"
-        use_staging = self.settings.naming_enabled and not is_custom and bool(hash_value)
-        track_custom = is_custom and self.settings.medialib_hardlink_enabled and bool(hash_value)
+        use_staging = self.settings.naming_enabled and plan.rename_enabled and bool(hash_value)
+        track_only = not plan.rename_enabled and self.settings.medialib_hardlink_enabled and bool(hash_value)
         current_category = self.settings.qb_naming_category if use_staging else final_category
         result = self.qb.add_download(
             release.download_link,
             current_category,
-            rename=plan.root_name if self.settings.naming_enabled and not is_custom else None,
+            rename=plan.root_name if self.settings.naming_enabled and plan.rename_enabled else None,
+            save_path=self.settings.download_path_for_category(final_category),
         )
         job = None
-        if (use_staging or track_custom) and hash_value:
+        if (use_staging or track_only) and hash_value:
             job = self.repository.upsert(hash_value, plan, final_category)
             self.check(job["id"])
             job = self.repository.get(job["id"])
@@ -330,6 +419,45 @@ class NamingService:
             "naming_job_id": job["id"] if job else None,
             "naming_status": job["status"] if job else ("disabled" if not self.settings.naming_enabled else "unsupported"),
             "hardlink_status": job.get("hardlink_status") if job else ("disabled" if not self.settings.medialib_hardlink_enabled else None),
+        }
+
+    def add_torrent_file(
+        self,
+        release: Release,
+        final_category: str,
+        content: bytes,
+        filename: str,
+        torrent_hash_value: str,
+    ) -> Dict[str, Any]:
+        plan = self.planner.from_release(release)
+        if self.path_rules:
+            source = self.settings.download_path_for_category(final_category)
+            rule = self.path_rules.match(release.media_type, source)
+            if rule:
+                plan = replace(plan, rename_enabled=bool(rule["rename_enabled"]) and release.media_type != "custom")
+        use_staging = self.settings.naming_enabled and plan.rename_enabled
+        track_only = not plan.rename_enabled and self.settings.medialib_hardlink_enabled
+        current_category = self.settings.qb_naming_category if use_staging else final_category
+        result = self.qb.add_torrent_file(
+            content,
+            filename,
+            current_category,
+            rename=plan.root_name if use_staging else None,
+            save_path=self.settings.download_path_for_category(final_category),
+        )
+        job = None
+        if use_staging or track_only:
+            job = self.repository.upsert(torrent_hash_value, plan, final_category)
+            self.check(job["id"])
+            job = self.repository.get(job["id"])
+        return {
+            **result,
+            "category": final_category,
+            "current_category": current_category,
+            "planned_name": plan.root_name,
+            "naming_job_id": job["id"] if job else None,
+            "naming_status": job["status"] if job else "disabled",
+            "hardlink_status": job.get("hardlink_status") if job else None,
         }
 
     def _release_staging_job(self, job: Dict[str, Any]) -> None:
@@ -357,7 +485,7 @@ class NamingService:
         plan = NamingPlan(**job["plan"])
         preview = self.planner.plan_files(files, plan)
         try:
-            if plan.media_type != "custom":
+            if plan.rename_enabled:
                 for operation in preview["operations"]:
                     self.qb.rename_file(job["torrent_hash"], operation["old_path"], operation["new_path"])
                 for operation in preview["folder_operations"]:

@@ -40,6 +40,11 @@ class UnauthorizedError(AppError):
         super().__init__("Unauthorized", "API key is missing or invalid", "unauthorized", 401)
 
 
+class ForbiddenError(AppError):
+    def __init__(self, detail: str = "This operation requires administrator access") -> None:
+        super().__init__("Forbidden", detail, "forbidden", 403)
+
+
 class RateLimitError(AppError):
     def __init__(self, retry_after: int) -> None:
         super().__init__(
