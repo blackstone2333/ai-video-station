@@ -4,6 +4,12 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v1.5.6 更新说明
+
+- 每条目录映射新增“下载器容器目录”，明确区分 NAS 下载源路径、qB/Transmission 容器路径和媒体库目标路径。
+- 新任务向下载器提交容器可见路径，避免把宿主机路径写进下载器容器私有层。
+- 新增单任务安全迁移接口，由下载器把现有数据移动到正确挂载，不删除或重新添加 torrent。
+
 ## v1.5.5 更新说明
 
 - 下载记录可从 AVS 页面隐藏并随时恢复显示；此操作不删除、不暂停下载器任务，也不删除任何文件。
@@ -333,6 +339,7 @@ NAS 根挂载：宿主机路径 → /medialib
 | `POST /api/downloader/tasks/{hash}/dismiss` | 仅从 AVS 隐藏下载记录 |
 | `DELETE /api/downloader/tasks/{hash}/dismiss` | 恢复显示隐藏记录 |
 | `POST /api/downloader/tasks/{hash}/recover` | 重新校验并恢复指定下载任务 |
+| `POST /api/downloader/tasks/{hash}/relocate` | 将指定任务迁移到下载器容器目录 |
 | `GET /api/watchlist` | 订阅监听列表 |
 | `POST /api/watchlist/check` | 立即检查订阅 |
 | `GET /api/naming/jobs` | 命名任务列表 |

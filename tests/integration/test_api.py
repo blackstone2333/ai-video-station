@@ -52,6 +52,9 @@ class StubQB:
     def resume(self, hash_value):
         self.operations.append(("resume", hash_value))
 
+    def set_location(self, hash_value, location):
+        self.operations.append(("set_location", hash_value, str(location)))
+
     def add_download(self, link, category):
         self.added.append((link, category))
         return {"qb_task_id": "a" * 40, "category": category}
@@ -142,6 +145,7 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert 'id="refresh-downloads"' in page
     assert 'id="show-hidden-downloads"' in page
     assert 'id="hidden-downloads-modal"' in page
+    assert 'id="path-rule-downloader"' in page
     assert 'id="job-detail-modal"' in page
     assert "每 20 秒" not in page
     assert "AI Video Station 媒体调度台" in admin.get_data(as_text=True)
@@ -200,6 +204,14 @@ def test_download_records_can_be_hidden_restored_and_recovered(tmp_path):
     assert client.delete("/api/downloader/tasks/missing/dismiss", headers=headers).status_code == 404
     assert client.post("/api/downloader/tasks/missing/recover", headers=headers).status_code == 404
     assert services.qb.operations == [("recheck", "abc"), ("resume", "abc")]
+
+    relocated = client.post(
+        "/api/downloader/tasks/abc/relocate",
+        json={"location": "/Downloads/TV"},
+        headers=headers,
+    )
+    assert relocated.status_code == 202
+    assert services.qb.operations[-1] == ("set_location", "abc", "/Downloads/TV")
 
 
 def test_validation_search_is_read_only_and_watchlist_crud(tmp_path):
@@ -447,6 +459,7 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
             "media_type": "movie",
             "name": "国内电影",
             "source_path": "/volume1/video/Downloads/Movie/CN",
+            "downloader_path": "/Downloads/Movie/CN",
             "target_path": "/volume1/video/video/movies/CN",
             "enabled": True,
             "rename_enabled": True,
@@ -455,6 +468,7 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
         headers=headers,
     )
     assert created.status_code == 201
+    assert created.json["item"]["downloader_path"] == "/Downloads/Movie/CN"
     rule_id = created.json["item"]["id"]
     changed = client.patch(
         f"/api/settings/path-rules/{rule_id}",

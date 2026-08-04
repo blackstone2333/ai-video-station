@@ -346,7 +346,7 @@ function renderPathRules() {
     const rules = state.pathRules.filter((item) => item.media_type === type);
     const body = rules.length ? rules.map((item) => `<article class="rule-item ${item.enabled ? "" : "off"}">
       <div class="rule-item-head"><h4>${escapeHTML(item.name)}</h4><div class="rule-badges">${item.default_download ? '<span class="count-chip">默认下载</span>' : ""}${chip(item.enabled ? "completed" : "site_disabled")}</div></div>
-      <div class="rule-path"><span title="${escapeHTML(item.source_path)}">${escapeHTML(item.source_path)}</span><i>→</i><span title="${escapeHTML(item.target_path)}">${escapeHTML(item.target_path)}</span></div>
+      <div class="rule-path"><span title="NAS：${escapeHTML(item.source_path)}">${escapeHTML(item.source_path)}</span><i>→</i><span title="下载器：${escapeHTML(item.downloader_path)}">${escapeHTML(item.downloader_path || item.source_path)}</span><i>→</i><span title="媒体库：${escapeHTML(item.target_path)}">${escapeHTML(item.target_path)}</span></div>
       <div class="rule-actions"><span class="count-chip">${item.rename_enabled ? "规范命名" : "保留原名"}</span><button class="quiet-button" data-edit-rule="${item.id}" type="button">编辑</button><button class="danger-button" data-delete-rule="${item.id}" type="button">删除</button></div>
     </article>`).join("") : '<div class="empty">这个分类还没有目录映射</div>';
     return `<section class="rule-group"><div class="rule-group-head"><div><p class="eyebrow">${code}</p><h3>${label}</h3></div><small>${rules.length} 个源目录</small></div><div class="rule-grid">${body}</div></section>`;
@@ -475,7 +475,7 @@ function toggleDownloaderFields() {
 function editPathRule(item = null) {
   $("#path-rule-title").textContent = item ? "编辑目录映射" : "新增目录映射";
   $("#path-rule-id").value = item?.id || ""; $("#path-rule-type").value = item?.media_type || "movie"; $("#path-rule-type").disabled = Boolean(item);
-  $("#path-rule-name").value = item?.name || ""; $("#path-rule-source").value = item?.source_path || ""; $("#path-rule-target").value = item?.target_path || "";
+  $("#path-rule-name").value = item?.name || ""; $("#path-rule-source").value = item?.source_path || ""; $("#path-rule-downloader").value = item?.downloader_path || item?.source_path || ""; $("#path-rule-target").value = item?.target_path || "";
   $("#path-rule-enabled").checked = item?.enabled ?? true; $("#path-rule-rename").checked = item?.rename_enabled ?? true; $("#path-rule-default").checked = item?.default_download ?? false;
   openModal("#path-rule-modal");
 }
@@ -550,7 +550,7 @@ function bindEvents() {
     if (remove && confirm("确定删除这条目录映射吗？")) { try { await api(`/api/settings/path-rules/${remove.dataset.deleteRule}`, {method:"DELETE"}); toast("目录映射已删除"); await loadAll(true); } catch (error) { toast(error.message, true); } }
   });
   $("#path-rule-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); const id = $("#path-rule-id").value; const payload = {media_type:$("#path-rule-type").value,name:$("#path-rule-name").value.trim(),source_path:$("#path-rule-source").value.trim(),target_path:$("#path-rule-target").value.trim(),enabled:$("#path-rule-enabled").checked,rename_enabled:$("#path-rule-rename").checked,default_download:$("#path-rule-default").checked};
+    event.preventDefault(); const id = $("#path-rule-id").value; const payload = {media_type:$("#path-rule-type").value,name:$("#path-rule-name").value.trim(),source_path:$("#path-rule-source").value.trim(),downloader_path:$("#path-rule-downloader").value.trim(),target_path:$("#path-rule-target").value.trim(),enabled:$("#path-rule-enabled").checked,rename_enabled:$("#path-rule-rename").checked,default_download:$("#path-rule-default").checked};
     if (id) delete payload.media_type;
     try { await api(id ? `/api/settings/path-rules/${id}` : "/api/settings/path-rules", {method:id?"PATCH":"POST",body:JSON.stringify(payload)}); toast("目录映射已保存"); $("#path-rule-modal").classList.add("hidden"); await loadAll(true); } catch (error) { toast(error.message, true); }
   });

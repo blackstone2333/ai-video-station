@@ -72,12 +72,14 @@ def test_add_status_and_tasks(tmp_path):
     responses.post(f"{base}/api/v2/torrents/setCategory", body="", status=200)
     responses.post(f"{base}/api/v2/torrents/resume", body="", status=200)
     responses.post(f"{base}/api/v2/torrents/recheck", body="", status=200)
+    responses.post(f"{base}/api/v2/torrents/setLocation", body="", status=200)
     client.rename_file("abc", "01.mp4", "剧名 - S01E01.mp4")
     client.rename_folder("abc", "第1季", "Season 01")
     client.rename_torrent("abc", "剧名")
     client.set_category("abc", "sixv-tv")
     client.resume("abc")
     client.recheck("abc")
+    client.set_location("abc", "/Downloads/TV")
 
 
 @responses.activate

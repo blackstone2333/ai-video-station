@@ -102,6 +102,7 @@ components:
         media_type: {type: string, enum: [movie, tv, anime, custom]}
         name: {type: string, minLength: 1, maxLength: 100}
         source_path: {type: string, examples: [/volume1/video/Downloads/Movie]}
+        downloader_path: {type: string, examples: [/Downloads/Movie]}
         target_path: {type: string, examples: [/volume1/video/video/movies]}
         enabled: {type: boolean, default: true}
         rename_enabled: {type: boolean, default: true}
@@ -270,6 +271,25 @@ paths:
         - {in: path, name: task_hash, required: true, schema: {type: string}}
       responses:
         '202': {description: 校验与恢复已启动}
+        '404': {description: 下载器任务不存在}
+  /api/downloader/tasks/{task_hash}/relocate:
+    post:
+      summary: 将现有任务迁移到下载器挂载路径
+      description: 由下载器移动现有数据，不删除或重新添加 torrent。仅管理员可调用。
+      security: [{ApiKey: []}]
+      parameters:
+        - {in: path, name: task_hash, required: true, schema: {type: string}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [location]
+              properties:
+                location: {type: string, examples: [/Downloads/TV]}
+      responses:
+        '202': {description: 数据迁移已启动}
         '404': {description: 下载器任务不存在}
   /api/qb/status:
     get:

@@ -138,8 +138,11 @@ def test_transmission_maps_torrent_info_and_rename_resume(tmp_path):
     client.resume("hash")
     responses.post(RPC, json={"result": "success", "arguments": {}})
     client.recheck("hash")
-    assert len(responses.calls) == 4
+    responses.post(RPC, json={"result": "success", "arguments": {}})
+    client.set_location("hash", "/Downloads/TV")
+    assert len(responses.calls) == 5
     assert b"torrent-verify" in responses.calls[3].request.body
+    assert b"torrent-set-location" in responses.calls[4].request.body
 
 
 @responses.activate

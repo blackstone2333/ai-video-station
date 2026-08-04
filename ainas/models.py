@@ -80,6 +80,17 @@ class NamingCheckRequest(StrictModel):
     job_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
 
 
+class DownloaderRelocateRequest(StrictModel):
+    location: Path
+
+    @field_validator("location")
+    @classmethod
+    def absolute_location(cls, value: Path) -> Path:
+        if not value.is_absolute():
+            raise ValueError("location must be an absolute downloader path")
+        return value
+
+
 class SitePatchRequest(StrictModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     enabled: Optional[bool] = None
@@ -122,6 +133,7 @@ class PathRulePatchRequest(StrictModel):
     media_type: Optional[Literal["movie", "tv", "anime", "custom"]] = None
     name: Optional[str] = Field(default=None, min_length=1, max_length=100)
     source_path: Optional[Path] = None
+    downloader_path: Optional[Path] = None
     target_path: Optional[Path] = None
     enabled: Optional[bool] = None
     rename_enabled: Optional[bool] = None

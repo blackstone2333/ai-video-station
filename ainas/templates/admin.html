@@ -251,7 +251,8 @@
       <header><div><span class="auth-kicker">PATH MAPPING</span><h2 id="path-rule-title">新增目录映射</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
       <input id="path-rule-id" type="hidden">
       <div class="field-pair"><label>媒体类型<select id="path-rule-type"><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>映射名称<input id="path-rule-name" required maxlength="100" placeholder="例如：国内电影"></label></div>
-      <label>下载源目录<input id="path-rule-source" required placeholder="/volume1/video/Downloads/Movie"></label>
+      <label>NAS 下载源目录<input id="path-rule-source" required placeholder="/volume1/video/Downloads/Movie"></label>
+      <label>下载器容器目录<input id="path-rule-downloader" required placeholder="/Downloads/Movie"><small>必须是 qBittorrent / Transmission 容器内部可见的挂载路径。</small></label>
       <label>硬链接目标目录<input id="path-rule-target" required placeholder="/volume1/video/video/movies"></label>
       <div class="check-grid"><label><input id="path-rule-enabled" type="checkbox" checked> 启用映射</label><label><input id="path-rule-rename" type="checkbox" checked> 自动规范命名</label><label><input id="path-rule-default" type="checkbox"> 设为默认下载目录</label></div>
       <button class="primary-button wide" type="submit">保存目录映射</button>

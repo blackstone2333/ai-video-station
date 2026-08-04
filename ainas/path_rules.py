@@ -27,6 +27,7 @@ class PathRuleInput(BaseModel):
     media_type: MediaRuleType
     name: str = Field(min_length=1, max_length=100)
     source_path: Path
+    downloader_path: Optional[Path] = None
     target_path: Path
     enabled: bool = True
     rename_enabled: bool = True
@@ -64,6 +65,7 @@ class PathRuleRepository:
                     "media_type": media_type,
                     "name": name,
                     "source_path": str(source),
+                    "downloader_path": str(source),
                     "target_path": str(target),
                     "enabled": True,
                     "rename_enabled": media_type != "custom",
@@ -99,6 +101,7 @@ class PathRuleRepository:
             raise ValidationAppError(f"目录映射配置无效：{exc}") from exc
         base = self._normalized(self.settings.medialib_base_path, "medialib_base_path")
         source = self._normalized(parsed.source_path, "source_path")
+        downloader = self._normalized(parsed.downloader_path or source, "downloader_path")
         target = self._normalized(parsed.target_path, "target_path")
         errors = []
         for field, path in (("source_path", source), ("target_path", target)):
@@ -114,7 +117,12 @@ class PathRuleRepository:
                 )
         if errors:
             raise ValidationAppError("目录映射超出了 Docker 可访问范围", errors)
-        return {**parsed.model_dump(), "source_path": str(source), "target_path": str(target)}
+        return {
+            **parsed.model_dump(),
+            "source_path": str(source),
+            "downloader_path": str(downloader),
+            "target_path": str(target),
+        }
 
     def _read(self) -> Dict[str, Any]:
         try:

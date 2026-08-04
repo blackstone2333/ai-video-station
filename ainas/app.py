@@ -17,6 +17,7 @@ from .logging_config import configure_logging, read_log_entries
 from .middleware import install_middleware
 from .models import (
     DownloadRequest,
+    DownloaderRelocateRequest,
     DownloaderSettingsPatchRequest,
     ManualDownloadRequest,
     ManualTorrentRequest,
@@ -350,6 +351,22 @@ def create_app(
         services.qb.resume(task_hash)
         logger.info("downloader_task_recovery_started", extra={"task_hash": task_hash.lower()})
         return jsonify({"success": True, "task_hash": task_hash.lower(), "status": "verification_started"}), 202
+
+    @app.post("/api/downloader/tasks/<task_hash>/relocate")
+    def downloader_task_relocate(task_hash: str):
+        require_admin()
+        body = _parse_json(DownloaderRelocateRequest)
+        torrent = services.qb.torrent_info(task_hash)
+        if not torrent:
+            raise NotFoundError("downloader task", task_hash)
+        services.qb.set_location(task_hash, body.location)
+        logger.info(
+            "downloader_task_relocation_started",
+            extra={"task_hash": task_hash.lower(), "location": str(body.location)},
+        )
+        return jsonify(
+            {"success": True, "task_hash": task_hash.lower(), "location": str(body.location), "status": "moving"}
+        ), 202
 
     @app.route("/api/watchlist/add", methods=["POST", "OPTIONS"])
     def watchlist_add():

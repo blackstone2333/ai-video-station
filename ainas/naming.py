@@ -400,19 +400,28 @@ class NamingService:
         self.path_rules = path_rules
         self._lock = threading.Lock()
 
-    def _download_path(self, plan: NamingPlan, final_category: str) -> Path:
-        """Keep each release isolated below its configured media-type download root."""
+    def _download_path(
+        self,
+        plan: NamingPlan,
+        final_category: str,
+        rule: Optional[Dict[str, Any]] = None,
+    ) -> Path:
+        """Return the downloader-visible path, distinct from AVS's host source path."""
         roots = {
             "movie": self.settings.download_movie_path,
             "tv": self.settings.download_tv_path,
             "anime": self.settings.download_anime_path,
             "custom": self.settings.download_custom_path,
         }
-        root = roots.get(plan.media_type, self.settings.download_path_for_category(final_category))
+        root = (rule or {}).get("downloader_path") or roots.get(
+            plan.media_type,
+            self.settings.download_path_for_category(final_category),
+        )
         return Path(root) / safe_name(plan.root_name)
 
     def add_download(self, release: Release, final_category: str) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
+        rule = None
         if self.path_rules:
             source = self.settings.download_path_for_category(final_category)
             rule = self.path_rules.match(release.media_type, source)
@@ -426,7 +435,7 @@ class NamingService:
             release.download_link,
             current_category,
             rename=plan.root_name if self.settings.naming_enabled and plan.rename_enabled else None,
-            save_path=self._download_path(plan, final_category),
+            save_path=self._download_path(plan, final_category, rule),
         )
         job = None
         if (use_staging or track_only) and hash_value:
@@ -450,6 +459,7 @@ class NamingService:
         torrent_hash_value: str,
     ) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
+        rule = None
         if self.path_rules:
             source = self.settings.download_path_for_category(final_category)
             rule = self.path_rules.match(release.media_type, source)
@@ -463,7 +473,7 @@ class NamingService:
             filename,
             current_category,
             rename=plan.root_name if use_staging else None,
-            save_path=self._download_path(plan, final_category),
+            save_path=self._download_path(plan, final_category, rule),
         )
         job = None
         if use_staging or track_only:

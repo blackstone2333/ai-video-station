@@ -9,6 +9,7 @@ from ainas.config import Settings
 from ainas.errors import UpstreamError
 from ainas.medialib import MediaLibraryService
 from ainas.naming import EmbyNamingPlanner, NamingJobRepository, NamingPlan, NamingService, safe_name
+from ainas.path_rules import PathRuleRepository
 from ainas.quality import build_release
 
 
@@ -308,6 +309,19 @@ def test_naming_service_stages_renames_and_releases_torrent(tmp_path):
     assert report["completed"] == 1
     assert ("category", "sixv-movie") in qb.calls
     assert any(call[0] == "rename_file" for call in qb.calls)
+
+
+def test_naming_uses_downloader_container_path_from_rule(tmp_path):
+    settings = naming_settings(tmp_path)
+    rules = PathRuleRepository(settings)
+    rules.update("default-movie", {"downloader_path": "/Downloads/Movie"})
+    qb = FakeQB()
+    service = NamingService(settings, NamingJobRepository(settings.naming_jobs_path), qb, path_rules=rules)
+
+    service.add_download(movie_release(), settings.qb_movie_category)
+
+    assert qb.save_paths == [Path("/Downloads/Movie/大黄蜂 (2018)")]
+    assert settings.download_movie_path == Path("/volume1/video/Downloads/Movie")
 
 
 def test_naming_verifies_realized_paths_before_marking_job_complete(tmp_path):

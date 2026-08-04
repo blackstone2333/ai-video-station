@@ -30,6 +30,7 @@ def test_path_rules_support_multiple_mappings_defaults_and_longest_match(tmp_pat
     settings = rule_settings(tmp_path)
     repository = PathRuleRepository(settings)
     assert {item["media_type"] for item in repository.list()} == {"movie", "tv", "anime", "custom"}
+    assert repository.get("default-tv")["downloader_path"] == str(settings.download_tv_path)
 
     base = settings.medialib_base_path
     domestic = repository.add(
@@ -37,6 +38,7 @@ def test_path_rules_support_multiple_mappings_defaults_and_longest_match(tmp_pat
             "media_type": "movie",
             "name": "国内电影",
             "source_path": base / "Downloads" / "Movie" / "CN",
+            "downloader_path": "/Downloads/Movie/CN",
             "target_path": base / "Library" / "Movies" / "CN",
             "enabled": True,
             "rename_enabled": True,
@@ -47,6 +49,7 @@ def test_path_rules_support_multiple_mappings_defaults_and_longest_match(tmp_pat
     assert len(movie_rules) == 2
     assert sum(item["default_download"] for item in movie_rules) == 1
     assert settings.download_movie_path == Path(domestic["source_path"])
+    assert domestic["downloader_path"] == "/Downloads/Movie/CN"
 
     matched = repository.match("movie", base / "Downloads" / "Movie" / "CN" / "Film" / "movie.mkv")
     assert matched["id"] == domestic["id"]

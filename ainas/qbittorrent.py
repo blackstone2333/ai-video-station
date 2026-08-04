@@ -272,6 +272,13 @@ class QBittorrentClient:
     def recheck(self, hash_value: str) -> None:
         self._request("POST", "/api/v2/torrents/recheck", data={"hashes": hash_value})
 
+    def set_location(self, hash_value: str, location: Any) -> None:
+        self._request(
+            "POST",
+            "/api/v2/torrents/setLocation",
+            data={"hashes": hash_value, "location": str(location)},
+        )
+
     def status(self) -> Dict[str, Any]:
         if not self.configured:
             return {

@@ -204,6 +204,12 @@ class TransmissionClient:
     def recheck(self, hash_value: str) -> None:
         self._rpc("torrent-verify", {"ids": [hash_value]})
 
+    def set_location(self, hash_value: str, location: Any) -> None:
+        self._rpc(
+            "torrent-set-location",
+            {"ids": [hash_value], "location": str(location), "move": True},
+        )
+
     def status(self) -> Dict[str, Any]:
         if not self.configured:
             return {
