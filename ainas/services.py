@@ -328,14 +328,49 @@ class WatchlistService:
             for release in candidates:
                 if release.id in downloaded_links:
                     continue
-                if self.naming:
-                    self.naming.add_download(release, category)
-                else:
-                    self.qb.add_download(release.download_link, category)
+                try:
+                    if self.naming:
+                        self.naming.add_download(release, category)
+                    else:
+                        self.qb.add_download(release.download_link, category)
+                except AppError as exc:
+                    failed_changes = {
+                        **base_changes,
+                        "downloaded_links": sorted(downloaded_links),
+                        "downloaded_episodes": sorted(downloaded_episodes),
+                        "status": (
+                            "monitoring"
+                            if resolved_type in EPISODIC_MEDIA_TYPES
+                            else item.get("status", "pending")
+                        ),
+                        "found_at": item.get("found_at") or (now if downloaded_links else None),
+                        "last_error": exc.detail,
+                    }
+                    updated = self.repository.update(item["id"], failed_changes)
+                    logger.warning(
+                        "watchlist_item_failed",
+                        extra={"item_id": item["id"], "error_code": exc.code},
+                    )
+                    return {
+                        "item": updated,
+                        "found": len(releases),
+                        "downloaded": added,
+                        "error": exc.detail,
+                    }
                 downloaded_links.add(release.id)
                 if release.episode:
                     downloaded_episodes.add(release.episode)
                 added += 1
+                self.repository.update(
+                    item["id"],
+                    {
+                        **base_changes,
+                        "downloaded_links": sorted(downloaded_links),
+                        "downloaded_episodes": sorted(downloaded_episodes),
+                        "status": "monitoring" if resolved_type in EPISODIC_MEDIA_TYPES else "found",
+                        "found_at": item.get("found_at") or now,
+                    },
+                )
 
             base_changes.update(
                 {

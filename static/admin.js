@@ -7,7 +7,7 @@ function storedTheme() {
 }
 const state = {
   apiKey: sessionStorage.getItem("aiVideoStationApiKey") || sessionStorage.getItem("sixvApiKey") || "",
-  watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], pathRules: [], agents: [],
+  watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], pathRules: [], agents: [], logs: [],
   paths: null, downloaderSettings: null, systemSettings: null, qb: null, loading: false,
   pathsDirty: false, downloaderDirty: false, systemDirty: false,
   theme: {...DEFAULT_THEME, ...storedTheme()},
@@ -114,9 +114,15 @@ function resolvedTheme() {
 function applyTheme() {
   document.documentElement.dataset.theme = resolvedTheme();
   $("#theme-mode").value = state.theme.mode;
+  $("#header-theme-mode").value = state.theme.mode;
   $("#theme-light-start").value = state.theme.lightStart;
   $("#theme-dark-start").value = state.theme.darkStart;
   $("#theme-schedule").classList.toggle("hidden", state.theme.mode !== "schedule");
+}
+
+function saveTheme() {
+  localStorage.setItem("aiVideoStationTheme", JSON.stringify(state.theme));
+  applyTheme();
 }
 
 function renderMetrics() {
@@ -260,16 +266,29 @@ function renderSystemSettings() {
 }
 
 function renderAgents() {
-  const online = state.agents.filter((item) => item.online);
+  const active = state.agents.filter((item) => !item.revoked);
   const button = $("#agent-connect");
-  button.classList.toggle("online", online.length > 0);
-  button.querySelector("span").textContent = online.length ? `${online.length} 个 Agent 在线` : "连接 Agent";
+  button.classList.toggle("online", active.length > 0);
+  button.querySelector("span").textContent = active.length ? `${active.length} 个 Agent 已授权` : "连接 Agent";
   $("#agent-count").textContent = `${state.agents.length} 个`;
-  $("#agent-list").innerHTML = state.agents.length ? state.agents.map((item) => `<div class="agent-item ${item.online ? "online" : ""}"><i></i><div><strong>${escapeHTML(item.name)}</strong><small>${item.revoked ? "已撤销" : item.online ? `在线 · ${formatDate(item.last_seen)}` : `离线 · ${formatDate(item.last_seen || item.created_at)}`}</small></div>${item.revoked ? "" : `<button class="danger-button" data-revoke-agent="${item.id}" type="button">撤销</button>`}</div>`).join("") : '<div class="empty">尚未授权 Agent</div>';
+  $("#agent-list").innerHTML = state.agents.length ? state.agents.map((item) => `<div class="agent-item ${item.online ? "online" : ""}"><i></i><div><strong>${escapeHTML(item.name)}</strong><small>${item.revoked ? "已撤销" : item.last_seen ? `最近使用 · ${formatDate(item.last_seen)}` : `已授权 · ${formatDate(item.created_at)}`}</small></div>${item.revoked ? "" : `<button class="danger-button" data-revoke-agent="${item.id}" type="button">撤销</button>`}</div>`).join("") : '<div class="empty">尚未授权 Agent</div>';
+}
+
+function renderLogs() {
+  const level = $("#log-level").value;
+  const query = $("#log-query").value.trim().toLowerCase();
+  const values = state.logs.filter((item) => (!level || item.level === level) && (!query || JSON.stringify(item).toLowerCase().includes(query)));
+  $("#log-count").textContent = `${values.length} 条`;
+  $("#log-list").innerHTML = values.length ? values.map((item) => {
+    const details = {...item};
+    ["timestamp", "level", "logger", "message"].forEach((key) => delete details[key]);
+    const detailText = Object.keys(details).length ? JSON.stringify(details, null, 2) : "";
+    return `<article class="log-entry"><time>${escapeHTML(item.timestamp ? new Date(item.timestamp).toLocaleString("zh-CN", {hour12:false}) : "—")}</time><span class="log-level ${escapeHTML(item.level)}">${escapeHTML(String(item.level || "info").toUpperCase())}</span><span class="log-source">${escapeHTML(item.logger || "app")}</span><span class="log-message">${escapeHTML(item.message || "—")}</span>${detailText ? `<details class="log-detail"><summary>查看上下文</summary><pre>${escapeHTML(detailText)}</pre></details>` : ""}</article>`;
+  }).join("") : '<div class="empty">没有符合条件的日志</div>';
 }
 
 function renderAll() {
-  renderMetrics(); renderDownloads(); renderWatchlist(); renderNaming(); renderHardlinks(); renderSites(); renderPaths(); renderSystemSettings(); renderAgents(); renderAutomation();
+  renderMetrics(); renderDownloads(); renderWatchlist(); renderNaming(); renderHardlinks(); renderSites(); renderPaths(); renderSystemSettings(); renderAgents(); renderAutomation(); renderLogs();
   const online = state.qb?.connected;
   const downloader = state.qb?.client === "transmission" ? "Transmission" : "qBittorrent";
   $("#downloader-name").textContent = downloader;
@@ -286,7 +305,7 @@ async function loadAll(silent = false) {
     const paths = [
       "/api/downloader/status", "/api/downloader/tasks", "/api/watchlist", "/api/naming/jobs?per_page=100",
       "/api/hardlinks?status=all&per_page=100", "/api/settings/sites", "/api/settings/paths", "/api/settings/path-rules",
-      "/api/settings/downloader", "/api/settings/system", "/api/agents",
+      "/api/settings/downloader", "/api/settings/system", "/api/agents", "/api/logs?limit=500",
     ];
     const requests = await Promise.allSettled(paths.map((path) => api(path)));
     const authFailure = requests.find((item) => item.status === "rejected" && item.reason instanceof AuthError);
@@ -295,7 +314,7 @@ async function loadAll(silent = false) {
     state.qb = value(0, {configured:false,connected:false}); state.downloads = value(1, {tasks:[]}).tasks;
     state.watchlist = value(2, {items:[]}).items; state.naming = value(3, {items:[]}).items; state.hardlinks = value(4, {items:[]}).items;
     state.sites = value(5, {items:[]}).items; state.paths = value(6, {settings:state.paths}).settings; state.pathRules = value(7, {items:[]}).items;
-    state.downloaderSettings = value(8, {settings:state.downloaderSettings}).settings; state.systemSettings = value(9, {settings:state.systemSettings}).settings; state.agents = value(10, {items:[]}).items;
+    state.downloaderSettings = value(8, {settings:state.downloaderSettings}).settings; state.systemSettings = value(9, {settings:state.systemSettings}).settings; state.agents = value(10, {items:[]}).items; state.logs = value(11, {items:[]}).items;
     renderAll(); $("#auth-modal").classList.add("hidden");
     if (!silent && requests.some((item) => item.status === "rejected")) toast("部分数据暂时不可用", true);
   } catch (error) {
@@ -307,6 +326,14 @@ async function runAction(button, path, message, body = {}) {
   button.disabled = true;
   try { await api(path, {method:"POST", body:JSON.stringify(body)}); toast(message); await loadAll(true); }
   catch (error) { if (error instanceof AuthError) showAuth(error.message); else toast(error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function loadLogs() {
+  const button = $("#refresh-logs");
+  button.disabled = true;
+  try { state.logs = (await api("/api/logs?limit=500")).items; renderLogs(); toast("日志已刷新"); }
+  catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 }
 
@@ -330,7 +357,7 @@ function manualSourceChanged() {
 
 function agentPrompt(agent) {
   const origin = location.origin;
-  return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 先 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink"]}\n3. 连接后每 5 分钟 POST ${origin}/api/agents/heartbeat 保持在线状态\n4. 搜索时省略 add_to_watchlist 或明确传 false；只有用户明确要求订阅时才调用 /api/watchlist/add\n5. 读取 OpenAPI 后再调用业务接口；涉及新增下载、删除或修改设置时，先向我确认目标\n6. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
+  return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\nCLI：python -m ainas.cli\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 首次使用时 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink","logs"]}\n3. 不需要发送心跳；仅在需要查看或操作时调用 API，任意有效请求都会更新最近使用时间\n4. 也可以设置 AVS_URL=${origin} 与 AVS_TOKEN 后使用 CLI；先运行 python -m ainas.cli status\n5. 搜索时省略 add_to_watchlist 或明确传 false；只有用户明确要求订阅时才调用 /api/watchlist/add\n6. 读取 OpenAPI 后再调用业务接口；涉及新增下载、删除或修改设置时，先向我确认目标\n7. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
 }
 
 function bindEvents() {
@@ -342,6 +369,7 @@ function bindEvents() {
   $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => openModal("#download-modal")));
   $("#refresh-all").addEventListener("click", () => loadAll()); $("#watch-filter").addEventListener("input", renderWatchlist);
   $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks);
+  $("#log-level").addEventListener("change", renderLogs); $("#log-query").addEventListener("input", renderLogs); $("#refresh-logs").addEventListener("click", loadLogs);
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
   $("#watchlist-body").addEventListener("click", async (event) => {
@@ -389,8 +417,9 @@ function bindEvents() {
     if (id) delete payload.media_type;
     try { await api(id ? `/api/settings/path-rules/${id}` : "/api/settings/path-rules", {method:id?"PATCH":"POST",body:JSON.stringify(payload)}); toast("目录映射已保存"); $("#path-rule-modal").classList.add("hidden"); await loadAll(true); } catch (error) { toast(error.message, true); }
   });
+  $("#header-theme-mode").addEventListener("change", () => { state.theme = {...state.theme, mode:$("#header-theme-mode").value}; saveTheme(); toast("主题已切换"); });
   $("#theme-mode").addEventListener("change", () => $("#theme-schedule").classList.toggle("hidden", $("#theme-mode").value !== "schedule"));
-  $("#theme-form").addEventListener("submit", (event) => { event.preventDefault(); state.theme = {mode:$("#theme-mode").value,lightStart:$("#theme-light-start").value,darkStart:$("#theme-dark-start").value}; localStorage.setItem("aiVideoStationTheme", JSON.stringify(state.theme)); applyTheme(); toast("主题设置已保存"); });
+  $("#theme-form").addEventListener("submit", (event) => { event.preventDefault(); state.theme = {mode:$("#theme-mode").value,lightStart:$("#theme-light-start").value,darkStart:$("#theme-dark-start").value}; saveTheme(); toast("主题设置已保存"); });
   $("#system-form").addEventListener("input", () => { state.systemDirty = true; });
   $("#system-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = event.currentTarget.querySelector("button"); button.disabled = true; try { const result = await api("/api/settings/system", {method:"PATCH",body:JSON.stringify({watchlist_check_hours:Number($("#watchlist-hours").value)})}); state.systemSettings = result.settings; state.systemDirty = false; toast("订阅检查周期已更新"); renderAutomation(); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
   $("#downloader-type").addEventListener("change", () => { state.downloaderDirty = true; toggleDownloaderFields(); });
@@ -411,4 +440,4 @@ function bindEvents() {
 function tickClock() { $("#clock").textContent = new Date().toLocaleTimeString("zh-CN", {hour12:false}); if (state.theme.mode === "schedule") applyTheme(); }
 applyTheme(); bindEvents(); tickClock();
 const initialTab = location.hash.slice(1); if ($(`[data-panel="${CSS.escape(initialTab)}"]`)) setTab(initialTab);
-loadAll(); setInterval(tickClock, 60000); setInterval(() => { if (!document.hidden) loadAll(true); }, 20000);
+loadAll(); setInterval(tickClock, 60000);

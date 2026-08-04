@@ -104,8 +104,20 @@ class QBittorrentClient:
             [{"field": "download_link", "message": "unsupported download scheme", "code": "UNSUPPORTED_LINK"}],
         )
 
+    def categories(self) -> Dict[str, Any]:
+        response = self._request("GET", "/api/v2/torrents/categories")
+        value = response.json()
+        return value if isinstance(value, dict) else {}
+
     def ensure_category(self, category: str) -> None:
+        """Create a missing category without rewriting existing qB configuration."""
         if not category:
+            return
+        try:
+            if category in self.categories():
+                return
+        except UpstreamError:
+            logger.warning("qb_category_lookup_failed", extra={"category": category})
             return
         save_path = str(self.settings.download_path_for_category(category))
         try:
@@ -115,14 +127,17 @@ class QBittorrentClient:
                 data={"category": category, "savePath": save_path},
             )
         except UpstreamError:
-            try:
-                self._request(
-                    "POST",
-                    "/api/v2/torrents/editCategory",
-                    data={"category": category, "savePath": save_path},
-                )
-            except UpstreamError:
-                logger.warning("qb_category_update_failed", extra={"category": category})
+            logger.warning("qb_category_create_failed", extra={"category": category})
+
+    def _accepted_or_registered(self, response: requests.Response, hash_value: Optional[str]) -> bool:
+        if response.text.strip() == "Ok.":
+            return True
+        if not hash_value:
+            return False
+        try:
+            return self.torrent_info(hash_value) is not None
+        except UpstreamError:
+            return False
 
     def add_download(
         self,
@@ -139,17 +154,18 @@ class QBittorrentClient:
             "category": category,
             "savepath": str(save_path or self.settings.download_path_for_category(category)),
             "paused": "false",
+            "autoTMM": "false",
         }
         if rename:
             payload["rename"] = rename
+        task_hash = torrent_hash(link)
         response = self._request(
             "POST",
             "/api/v2/torrents/add",
             data=payload,
         )
-        if response.text.strip() != "Ok.":
+        if not self._accepted_or_registered(response, task_hash):
             raise UpstreamError("qBittorrent", "torrent was not accepted")
-        task_hash = torrent_hash(link)
         logger.info("qb_download_added", extra={"task_hash": task_hash, "category": category})
         return {"qb_task_id": task_hash, "category": category}
 
@@ -168,6 +184,7 @@ class QBittorrentClient:
             "category": category,
             "savepath": str(save_path or self.settings.download_path_for_category(category)),
             "paused": "false",
+            "autoTMM": "false",
         }
         if rename:
             payload["rename"] = rename
@@ -177,7 +194,7 @@ class QBittorrentClient:
             data=payload,
             files={"torrents": (filename, content, "application/x-bittorrent")},
         )
-        if response.text.strip() != "Ok.":
+        if not self._accepted_or_registered(response, metadata.info_hash):
             raise UpstreamError("qBittorrent", "torrent file was not accepted")
         logger.info("qb_torrent_file_added", extra={"task_hash": metadata.info_hash, "category": category})
         return {"qb_task_id": metadata.info_hash, "category": category, "torrent_name": metadata.name}

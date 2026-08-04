@@ -1,8 +1,8 @@
 openapi: 3.1.0
 info:
   title: AI Video Station API
-  version: 1.5.1
-  description: 多站点媒体搜索、订阅、手动下载、规范命名、目录映射、硬链接入库与 Agent 接入。
+  version: 1.5.3
+  description: 多站点媒体搜索、订阅、手动下载、规范命名、目录映射、硬链接入库、日志诊断与按需 Agent 接入。
 servers:
   - url: http://localhost:16666
 components:
@@ -340,6 +340,17 @@ paths:
         - {in: query, name: status, schema: {type: string, default: done}}
       responses:
         '200': {description: 硬链接记录列表}
+  /api/logs:
+    get:
+      summary: 查看结构化系统日志
+      description: 返回最新日志；Agent 无需心跳，调用此接口也会更新最近使用时间。
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters:
+        - {in: query, name: limit, schema: {type: integer, minimum: 1, maximum: 1000, default: 200}}
+        - {in: query, name: level, schema: {type: string, enum: [debug, info, warning, error, critical]}}
+        - {in: query, name: query, schema: {type: string, maxLength: 200}}
+      responses:
+        '200': {description: 已按新到旧返回脱敏日志}
   /api/settings/sites:
     get:
       summary: 获取媒体站点配置
@@ -492,7 +503,7 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
   /api/agents:
     get:
-      summary: 获取 Agent 授权和在线状态
+      summary: 获取 Agent 授权和最近使用状态
       security: [{ApiKey: []}, {AgentToken: []}]
       responses:
         '200': {description: Agent 列表，不返回令牌或哈希}
@@ -537,10 +548,12 @@ paths:
         '403': {$ref: '#/components/responses/Forbidden'}
   /api/agents/heartbeat:
     post:
-      summary: Agent 在线心跳
+      deprecated: true
+      summary: 旧版 Agent 心跳兼容接口
+      description: 无需定时调用；任意有效 Agent API 请求都会更新最近使用时间。
       security: [{AgentToken: []}]
       responses:
-        '200': {description: 心跳已记录}
+        '200': {description: 兼容请求已记录}
   /api/agents/{agent_id}:
     delete:
       summary: 撤销 Agent 令牌（管理员）

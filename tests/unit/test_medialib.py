@@ -133,6 +133,134 @@ def test_tv_keeps_season_and_adds_it_for_root_episodes(tmp_path):
     assert third.stat().st_ino == root_episode.stat().st_ino
 
 
+def test_hardlink_uses_file_and_folder_paths_from_completed_naming_job(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    source = mount / "Downloads" / "sixv-tv" / "Season 01" / "斯图尔特未能拯救宇宙 - S01E01 - 1080p.HD.mp4"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"episode")
+
+    result = MediaLibraryService(settings).link_completed(
+        {"save_path": str(host / "Downloads" / "sixv-tv")},
+        [
+            {
+                "name": "第1季/斯图尔特未能拯救宇宙.Stuart.Fails.1080p.HD中英双字.mp4",
+                "priority": 1,
+            }
+        ],
+        {
+            "media_type": "tv",
+            "media_name": "斯图尔特未能拯救宇宙",
+            "root_name": "斯图尔特未能拯救宇宙",
+        },
+        {
+            "operations": [
+                {
+                    "kind": "file",
+                    "old_path": "第1季/斯图尔特未能拯救宇宙.Stuart.Fails.1080p.HD中英双字.mp4",
+                    "new_path": "第1季/斯图尔特未能拯救宇宙 - S01E01 - 1080p.HD.mp4",
+                }
+            ],
+            "folder_operations": [
+                {"kind": "folder", "old_path": "第1季", "new_path": "Season 01"}
+            ],
+        },
+    )
+
+    target = mount / "video" / "tv" / "斯图尔特未能拯救宇宙" / "Season 01" / source.name
+    assert result["linked"] == 1
+    assert result["files"][0]["source"] == str(source.resolve())
+    assert target.stat().st_ino == source.stat().st_ino
+
+
+def test_hardlink_does_not_duplicate_season_when_save_path_is_already_the_season(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    source = (
+        mount
+        / "Downloads"
+        / "TV"
+        / "斯图尔特未能拯救宇宙"
+        / "Season 01"
+        / "斯图尔特未能拯救宇宙 - S01E01 - 1080p.HD.mp4"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"episode-one")
+
+    torrent = {"save_path": str(host / "Downloads" / "TV" / "斯图尔特未能拯救宇宙" / "Season 01")}
+    files = [
+            {
+                "name": "Season 01/斯图尔特未能拯救宇宙.Stuart.Fails.S01E01.mp4",
+                "priority": 1,
+            }
+        ]
+    naming_result = {
+        "operations": [
+            {
+                "kind": "file",
+                "old_path": "Season 01/斯图尔特未能拯救宇宙.Stuart.Fails.S01E01.mp4",
+                "new_path": "Season 01/斯图尔特未能拯救宇宙 - S01E01 - 1080p.HD.mp4",
+            }
+        ],
+        "folder_operations": [],
+    }
+    service = MediaLibraryService(settings)
+    verified = service.verify_named_sources(torrent, files, naming_result)
+    result = service.link_completed(
+        torrent,
+        files,
+        {
+            "media_type": "tv",
+            "media_name": "斯图尔特未能拯救宇宙",
+            "root_name": "斯图尔特未能拯救宇宙",
+        },
+        naming_result,
+    )
+
+    target = mount / "video" / "tv" / "斯图尔特未能拯救宇宙" / "Season 01" / source.name
+    assert verified["count"] == 1
+    assert result["linked"] == 1
+    assert target.stat().st_ino == source.stat().st_ino
+
+
+def test_hardlink_uses_original_source_as_safe_fallback_but_normalized_target(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    old_name = "斯图尔特未能拯救宇宙.Stuart.Fails.S01E02.mp4"
+    new_name = "斯图尔特未能拯救宇宙 - S01E02 - 1080p.HD.mp4"
+    source = mount / "Downloads" / "TV" / "斯图尔特未能拯救宇宙 (2026)" / "Season 01" / old_name
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"episode-two")
+
+    torrent = {"save_path": str(host / "Downloads" / "TV" / "斯图尔特未能拯救宇宙 (2026)")}
+    files = [{"name": f"Season 01/{old_name}", "priority": 1}]
+    naming_result = {
+        "operations": [
+            {
+                "kind": "file",
+                "old_path": f"Season 01/{old_name}",
+                "new_path": f"Season 01/{new_name}",
+            }
+        ],
+        "folder_operations": [],
+    }
+    service = MediaLibraryService(settings)
+    with pytest.raises(HardlinkError, match="downloaded file is missing"):
+        service.verify_named_sources(torrent, files, naming_result)
+    result = service.link_completed(
+        torrent,
+        files,
+        {
+            "media_type": "tv",
+            "media_name": "斯图尔特未能拯救宇宙",
+            "root_name": "斯图尔特未能拯救宇宙 (2026)",
+        },
+        naming_result,
+    )
+
+    target = mount / "video" / "tv" / "斯图尔特未能拯救宇宙 (2026)" / "Season 01" / new_name
+    assert result["linked"] == 1
+    assert result["files"][0]["source"] == str(source.resolve())
+    assert target.stat().st_ino == source.stat().st_ino
+
+
 def test_anime_links_to_separate_library_with_season_structure(tmp_path):
     settings, host, mount = media_settings(tmp_path)
     source = mount / "Downloads" / "Anime" / "Rick and Morty - S01E01.mkv"
@@ -214,6 +342,20 @@ def test_existing_files_are_skipped_and_same_inode_is_reported(tmp_path):
     second = service.link_completed(torrent, files, plan)
     assert second["already_linked"] == 1
     assert second["files"][0]["status"] == "already-linked"
+
+
+def test_hardlink_rejects_a_source_whose_size_disagrees_with_qbittorrent(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    source = mount / "Downloads" / "TV" / "Season 01" / "测试剧 - S01E01.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"wrong-size")
+
+    with pytest.raises(HardlinkError, match="size does not match"):
+        MediaLibraryService(settings).link_completed(
+            {"save_path": str(host / "Downloads" / "TV")},
+            [{"name": "Season 01/测试剧 - S01E01.mkv", "priority": 1, "size": 123456}],
+            {"media_type": "tv", "media_name": "测试剧", "root_name": "测试剧"},
+        )
 
 
 @pytest.mark.parametrize("name", ["../secret.mkv", "/etc/passwd", "folder\\..\\secret.mkv"])

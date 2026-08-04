@@ -7,6 +7,7 @@ import pytest
 
 from ainas.config import Settings
 from ainas.errors import UpstreamError
+from ainas.medialib import MediaLibraryService
 from ainas.naming import EmbyNamingPlanner, NamingJobRepository, NamingPlan, NamingService, safe_name
 from ainas.quality import build_release
 
@@ -168,8 +169,10 @@ def test_repository_is_persistent_and_idempotent(tmp_path):
 
 class FakeQB:
     def __init__(self, files=None, torrent=True, fail_rename=False):
-        self.file_values = files if files is not None else [{"name": "DHF.mp4", "size": 1000}]
-        self.torrent_value = {"hash": HASH} if torrent else None
+        self.file_values = files if files is not None else [
+            {"name": "DHF.mp4", "size": 1000, "progress": 1.0, "priority": 1}
+        ]
+        self.torrent_value = {"hash": HASH, "progress": 1.0} if torrent else None
         self.fail_rename = fail_rename
         self.calls = []
         self.save_paths = []
@@ -219,11 +222,68 @@ class FakeHardlinker:
     def enabled(self):
         return True
 
-    def link_completed(self, torrent, files, plan):
-        self.calls.append((torrent, files, plan))
+    def link_completed(self, torrent, files, plan, naming_result=None):
+        self.calls.append((torrent, files, plan, naming_result))
         if self.fail:
             raise UpstreamError("media library", "link failed")
         return {"status": "done", "linked": 1, "skipped": 0, "files": []}
+
+
+class FakeVerifyingHardlinker(FakeHardlinker):
+    def __init__(self):
+        super().__init__()
+        self.verify_calls = 0
+
+    def verify_named_sources(self, torrent, files, naming_result):
+        self.verify_calls += 1
+        if self.verify_calls == 1:
+            raise UpstreamError("media library", "planned path is not ready")
+        return {"status": "ready", "count": len(files)}
+
+
+class FilesystemQB(FakeQB):
+    def __init__(self, host_root: Path, mount_root: Path):
+        super().__init__(files=[])
+        self.host_root = host_root
+        self.mount_root = mount_root
+        self.progress = 0.5
+        self.save_path = None
+
+    def _mounted(self, host_path: Path) -> Path:
+        return self.mount_root / host_path.relative_to(self.host_root)
+
+    def add_download(self, link, category, rename=None, save_path=None):
+        result = super().add_download(link, category, rename, save_path)
+        self.save_path = Path(save_path)
+        source = self._mounted(self.save_path) / "Season 02" / "02.mp4"
+        source.parent.mkdir(parents=True)
+        source.write_bytes(b"episode-two")
+        self.file_values = [
+            {
+                "name": "Season 02/02.mp4",
+                "size": source.stat().st_size,
+                "progress": self.progress,
+                "priority": 1,
+            }
+        ]
+        return result
+
+    def torrent_info(self, hash_value):
+        self.calls.append(("info", hash_value))
+        return {"hash": hash_value, "progress": self.progress, "save_path": str(self.save_path)}
+
+    def files(self, hash_value):
+        self.calls.append(("files", hash_value))
+        self.file_values[0]["progress"] = self.progress
+        return [dict(item) for item in self.file_values]
+
+    def rename_file(self, hash_value, old_path, new_path):
+        super().rename_file(hash_value, old_path, new_path)
+        source = self._mounted(self.save_path) / Path(old_path)
+        destination = self._mounted(self.save_path) / Path(new_path)
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        source.rename(destination)
+        self.file_values[0]["name"] = new_path
 
 
 def naming_settings(tmp_path: Path, **overrides):
@@ -240,9 +300,79 @@ def test_naming_service_stages_renames_and_releases_torrent(tmp_path):
     result = service.add_download(movie_release(), "sixv-movie")
     assert result["current_category"] == settings.qb_naming_category
     assert result["planned_name"] == "大黄蜂 (2018)"
-    assert result["naming_status"] == "completed"
+    assert result["naming_status"] == "pending"
+    assert qb.save_paths == [settings.download_movie_path / "大黄蜂 (2018)"]
+    assert not any(call[0].startswith("rename") for call in qb.calls)
+
+    report = service.check(result["naming_job_id"])
+    assert report["completed"] == 1
     assert ("category", "sixv-movie") in qb.calls
     assert any(call[0] == "rename_file" for call in qb.calls)
+
+
+def test_naming_verifies_realized_paths_before_marking_job_complete(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB()
+    hardlinker = FakeVerifyingHardlinker()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb, hardlinker=hardlinker)
+
+    result = service.add_download(movie_release(), settings.qb_movie_category)
+    report = service.check(result["naming_job_id"])
+
+    assert report["completed"] == 1
+    assert hardlinker.verify_calls == 2
+    assert repository.get(result["naming_job_id"])["status"] == "completed"
+
+
+def test_download_to_named_file_to_hardlink_chain_uses_only_avs_state(tmp_path):
+    host = tmp_path / "nas-video"
+    mount = tmp_path / "medialib"
+    mount.mkdir()
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        scheduler_enabled=False,
+        naming_max_attempts=2,
+        medialib_base_path=host,
+        medialib_mount_path=mount,
+        downloads_base_path=host / "Downloads",
+        download_movie_path=host / "Downloads" / "Movie",
+        download_tv_path=host / "Downloads" / "TV",
+        download_anime_path=host / "Downloads" / "Anime",
+        download_custom_path=host / "Downloads" / "Custom",
+        medialib_movie_path=host / "video" / "movies",
+        medialib_tv_path=host / "video" / "tv",
+        medialib_anime_path=host / "video" / "anime",
+        medialib_custom_path=host / "video" / "custom",
+    )
+    qb = FilesystemQB(host, mount)
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    hardlinker = MediaLibraryService(settings)
+    service = NamingService(settings, repository, qb, hardlinker=hardlinker)
+
+    result = service.add_download(tv_release(), settings.qb_tv_category)
+    first = service.check(result["naming_job_id"])
+    assert first["completed"] == 0
+    assert repository.get(result["naming_job_id"])["status"] == "waiting_download"
+
+    qb.progress = 1.0
+    second = service.check(result["naming_job_id"])
+    updated = repository.get(result["naming_job_id"])
+    source = (
+        mount
+        / "Downloads"
+        / "TV"
+        / "漫长的季节 (2026)"
+        / "Season 02"
+        / "漫长的季节 - S02E02.mp4"
+    )
+    target = mount / "video" / "tv" / "漫长的季节 (2026)" / "Season 02" / source.name
+
+    assert second["completed"] == 1
+    assert updated["status"] == "completed"
+    assert updated["hardlink_status"] == "done"
+    assert source.exists() and target.exists()
+    assert source.stat().st_ino == target.stat().st_ino
 
 
 def test_torrent_upload_keeps_staging_label_but_uses_final_download_path(tmp_path):
@@ -252,7 +382,8 @@ def test_torrent_upload_keeps_staging_label_but_uses_final_download_path(tmp_pat
     service = NamingService(settings, repository, qb)
     result = service.add_torrent_file(movie_release(), settings.qb_movie_category, b"torrent", "movie.torrent", HASH)
     assert result["current_category"] == settings.qb_naming_category
-    assert qb.save_paths == [settings.download_movie_path]
+    assert result["naming_status"] == "pending"
+    assert qb.save_paths == [settings.download_movie_path / "大黄蜂 (2018)"]
 
 
 def test_naming_service_waits_for_metadata_then_completes(tmp_path):
@@ -261,8 +392,11 @@ def test_naming_service_waits_for_metadata_then_completes(tmp_path):
     repository = NamingJobRepository(settings.naming_jobs_path)
     service = NamingService(settings, repository, qb)
     result = service.add_download(movie_release(), "sixv-movie")
-    assert result["naming_status"] == "waiting_metadata"
-    qb.torrent_value = {"hash": HASH}
+    assert result["naming_status"] == "pending"
+    first = service.check(result["naming_job_id"])
+    assert first["completed"] == 0
+    assert repository.get(result["naming_job_id"])["status"] == "waiting_metadata"
+    qb.torrent_value = {"hash": HASH, "progress": 1.0}
     report = service.check(result["naming_job_id"])
     assert report["completed"] == 1
 
@@ -273,7 +407,9 @@ def test_naming_service_retries_then_releases_failed_job(tmp_path):
     repository = NamingJobRepository(settings.naming_jobs_path)
     service = NamingService(settings, repository, qb)
     result = service.add_download(movie_release(), "sixv-movie")
-    assert result["naming_status"] == "failed"
+    assert result["naming_status"] == "pending"
+    service.check(result["naming_job_id"])
+    assert repository.get(result["naming_job_id"])["status"] == "failed"
     assert ("category", "sixv-movie") in qb.calls
     assert any(call[0] == "resume" for call in qb.calls)
 
@@ -297,8 +433,13 @@ def test_naming_waits_for_complete_download_then_hardlinks(tmp_path):
     service = NamingService(settings, repository, qb, hardlinker=hardlinker)
     result = service.add_download(movie_release(), "sixv-movie")
     job = repository.get(result["naming_job_id"])
-    assert job["status"] == "completed"
-    assert job["hardlink_status"] == "waiting_download"
+    assert job["status"] == "pending"
+    report = service.check(job["id"])
+    assert report["completed"] == 0
+    job = repository.get(job["id"])
+    assert job["status"] == "waiting_download"
+    assert job["hardlink_status"] is None
+    assert not any(call[0].startswith("rename") for call in qb.calls)
     assert not hardlinker.calls
 
     qb.torrent_value["progress"] = 1.0
@@ -307,6 +448,7 @@ def test_naming_waits_for_complete_download_then_hardlinks(tmp_path):
     updated = repository.get(job["id"])
     assert updated["hardlink_status"] == "done"
     assert len(hardlinker.calls) == 1
+    assert hardlinker.calls[0][3] == updated["result"]
 
 
 def test_custom_download_uses_final_category_and_hardlinks_without_rename(tmp_path):
@@ -320,10 +462,13 @@ def test_custom_download_uses_final_category_and_hardlinks_without_rename(tmp_pa
     result = service.add_download(custom_release(), settings.qb_custom_category)
 
     assert result["current_category"] == settings.qb_custom_category
-    assert result["naming_status"] == "completed"
-    assert result["hardlink_status"] == "done"
+    assert result["naming_status"] == "pending"
+    service.check(result["naming_job_id"])
+    updated = repository.get(result["naming_job_id"])
+    assert updated["status"] == "completed"
+    assert updated["hardlink_status"] == "done"
     assert ("add", settings.qb_custom_category, None) in qb.calls
-    assert qb.save_paths == [settings.download_custom_path]
+    assert qb.save_paths == [settings.download_custom_path / "Python-Course-Pack"]
     assert not any(call[0].startswith("rename") for call in qb.calls)
     assert hardlinker.calls[0][2].media_type == "custom"
 
@@ -336,6 +481,7 @@ def test_hardlink_failure_retries_and_can_be_manually_retried(tmp_path):
     repository = NamingJobRepository(settings.naming_jobs_path)
     service = NamingService(settings, repository, qb, hardlinker=hardlinker)
     result = service.add_download(movie_release(), "sixv-movie")
+    service.check(result["naming_job_id"])
     job = repository.get(result["naming_job_id"])
     assert job["hardlink_status"] == "failed"
     assert len(hardlinker.calls) == 1

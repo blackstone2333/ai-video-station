@@ -119,10 +119,13 @@ class MediaLibraryService:
         candidates: List[Path] = []
         if content_path is not None and file_count == 1 and content_path.is_file():
             candidates.append(content_path)
-        if save_path is not None:
-            candidates.append(save_path / relative)
+        for base in (save_path, content_path):
+            if base is None:
+                continue
+            candidates.append(base / relative)
+            if len(relative.parts) > 1 and relative.parts[0].casefold() == base.name.casefold():
+                candidates.append(base.joinpath(*relative.parts[1:]))
         if content_path is not None:
-            candidates.append(content_path / relative)
             if relative.parts and relative.parts[0] == content_path.name:
                 candidates.append(content_path.parent / relative)
         return list(dict.fromkeys(candidates))
@@ -147,6 +150,98 @@ class MediaLibraryService:
         except (OSError, ValueError) as exc:
             raise HardlinkError(f"source file escapes the /medialib mount: {source}") from exc
         return resolved
+
+    def _resolve_source_variants(
+        self,
+        relatives: Sequence[Path],
+        save_path: Path | None,
+        content_path: Path | None,
+        file_count: int,
+    ) -> Path:
+        candidates: List[Path] = []
+        for relative in relatives:
+            candidates.extend(self._source_candidates(relative, save_path, content_path, file_count))
+        candidates = list(dict.fromkeys(candidates))
+        source = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if source is None:
+            expected = relatives[0] if relatives else Path("unknown")
+            rendered = ", ".join(str(candidate) for candidate in candidates) or "no usable qBittorrent path"
+            raise HardlinkError(f"downloaded file is missing: {expected} (checked: {rendered})")
+        if source.is_symlink():
+            raise HardlinkError(f"refusing to hardlink a symbolic link: {source}")
+        try:
+            resolved = source.resolve(strict=True)
+            resolved.relative_to(self.mount_root.resolve(strict=True))
+        except (OSError, ValueError) as exc:
+            raise HardlinkError(f"source file escapes the /medialib mount: {source}") from exc
+        return resolved
+
+    def _folder_operations(self, naming_result: Mapping[str, Any] | None) -> List[tuple[Path, Path]]:
+        values: List[tuple[Path, Path]] = []
+        for operation in (naming_result or {}).get("folder_operations") or []:
+            if not isinstance(operation, Mapping):
+                continue
+            values.append(
+                (self._safe_relative(operation.get("old_path")), self._safe_relative(operation.get("new_path")))
+            )
+        values.sort(key=lambda item: len(item[0].parts), reverse=True)
+        return values
+
+    @staticmethod
+    def _apply_folder_operations(path: Path, operations: Sequence[tuple[Path, Path]]) -> Path:
+        value = path
+        for old_path, new_path in operations:
+            if value.parts[: len(old_path.parts)] == old_path.parts:
+                value = new_path.joinpath(*value.parts[len(old_path.parts) :])
+        return value
+
+    def _renamed_relative(self, relative: Path, naming_result: Mapping[str, Any] | None) -> Path:
+        """Resolve stale downloader paths to the paths produced by the naming job."""
+        if not naming_result:
+            return relative
+
+        folder_operations = self._folder_operations(naming_result)
+
+        def apply_folders(path: Path) -> Path:
+            return self._apply_folder_operations(path, folder_operations)
+
+        aliases: Dict[Path, Path] = {}
+        for operation in naming_result.get("operations") or []:
+            if not isinstance(operation, Mapping):
+                continue
+            old_path = self._safe_relative(operation.get("old_path"))
+            new_path = self._safe_relative(operation.get("new_path"))
+            final_path = apply_folders(new_path)
+            aliases[old_path] = final_path
+            aliases[apply_folders(old_path)] = final_path
+            aliases[new_path] = final_path
+
+        return aliases.get(relative, apply_folders(relative))
+
+    def _renamed_relatives(
+        self,
+        relative: Path,
+        naming_result: Mapping[str, Any] | None,
+    ) -> List[Path]:
+        final = self._renamed_relative(relative, naming_result)
+        variants = [final]
+        if naming_result:
+            folder_operations = self._folder_operations(naming_result)
+            for operation in naming_result.get("operations") or []:
+                if not isinstance(operation, Mapping):
+                    continue
+                old_path = self._safe_relative(operation.get("old_path"))
+                new_path = self._safe_relative(operation.get("new_path"))
+                if relative in {old_path, new_path, self._apply_folder_operations(old_path, folder_operations)}:
+                    variants.extend(
+                        [
+                            self._apply_folder_operations(old_path, folder_operations),
+                            new_path,
+                            old_path,
+                        ]
+                    )
+        variants.append(relative)
+        return list(dict.fromkeys(variants))
 
     @staticmethod
     def _strip_media_root(relative: Path, root_names: Sequence[str]) -> Path:
@@ -194,6 +289,44 @@ class MediaLibraryService:
             return (target_root or self._target_root(media_type)) / root_name / relative
         return (target_root or self._target_root(media_type)) / root_name / self._tv_relative(relative)
 
+    def verify_named_sources(
+        self,
+        torrent: Mapping[str, Any],
+        files: Iterable[Mapping[str, Any]],
+        naming_result: Mapping[str, Any] | None,
+    ) -> Dict[str, Any]:
+        """Confirm that every selected file exists at its planned post-naming path."""
+        values = [dict(item) for item in files if item.get("name")]
+        selected = [
+            item
+            for item in values
+            if int(item.get("priority", 1) or 0) > 0 and not self._is_padding(self._safe_relative(item["name"]))
+        ]
+        if not selected:
+            raise HardlinkError("qBittorrent returned no downloaded files to verify")
+
+        save_path = (
+            self._container_path(torrent["save_path"], "qBittorrent save_path")
+            if torrent.get("save_path")
+            else None
+        )
+        content_path = (
+            self._container_path(torrent["content_path"], "qBittorrent content_path")
+            if torrent.get("content_path")
+            else None
+        )
+        if save_path is None and content_path is None:
+            raise HardlinkError("qBittorrent did not provide save_path or content_path")
+
+        verified = []
+        for item in selected:
+            original = self._safe_relative(item["name"])
+            expected = self._renamed_relatives(original, naming_result)[0]
+            source = self._resolve_source_variants([expected], save_path, content_path, len(selected))
+            self._verify_source_size(source, item)
+            verified.append({"relative": str(expected), "source": str(source)})
+        return {"status": "ready", "count": len(verified), "files": verified}
+
     def _preflight_target(self, source: Path, destination: Path, target_root: Path) -> None:
         mount = self.mount_root.resolve(strict=True)
         try:
@@ -217,11 +350,21 @@ class MediaLibraryService:
     def _result(status: str, source: Path, destination: Path) -> Dict[str, str]:
         return {"status": status, "source": str(source), "target": str(destination)}
 
+    @staticmethod
+    def _verify_source_size(source: Path, item: Mapping[str, Any]) -> None:
+        expected = int(item.get("size") or 0)
+        actual = source.stat().st_size
+        if expected and actual != expected:
+            raise HardlinkError(
+                f"downloaded file size does not match qBittorrent metadata: {source} ({actual} != {expected})"
+            )
+
     def link_completed(
         self,
         torrent: Mapping[str, Any],
         files: Iterable[Mapping[str, Any]],
         plan: Mapping[str, Any] | Any,
+        naming_result: Mapping[str, Any] | None = None,
     ) -> Dict[str, Any]:
         """Hardlink every downloaded torrent file after naming has completed."""
         if not self.enabled:
@@ -258,8 +401,11 @@ class MediaLibraryService:
         target_root = self._target_root(str(plan_value.get("media_type") or ""), source_rule_path)
         content_root_name = content_path.name if content_path is not None and content_path.is_dir() else None
         for item in selected:
-            relative = self._safe_relative(item["name"])
-            source = self._resolve_source(relative, save_path, content_path, len(selected))
+            original_relative = self._safe_relative(item["name"])
+            relatives = self._renamed_relatives(original_relative, naming_result)
+            relative = relatives[0]
+            source = self._resolve_source_variants(relatives, save_path, content_path, len(selected))
+            self._verify_source_size(source, item)
             destination = self._destination(relative, plan_value, content_root_name, target_root)
             self._preflight_target(source, destination, target_root)
             prepared.append((source, destination))

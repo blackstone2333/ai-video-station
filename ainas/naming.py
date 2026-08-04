@@ -389,6 +389,17 @@ class NamingService:
         self.path_rules = path_rules
         self._lock = threading.Lock()
 
+    def _download_path(self, plan: NamingPlan, final_category: str) -> Path:
+        """Keep each release isolated below its configured media-type download root."""
+        roots = {
+            "movie": self.settings.download_movie_path,
+            "tv": self.settings.download_tv_path,
+            "anime": self.settings.download_anime_path,
+            "custom": self.settings.download_custom_path,
+        }
+        root = roots.get(plan.media_type, self.settings.download_path_for_category(final_category))
+        return Path(root) / safe_name(plan.root_name)
+
     def add_download(self, release: Release, final_category: str) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
         if self.path_rules:
@@ -404,13 +415,11 @@ class NamingService:
             release.download_link,
             current_category,
             rename=plan.root_name if self.settings.naming_enabled and plan.rename_enabled else None,
-            save_path=self.settings.download_path_for_category(final_category),
+            save_path=self._download_path(plan, final_category),
         )
         job = None
         if (use_staging or track_only) and hash_value:
             job = self.repository.upsert(hash_value, plan, final_category)
-            self.check(job["id"])
-            job = self.repository.get(job["id"])
         return {
             **result,
             "category": final_category,
@@ -443,13 +452,11 @@ class NamingService:
             filename,
             current_category,
             rename=plan.root_name if use_staging else None,
-            save_path=self.settings.download_path_for_category(final_category),
+            save_path=self._download_path(plan, final_category),
         )
         job = None
         if use_staging or track_only:
             job = self.repository.upsert(torrent_hash_value, plan, final_category)
-            self.check(job["id"])
-            job = self.repository.get(job["id"])
         return {
             **result,
             "category": final_category,
@@ -470,27 +477,77 @@ class NamingService:
     def _process_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
         now = utc_now_iso()
         checks = int(job.get("checks", 0)) + 1
-        torrent = self.qb.torrent_info(job["torrent_hash"])
+        try:
+            torrent = self.qb.torrent_info(job["torrent_hash"])
+        except AppError as exc:
+            attempts = int(job.get("attempts", 0)) + 1
+            return self.repository.update(
+                job["id"],
+                {
+                    "status": "failed" if attempts >= self.settings.naming_max_attempts else "retrying",
+                    "attempts": attempts,
+                    "checks": checks,
+                    "last_check": now,
+                    "last_error": exc.detail,
+                },
+            )
         if not torrent:
             return self.repository.update(
                 job["id"],
                 {"status": "waiting_metadata", "checks": checks, "last_check": now, "last_error": None},
             )
-        files = self.qb.files(job["torrent_hash"])
+        try:
+            files = self.qb.files(job["torrent_hash"])
+        except AppError as exc:
+            attempts = int(job.get("attempts", 0)) + 1
+            return self.repository.update(
+                job["id"],
+                {
+                    "status": "failed" if attempts >= self.settings.naming_max_attempts else "retrying",
+                    "attempts": attempts,
+                    "checks": checks,
+                    "last_check": now,
+                    "last_error": exc.detail,
+                },
+            )
         if not files:
             return self.repository.update(
                 job["id"],
                 {"status": "waiting_metadata", "checks": checks, "last_check": now, "last_error": None},
             )
+        progress = float(torrent.get("progress", 0) or 0)
+        selected = [item for item in files if int(item.get("priority", 1) or 0) > 0]
+        files_complete = all(float(item.get("progress", progress) or 0) >= 0.999999 for item in selected)
+        if progress < 0.999999 or not files_complete:
+            return self.repository.update(
+                job["id"],
+                {
+                    "status": "waiting_download",
+                    "checks": checks,
+                    "last_check": now,
+                    "last_error": None,
+                },
+            )
         plan = NamingPlan(**job["plan"])
         preview = self.planner.plan_files(files, plan)
         try:
+            verifier = getattr(self.hardlinker, "verify_named_sources", None)
+            already_named = False
+            if callable(verifier):
+                try:
+                    verifier(torrent, files, preview)
+                    already_named = True
+                except AppError:
+                    pass
             if plan.rename_enabled:
-                for operation in preview["operations"]:
-                    self.qb.rename_file(job["torrent_hash"], operation["old_path"], operation["new_path"])
-                for operation in preview["folder_operations"]:
-                    self.qb.rename_folder(job["torrent_hash"], operation["old_path"], operation["new_path"])
+                if not already_named:
+                    for operation in preview["operations"]:
+                        self.qb.rename_file(job["torrent_hash"], operation["old_path"], operation["new_path"])
+                    for operation in preview["folder_operations"]:
+                        self.qb.rename_folder(job["torrent_hash"], operation["old_path"], operation["new_path"])
                 self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
+            if callable(verifier):
+                verifier(torrent, files, preview)
             self.qb.set_category(job["torrent_hash"], job["final_category"])
             self.qb.resume(job["torrent_hash"])
             hardlink_enabled = bool(self.hardlinker and self.hardlinker.enabled)
@@ -553,7 +610,12 @@ class NamingService:
                         "last_check": now,
                     },
                 )
-            result = self.hardlinker.link_completed(torrent, files, NamingPlan(**job["plan"]))
+            result = self.hardlinker.link_completed(
+                torrent,
+                files,
+                NamingPlan(**job["plan"]),
+                job.get("result") or {},
+            )
             return self.repository.update(
                 job["id"],
                 {
@@ -609,7 +671,7 @@ class NamingService:
                 jobs = [
                     item
                     for item in self.repository.list()
-                    if item["status"] in {"pending", "waiting_metadata", "retrying"}
+                    if item["status"] in {"pending", "waiting_metadata", "waiting_download", "retrying"}
                 ]
             results = [self._process_job(item) for item in jobs]
             processed_ids = {item["id"] for item in results}

@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     host: str = "0.0.0.0"
     port: int = Field(default=16666, ge=1, le=65535)
     log_level: str = "INFO"
+    log_file_max_bytes: int = Field(default=5 * 1024 * 1024, ge=64 * 1024, le=100 * 1024 * 1024)
+    log_file_backup_count: int = Field(default=5, ge=1, le=20)
     timezone: str = "Asia/Shanghai"
     data_dir: Path = Path("data")
 
@@ -27,7 +29,7 @@ class Settings(BaseSettings):
     sixv_address_page: str = "https://www.6v123.net"
     request_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     search_detail_limit: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5.1; +NAS)"
+    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5.3; +NAS)"
 
     downloader_type: str = "qbittorrent"
     qb_host: Optional[str] = None
@@ -243,6 +245,10 @@ class Settings(BaseSettings):
     @property
     def agents_path(self) -> Path:
         return self.data_dir / "agents.json"
+
+    @property
+    def logs_path(self) -> Path:
+        return self.data_dir / "ai-video-station.log"
 
     def api_key_value(self) -> Optional[str]:
         if self.api_key is None:

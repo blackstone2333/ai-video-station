@@ -19,12 +19,13 @@ class StubSearch:
 
 
 class StubQB:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, fail_after=None):
         self.added = []
         self.fail = fail
+        self.fail_after = fail_after
 
     def add_download(self, link, category):
-        if self.fail:
+        if self.fail or (self.fail_after is not None and len(self.added) >= self.fail_after):
             raise ServiceUnavailableError("qb unavailable")
         self.added.append((link, category))
         return {"qb_task_id": "x", "category": category}
@@ -81,3 +82,22 @@ def test_movie_failure_is_recorded_for_retry(settings):
     report = service.check(item["id"])
     assert report["downloaded"] == 0
     assert "qb unavailable" in repository.get(item["id"])["last_error"]
+
+
+def test_partial_episode_batch_checkpoints_success_before_a_later_qb_failure(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    item = repository.add("测试剧", "tv")
+    releases = [
+        make_release("S01E01 1080p WEB-DL", "a"),
+        make_release("S01E02 1080p WEB-DL", "b"),
+    ]
+    qb = StubQB(fail_after=1)
+    service = WatchlistService(settings, repository, StubSearch(releases), qb)
+
+    report = service.check(item["id"])
+    saved = repository.get(item["id"])
+
+    assert report["downloaded"] == 1
+    assert saved["downloaded_episodes"] == ["S01E01"]
+    assert len(saved["downloaded_links"]) == 1
+    assert "qb unavailable" in saved["last_error"]

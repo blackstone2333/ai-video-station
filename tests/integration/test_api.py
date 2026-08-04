@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import logging
 from pathlib import Path
 
 from ainas.app import create_app
@@ -122,6 +123,10 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert client.get("/").location == "/admin"
     admin = client.get("/admin")
     assert admin.status_code == 200
+    page = admin.get_data(as_text=True)
+    assert 'id="header-theme-mode"' in page
+    assert 'data-panel="logs"' in page
+    assert "每 20 秒" not in page
     assert "AI Video Station 媒体调度台" in admin.get_data(as_text=True)
     assert "路径设置" in admin.get_data(as_text=True)
     assert "frame-ancestors 'none'" in admin.headers["Content-Security-Policy"]
@@ -266,6 +271,20 @@ def test_hardlink_history_and_site_settings_api(tmp_path):
     assert client.delete(f"/api/settings/sites/{site_id}", headers=headers).status_code == 204
 
 
+def test_logs_api_filters_and_redacts_tokens(tmp_path):
+    app, _ = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "test-key"}
+    logging.getLogger("tests.diagnostics").error("hardlink failed for avs_agent_super-secret")
+
+    response = client.get("/api/logs?level=error&query=hardlink&limit=10", headers=headers)
+
+    assert response.status_code == 200
+    item = next(value for value in response.json["items"] if value["logger"] == "tests.diagnostics")
+    assert item["message"] == "hardlink failed for [REDACTED_AGENT_TOKEN]"
+    assert client.get("/api/logs?level=nope", headers=headers).status_code == 422
+
+
 def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
@@ -392,7 +411,7 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
     assert client.post("/api/settings/downloader/test", json={}, headers=headers).status_code == 200
 
 
-def test_agent_bootstrap_connect_heartbeat_permissions_and_revoke(tmp_path):
+def test_agent_bootstrap_connect_on_demand_permissions_and_revoke(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
     admin = {"X-Api-Key": "test-key"}
@@ -409,7 +428,7 @@ def test_agent_bootstrap_connect_heartbeat_permissions_and_revoke(tmp_path):
     )
     assert connected.status_code == 200
     assert connected.json["agent"]["online"] is True
-    assert client.post("/api/agents/heartbeat", json={}, headers=bearer).status_code == 200
+    assert client.get("/api/downloader/status", headers=bearer).status_code == 200
     listing = client.get("/api/agents", headers=admin)
     assert listing.json["online"] == 1
     assert "token" not in listing.json["items"][0]
@@ -419,4 +438,4 @@ def test_agent_bootstrap_connect_heartbeat_permissions_and_revoke(tmp_path):
     )
     assert forbidden.status_code == 403
     assert client.delete(f"/api/agents/{agent['id']}", headers=admin).status_code == 204
-    assert client.post("/api/agents/heartbeat", json={}, headers=bearer).status_code == 401
+    assert client.get("/api/downloader/status", headers=bearer).status_code == 401

@@ -13,7 +13,7 @@ from . import __version__
 from .config import Settings
 from .agent_access import AgentAccessRepository
 from .errors import AppError, ForbiddenError, ServiceUnavailableError, ValidationAppError
-from .logging_config import configure_logging
+from .logging_config import configure_logging, read_log_entries
 from .middleware import install_middleware
 from .models import (
     DownloadRequest,
@@ -147,7 +147,12 @@ def create_app(
     start_scheduler: Optional[bool] = None,
 ) -> Flask:
     settings = settings or Settings()
-    configure_logging(settings.log_level)
+    configure_logging(
+        settings.log_level,
+        settings.logs_path,
+        settings.log_file_max_bytes,
+        settings.log_file_backup_count,
+    )
     app = Flask(__name__, static_folder="../static", static_url_path="/static")
     app.config.update(JSON_AS_ASCII=False, MAX_CONTENT_LENGTH=settings.max_torrent_upload_bytes + 64 * 1024)
     services = services or build_services(settings)
@@ -411,6 +416,21 @@ def create_app(
                 },
             }
         )
+
+    @app.get("/api/logs")
+    def logs():
+        try:
+            limit = min(1000, max(1, int(request.args.get("limit", "200"))))
+        except ValueError as exc:
+            raise ValidationAppError("limit must be an integer") from exc
+        level = request.args.get("level") or None
+        if level and level.casefold() not in {"debug", "info", "warning", "error", "critical"}:
+            raise ValidationAppError("unsupported log level")
+        query = (request.args.get("query") or "").strip() or None
+        if query and len(query) > 200:
+            raise ValidationAppError("log query cannot exceed 200 characters")
+        items = read_log_entries(settings.logs_path, limit=limit, level=level, query=query)
+        return jsonify({"success": True, "items": items, "count": len(items)})
 
     @app.get("/api/settings/sites")
     def sites_list():

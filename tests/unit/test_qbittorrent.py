@@ -29,7 +29,7 @@ def test_add_status_and_tasks(tmp_path):
     )
     base = "http://qb.test:8080"
     responses.post(f"{base}/api/v2/auth/login", body="Ok.", status=200)
-    responses.post(f"{base}/api/v2/torrents/createCategory", body="Ok.", status=200)
+    responses.get(f"{base}/api/v2/torrents/categories", json={settings.qb_movie_category: {}}, status=200)
     responses.post(f"{base}/api/v2/torrents/add", body="Ok.", status=200)
     client = QBittorrentClient(settings)
     PathSettingsRepository(settings).update({"download_movie_path": "/volume1/video/Incoming/Films"})
@@ -37,6 +37,7 @@ def test_add_status_and_tasks(tmp_path):
     assert result["qb_task_id"] == "a" * 40
     added_payload = parse_qs(responses.calls[2].request.body)
     assert added_payload["savepath"] == ["/volume1/video/Incoming/Films"]
+    assert added_payload["autoTMM"] == ["false"]
 
     responses.post(f"{base}/api/v2/auth/login", body="Ok.", status=200)
     responses.get(f"{base}/api/v2/app/version", body="4.6.7", status=200)
@@ -67,7 +68,7 @@ def test_add_status_and_tasks(tmp_path):
     responses.post(f"{base}/api/v2/torrents/renameFile", body="", status=200)
     responses.post(f"{base}/api/v2/torrents/renameFolder", body="", status=200)
     responses.post(f"{base}/api/v2/torrents/rename", body="", status=200)
-    responses.post(f"{base}/api/v2/torrents/createCategory", body="Ok.", status=200)
+    responses.get(f"{base}/api/v2/torrents/categories", json={"sixv-tv": {}}, status=200)
     responses.post(f"{base}/api/v2/torrents/setCategory", body="", status=200)
     responses.post(f"{base}/api/v2/torrents/resume", body="", status=200)
     client.rename_file("abc", "01.mp4", "剧名 - S01E01.mp4")
@@ -78,18 +79,47 @@ def test_add_status_and_tasks(tmp_path):
 
 
 @responses.activate
-def test_existing_category_is_updated_to_current_path(tmp_path):
+def test_existing_category_is_reused_without_rewriting_qbittorrent_configuration(tmp_path):
     settings = Settings(data_dir=tmp_path, qb_host="qb.test", scheduler_enabled=False)
     client = QBittorrentClient(settings)
     PathSettingsRepository(settings).update({"download_tv_path": "/volume1/video/Incoming/Series"})
     base = "http://qb.test:8080"
-    responses.post(f"{base}/api/v2/torrents/createCategory", status=409)
-    responses.post(f"{base}/api/v2/torrents/editCategory", body="Ok.", status=200)
+    responses.get(f"{base}/api/v2/torrents/categories", json={settings.qb_tv_category: {"savePath": "/other"}})
 
     client.ensure_category(settings.qb_tv_category)
 
-    edited_payload = parse_qs(responses.calls[1].request.body)
-    assert edited_payload["savePath"] == ["/volume1/video/Incoming/Series"]
+    assert len(responses.calls) == 1
+    assert responses.calls[0].request.method == "GET"
+
+
+@responses.activate
+def test_missing_category_is_created_once_without_editing_existing_configuration(tmp_path):
+    settings = Settings(data_dir=tmp_path, qb_host="qb.test", scheduler_enabled=False)
+    client = QBittorrentClient(settings)
+    base = "http://qb.test:8080"
+    responses.get(f"{base}/api/v2/torrents/categories", json={})
+    responses.post(f"{base}/api/v2/torrents/createCategory", body="Ok.")
+
+    client.ensure_category(settings.qb_tv_category)
+
+    assert [call.request.method for call in responses.calls] == ["GET", "POST"]
+    payload = parse_qs(responses.calls[1].request.body)
+    assert payload["category"] == [settings.qb_tv_category]
+
+
+@responses.activate
+def test_add_reconciles_ambiguous_qb_response_by_hash(tmp_path):
+    settings = Settings(data_dir=tmp_path, qb_host="qb.test", qb_password="secret", scheduler_enabled=False)
+    base = "http://qb.test:8080"
+    responses.post(f"{base}/api/v2/auth/login", body="Ok.")
+    responses.get(f"{base}/api/v2/torrents/categories", json={settings.qb_movie_category: {}})
+    responses.post(f"{base}/api/v2/torrents/add", body="Fails.")
+    responses.post(f"{base}/api/v2/auth/login", body="Ok.")
+    responses.get(f"{base}/api/v2/torrents/info", json=[{"hash": "a" * 40, "name": "Movie"}])
+
+    result = QBittorrentClient(settings).add_download(MAGNET, settings.qb_movie_category)
+
+    assert result["qb_task_id"] == "a" * 40
 
 
 @responses.activate
@@ -97,7 +127,7 @@ def test_qbittorrent_uploads_torrent_files(tmp_path):
     settings = Settings(data_dir=tmp_path, qb_host="qb.test", qb_password="secret", scheduler_enabled=False)
     base = "http://qb.test:8080"
     responses.post(f"{base}/api/v2/auth/login", body="Ok.")
-    responses.post(f"{base}/api/v2/torrents/createCategory", body="Ok.")
+    responses.get(f"{base}/api/v2/torrents/categories", json={settings.qb_movie_category: {}})
     responses.post(f"{base}/api/v2/torrents/add", body="Ok.")
     result = QBittorrentClient(settings).add_torrent_file(
         TORRENT,
