@@ -92,7 +92,7 @@
 
     <section id="panel-downloads" class="panel" data-panel="downloads">
       <article class="card">
-        <header class="card-head action-head"><div><p>DOWNLOADER</p><h2>下载队列与记录</h2></div><div class="head-actions"><span id="download-synced" class="sync-note">等待读取</span><span id="download-count" class="count-chip">0 条</span><button id="refresh-downloads" class="quiet-button" type="button">刷新进度</button><button class="primary-button" data-open-download type="button">＋ 新增下载</button></div></header>
+        <header class="card-head action-head"><div><p>DOWNLOADER</p><h2>下载队列与记录</h2></div><div class="head-actions"><span id="download-synced" class="sync-note">等待读取</span><span id="download-count" class="count-chip">0 条</span><button id="show-hidden-downloads" class="quiet-button" type="button">已隐藏 0 条</button><button id="refresh-downloads" class="quiet-button" type="button">刷新进度</button><button class="primary-button" data-open-download type="button">＋ 新增下载</button></div></header>
         <div id="downloads-list" class="download-stack roomy"></div>
       </article>
     </section>
@@ -276,6 +276,14 @@
       <section class="diagnostic-section"><b>当前错误</b><pre id="job-detail-error">—</pre></section>
       <details open><summary>完整任务数据</summary><pre id="job-detail-json" class="diagnostic-json"></pre></details>
       <div class="modal-actions"><button id="job-detail-logs" class="quiet-button" type="button">在系统日志中查找此任务</button></div>
+    </div>
+  </div>
+
+  <div id="hidden-downloads-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="hidden-downloads-title">
+    <div class="modal-card">
+      <header><div><span class="auth-kicker">AVS DISPLAY RECORDS</span><h2 id="hidden-downloads-title">已隐藏的下载记录</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <p>隐藏只影响 AVS 页面，不会删除或暂停 qBittorrent / Transmission 任务，也不会删除任何文件。可以随时恢复显示。</p>
+      <div id="hidden-downloads-list" class="hidden-downloads-list"></div>
     </div>
   </div>
 

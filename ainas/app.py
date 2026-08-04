@@ -12,7 +12,7 @@ from werkzeug.exceptions import BadRequest, HTTPException
 from . import __version__
 from .config import Settings
 from .agent_access import AgentAccessRepository
-from .errors import AppError, ConflictError, ForbiddenError, ServiceUnavailableError, ValidationAppError
+from .errors import AppError, ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationAppError
 from .logging_config import configure_logging, read_log_entries
 from .middleware import install_middleware
 from .models import (
@@ -303,8 +303,53 @@ def create_app(
     @app.get("/api/downloader/tasks")
     @app.get("/api/qb/tasks")
     def qb_tasks():
-        tasks = services.qb.tasks()
-        return jsonify({"success": True, "tasks": tasks, "count": len(tasks), "synced_at": utc_now_iso()})
+        all_tasks = services.qb.tasks()
+        hidden_tasks = services.dismissed_downloads.list() if services.dismissed_downloads else []
+        tasks = services.dismissed_downloads.visible(all_tasks) if services.dismissed_downloads else all_tasks
+        return jsonify(
+            {
+                "success": True,
+                "tasks": tasks,
+                "count": len(tasks),
+                "hidden_count": len(hidden_tasks),
+                "hidden_tasks": hidden_tasks,
+                "synced_at": utc_now_iso(),
+            }
+        )
+
+    @app.post("/api/downloader/tasks/<task_hash>/dismiss")
+    def downloader_task_dismiss(task_hash: str):
+        if not services.dismissed_downloads:
+            raise ServiceUnavailableError("dismissed download records are not initialized")
+        task = next(
+            (item for item in services.qb.tasks() if str(item.get("hash") or "").lower() == task_hash.lower()),
+            None,
+        )
+        if not task:
+            raise NotFoundError("downloader task", task_hash)
+        item = services.dismissed_downloads.dismiss(task)
+        logger.info("downloader_task_dismissed", extra={"task_hash": item["hash"]})
+        response = jsonify({"success": True, "item": item})
+        response.status_code = 201
+        return response
+
+    @app.delete("/api/downloader/tasks/<task_hash>/dismiss")
+    def downloader_task_restore(task_hash: str):
+        if not services.dismissed_downloads:
+            raise ServiceUnavailableError("dismissed download records are not initialized")
+        services.dismissed_downloads.restore(task_hash)
+        logger.info("downloader_task_restored", extra={"task_hash": task_hash.lower()})
+        return "", 204
+
+    @app.post("/api/downloader/tasks/<task_hash>/recover")
+    def downloader_task_recover(task_hash: str):
+        torrent = services.qb.torrent_info(task_hash)
+        if not torrent:
+            raise NotFoundError("downloader task", task_hash)
+        services.qb.recheck(task_hash)
+        services.qb.resume(task_hash)
+        logger.info("downloader_task_recovery_started", extra={"task_hash": task_hash.lower()})
+        return jsonify({"success": True, "task_hash": task_hash.lower(), "status": "verification_started"}), 202
 
     @app.route("/api/watchlist/add", methods=["POST", "OPTIONS"])
     def watchlist_add():

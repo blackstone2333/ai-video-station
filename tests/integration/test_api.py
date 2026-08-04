@@ -6,6 +6,7 @@ from pathlib import Path
 
 from ainas.app import create_app
 from ainas.config import Settings
+from ainas.download_records import DismissedDownloadRepository
 from ainas.naming import NamingJobRepository, NamingPlan
 from ainas.quality import build_release
 from ainas.services import AppServices, ResultCache, SearchOutcome
@@ -34,12 +35,22 @@ class StubQB:
 
     def __init__(self):
         self.added = []
+        self.operations = []
 
     def status(self):
         return {"configured": True, "connected": True, "version": "4.6.7", "error": None}
 
     def tasks(self):
         return [{"hash": "abc", "name": "Movie", "progress": 0.5}]
+
+    def torrent_info(self, hash_value):
+        return None if hash_value == "missing" else {"hash": hash_value, "name": "Movie", "progress": 0.5}
+
+    def recheck(self, hash_value):
+        self.operations.append(("recheck", hash_value))
+
+    def resume(self, hash_value):
+        self.operations.append(("resume", hash_value))
 
     def add_download(self, link, category):
         self.added.append((link, category))
@@ -97,6 +108,7 @@ def build_test_app(tmp_path: Path):
     watchlist = WatchlistRepository(settings.watchlist_path)
     search = StubSearch(cache)
     naming_jobs = NamingJobRepository(settings.naming_jobs_path)
+    dismissed_downloads = DismissedDownloadRepository(settings.dismissed_downloads_path)
     sites = SiteRepository(
         settings.sites_path,
         {"id": "sixv", "name": "6v", "adapter": "sixv", "enabled": True, "base_urls": ["https://sixv.test"]},
@@ -112,6 +124,7 @@ def build_test_app(tmp_path: Path):
         naming_jobs=naming_jobs,
         naming=StubNamingService(),
         sites=sites,
+        dismissed_downloads=dismissed_downloads,
     )
     return create_app(settings, services, start_scheduler=False), services
 
@@ -127,6 +140,8 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert 'id="header-theme-mode"' in page
     assert 'data-panel="logs"' in page
     assert 'id="refresh-downloads"' in page
+    assert 'id="show-hidden-downloads"' in page
+    assert 'id="hidden-downloads-modal"' in page
     assert 'id="job-detail-modal"' in page
     assert "每 20 秒" not in page
     assert "AI Video Station 媒体调度台" in admin.get_data(as_text=True)
@@ -160,6 +175,31 @@ def test_health_auth_search_download_and_qb(tmp_path):
     tasks = client.get("/api/qb/tasks", headers=headers).json
     assert tasks["count"] == 1
     assert tasks["synced_at"]
+
+
+def test_download_records_can_be_hidden_restored_and_recovered(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "test-key"}
+
+    hidden = client.post("/api/downloader/tasks/abc/dismiss", headers=headers)
+    assert hidden.status_code == 201
+    tasks = client.get("/api/downloader/tasks", headers=headers).json
+    assert tasks["count"] == 0
+    assert tasks["hidden_count"] == 1
+    assert tasks["hidden_tasks"][0]["name"] == "Movie"
+
+    restored = client.delete("/api/downloader/tasks/abc/dismiss", headers=headers)
+    assert restored.status_code == 204
+    assert client.get("/api/downloader/tasks", headers=headers).json["count"] == 1
+
+    recovered = client.post("/api/downloader/tasks/abc/recover", headers=headers)
+    assert recovered.status_code == 202
+    assert services.qb.operations == [("recheck", "abc"), ("resume", "abc")]
+    assert client.post("/api/downloader/tasks/missing/dismiss", headers=headers).status_code == 404
+    assert client.delete("/api/downloader/tasks/missing/dismiss", headers=headers).status_code == 404
+    assert client.post("/api/downloader/tasks/missing/recover", headers=headers).status_code == 404
+    assert services.qb.operations == [("recheck", "abc"), ("resume", "abc")]
 
 
 def test_validation_search_is_read_only_and_watchlist_crud(tmp_path):

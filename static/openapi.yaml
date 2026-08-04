@@ -243,6 +243,34 @@ paths:
       security: [{ApiKey: []}, {AgentToken: []}]
       responses:
         '200': {description: 下载任务列表}
+  /api/downloader/tasks/{task_hash}/dismiss:
+    post:
+      summary: 仅从 AVS 隐藏下载记录
+      description: 不修改下载器任务或文件；隐藏记录可以恢复。
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters:
+        - {in: path, name: task_hash, required: true, schema: {type: string}}
+      responses:
+        '201': {description: 已隐藏}
+        '404': {description: 下载器任务不存在}
+    delete:
+      summary: 恢复显示隐藏记录
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters:
+        - {in: path, name: task_hash, required: true, schema: {type: string}}
+      responses:
+        '204': {description: 已恢复显示}
+        '404': {description: 隐藏记录不存在}
+  /api/downloader/tasks/{task_hash}/recover:
+    post:
+      summary: 重新校验并恢复下载任务
+      description: 对现有任务执行重新校验和恢复下载，不删除或重新添加 torrent。
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters:
+        - {in: path, name: task_hash, required: true, schema: {type: string}}
+      responses:
+        '202': {description: 校验与恢复已启动}
+        '404': {description: 下载器任务不存在}
   /api/qb/status:
     get:
       summary: 下载器状态兼容别名

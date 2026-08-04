@@ -7,11 +7,12 @@ function storedTheme() {
 }
 const state = {
   apiKey: sessionStorage.getItem("aiVideoStationApiKey") || sessionStorage.getItem("sixvApiKey") || "",
-  watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], pathRules: [], agents: [], logs: [],
+  watchlist: [], downloads: [], hiddenDownloads: [], naming: [], hardlinks: [], sites: [], pathRules: [], agents: [], logs: [],
   paths: null, downloaderSettings: null, systemSettings: null, qb: null, loading: false,
   pathsDirty: false, downloaderDirty: false, systemDirty: false, downloadsLoading: false, downloadSyncedAt: null,
   theme: {...DEFAULT_THEME, ...storedTheme()},
 };
+const ACTIVE_DOWNLOAD_STATES = new Set(["downloading","stalledDL","metaDL","queuedDL","forcedDL","checkingDL"]);
 
 const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
@@ -127,8 +128,7 @@ function saveTheme() {
 }
 
 function renderMetrics() {
-  const activeStates = new Set(["downloading","stalledDL","metaDL","queuedDL","forcedDL","checkingDL"]);
-  const active = state.downloads.filter((item) => activeStates.has(item.state));
+  const active = state.downloads.filter((item) => ACTIVE_DOWNLOAD_STATES.has(item.state));
   const hardlinkDone = state.hardlinks.filter((item) => item.status === "done").length;
   $("#metric-watch").textContent = state.watchlist.length;
   $("#metric-watch-note").textContent = `${state.watchlist.filter((item) => ["tv","anime"].includes(item.type)).length} 个追更任务`;
@@ -151,9 +151,12 @@ function downloadProgress(item) {
 
 function downloadMarkup(item) {
   const progress = downloadProgress(item);
+  const canDismiss = !ACTIVE_DOWNLOAD_STATES.has(item.state);
+  const canRecover = ["missingFiles","error"].includes(item.state);
+  const actions = `${canRecover ? `<button class="quiet-button" data-recover-download="${escapeHTML(item.hash || "")}" type="button">校验并恢复</button>` : ""}${canDismiss ? `<button class="danger-button" data-dismiss-download="${escapeHTML(item.hash || "")}" type="button">隐藏记录</button>` : ""}`;
   return `<article class="download-item">
     <div class="download-title" title="${escapeHTML(item.name)}">${escapeHTML(item.name || "未命名任务")}</div>
-    <div class="download-meta">${escapeHTML(stateLabel(item.state))} · ${formatBytes(item.size)} · ${escapeHTML(item.category || "无分类")}</div>
+    <div class="download-meta"><span>${escapeHTML(stateLabel(item.state))} · ${formatBytes(item.size)} · ${escapeHTML(item.category || "无分类")}</span>${actions}</div>
     <progress class="progress-track" max="100" value="${progress.toFixed(1)}" aria-label="下载进度 ${progress.toFixed(1)}%"></progress>
     <div class="progress-label"><span>${progress.toFixed(1)}%</span><span>${formatBytes(item.dlspeed)}/s</span></div>
   </article>`;
@@ -163,9 +166,38 @@ function renderDownloads() {
   const values = state.downloads;
   $("#download-count").textContent = `${values.length} 条`;
   $("#download-synced").textContent = state.downloadSyncedAt ? `同步于 ${new Date(state.downloadSyncedAt).toLocaleTimeString("zh-CN", {hour12:false})}` : "等待读取";
+  $("#show-hidden-downloads").textContent = `已隐藏 ${state.hiddenDownloads.length} 条`;
   $("#downloads-list").innerHTML = values.length ? values.map(downloadMarkup).join("") : '<div class="empty">当前没有下载记录</div>';
-  const active = values.filter((item) => downloadProgress(item) < 99.9).slice(0,4);
+  const active = values.filter((item) => ACTIVE_DOWNLOAD_STATES.has(item.state)).slice(0,4);
   $("#overview-downloads").innerHTML = active.length ? active.map(downloadMarkup).join("") : '<div class="empty">队列安静，当前没有进行中的下载</div>';
+  renderHiddenDownloads();
+}
+
+function renderHiddenDownloads() {
+  $("#hidden-downloads-list").innerHTML = state.hiddenDownloads.length ? state.hiddenDownloads.map((item) => `<article class="hidden-download-item"><strong title="${escapeHTML(item.name)}">${escapeHTML(item.name || item.hash)}</strong><button class="quiet-button" data-restore-download="${escapeHTML(item.hash)}" type="button">恢复显示</button><small>${escapeHTML(stateLabel(item.state))} · ${formatDate(item.dismissed_at)}</small></article>`).join("") : '<div class="empty">没有隐藏的下载记录</div>';
+}
+
+async function dismissDownload(taskHash, button) {
+  if (!taskHash || !confirm("只从 AVS 页面隐藏这条记录；下载器任务和文件都会保留。确定隐藏吗？")) return;
+  button.disabled = true;
+  try { await api(`/api/downloader/tasks/${encodeURIComponent(taskHash)}/dismiss`, {method:"POST", body:"{}"}); toast("记录已从 AVS 隐藏，下载器未受影响"); await refreshDownloads(true); }
+  catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function restoreDownload(taskHash, button) {
+  button.disabled = true;
+  try { await api(`/api/downloader/tasks/${encodeURIComponent(taskHash)}/dismiss`, {method:"DELETE"}); toast("记录已恢复显示"); await refreshDownloads(true); }
+  catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function recoverDownload(taskHash, button) {
+  if (!taskHash || !confirm("AVS 将要求下载器重新校验这个任务，并恢复下载缺失的数据块；不会删除或重新添加任务。继续吗？")) return;
+  button.disabled = true;
+  try { await api(`/api/downloader/tasks/${encodeURIComponent(taskHash)}/recover`, {method:"POST", body:"{}"}); toast("重新校验与恢复已启动"); await refreshDownloads(true); }
+  catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
 }
 
 function renderWatchlist() {
@@ -392,7 +424,7 @@ async function loadAll(silent = false) {
     if (authFailure) throw authFailure.reason;
     const value = (index, fallback) => requests[index].status === "fulfilled" ? requests[index].value : fallback;
     const downloadsResult = value(1, {tasks:[]});
-    state.qb = value(0, {configured:false,connected:false}); state.downloads = downloadsResult.tasks;
+    state.qb = value(0, {configured:false,connected:false}); state.downloads = downloadsResult.tasks; state.hiddenDownloads = downloadsResult.hidden_tasks || [];
     state.downloadSyncedAt = downloadsResult.synced_at || new Date().toISOString();
     state.watchlist = value(2, {items:[]}).items; state.naming = value(3, {items:[]}).items; state.hardlinks = value(4, {items:[]}).items;
     state.sites = value(5, {items:[]}).items; state.paths = value(6, {settings:state.paths}).settings; state.pathRules = value(7, {items:[]}).items;
@@ -412,6 +444,7 @@ async function refreshDownloads(silent = false) {
   try {
     const result = await api("/api/downloader/tasks");
     state.downloads = result.tasks || [];
+    state.hiddenDownloads = result.hidden_tasks || [];
     state.downloadSyncedAt = result.synced_at || new Date().toISOString();
     renderDownloads(); renderMetrics();
   } catch (error) {
@@ -464,10 +497,13 @@ function bindEvents() {
     const detail = event.target.closest("[data-job-detail]"); if (detail) showJobDetail(detail.dataset.jobDetail);
     const retry = event.target.closest("[data-retry-job]"); if (retry) retryJob(retry.dataset.retryJob, retry);
     const removeJob = event.target.closest("[data-delete-job]"); if (removeJob) deleteFailedJob(removeJob.dataset.deleteJob, removeJob);
+    const dismissDownloadButton = event.target.closest("[data-dismiss-download]"); if (dismissDownloadButton) dismissDownload(dismissDownloadButton.dataset.dismissDownload, dismissDownloadButton);
+    const restoreDownloadButton = event.target.closest("[data-restore-download]"); if (restoreDownloadButton) restoreDownload(restoreDownloadButton.dataset.restoreDownload, restoreDownloadButton);
+    const recoverDownloadButton = event.target.closest("[data-recover-download]"); if (recoverDownloadButton) recoverDownload(recoverDownloadButton.dataset.recoverDownload, recoverDownloadButton);
   });
   $$(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => openModal("#download-modal")));
-  $("#refresh-all").addEventListener("click", () => loadAll()); $("#refresh-downloads").addEventListener("click", () => refreshDownloads()); $("#watch-filter").addEventListener("input", renderWatchlist);
+  $("#refresh-all").addEventListener("click", () => loadAll()); $("#refresh-downloads").addEventListener("click", () => refreshDownloads()); $("#show-hidden-downloads").addEventListener("click", () => openModal("#hidden-downloads-modal")); $("#watch-filter").addEventListener("input", renderWatchlist);
   $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks);
   $("#log-level").addEventListener("change", renderLogs); $("#log-query").addEventListener("input", renderLogs); $("#refresh-logs").addEventListener("click", loadLogs);
   $("#job-detail-logs").addEventListener("click", (event) => showJobLogs(event.currentTarget.dataset.jobId));

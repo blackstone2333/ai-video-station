@@ -11,6 +11,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from .config import Settings
 from .crawler import SixVClient
 from .errors import AppError, NotFoundError, ValidationAppError
+from .download_records import DismissedDownloadRepository
 from .medialib import MediaLibraryService
 from .naming import NamingJobRepository, NamingService
 from .path_rules import PathRuleRepository
@@ -432,6 +433,7 @@ class AppServices:
     downloader_settings: Optional[DownloaderSettingsRepository] = None
     system_settings: Optional[SystemSettingsRepository] = None
     agents: Optional[AgentAccessRepository] = None
+    dismissed_downloads: Optional[DismissedDownloadRepository] = None
 
 
 def build_services(settings: Settings) -> AppServices:
@@ -440,6 +442,7 @@ def build_services(settings: Settings) -> AppServices:
     system_settings = SystemSettingsRepository(settings)
     path_rules = PathRuleRepository(settings)
     agents = AgentAccessRepository(settings)
+    dismissed_downloads = DismissedDownloadRepository(settings.dismissed_downloads_path)
     default_site = {
         "id": "sixv",
         "name": "6v",
@@ -476,4 +479,5 @@ def build_services(settings: Settings) -> AppServices:
         downloader_settings=downloader_settings,
         system_settings=system_settings,
         agents=agents,
+        dismissed_downloads=dismissed_downloads,
     )

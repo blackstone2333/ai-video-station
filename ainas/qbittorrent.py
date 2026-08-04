@@ -269,6 +269,9 @@ class QBittorrentClient:
     def resume(self, hash_value: str) -> None:
         self._request("POST", "/api/v2/torrents/resume", data={"hashes": hash_value})
 
+    def recheck(self, hash_value: str) -> None:
+        self._request("POST", "/api/v2/torrents/recheck", data={"hashes": hash_value})
+
     def status(self) -> Dict[str, Any]:
         if not self.configured:
             return {

@@ -201,6 +201,9 @@ class TransmissionClient:
     def resume(self, hash_value: str) -> None:
         self._rpc("torrent-start", {"ids": [hash_value]})
 
+    def recheck(self, hash_value: str) -> None:
+        self._rpc("torrent-verify", {"ids": [hash_value]})
+
     def status(self) -> Dict[str, Any]:
         if not self.configured:
             return {
