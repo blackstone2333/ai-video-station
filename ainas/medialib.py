@@ -55,6 +55,8 @@ class MediaLibraryService:
         value = Path(os.path.normpath(str(raw_path)))
         if not value.is_absolute():
             raise HardlinkError(f"{label} must be an absolute path: {raw_path}")
+        if self.path_rules:
+            value = self.path_rules.host_path_for_downloader(value)
 
         host_root = Path(os.path.normpath(str(self.settings.medialib_base_path)))
         try:
@@ -96,7 +98,12 @@ class MediaLibraryService:
     def _target_root(self, media_type: str, source_path: Any = None) -> Path:
         if media_type not in {"movie", "tv", "anime", "custom"}:
             raise HardlinkError(f"unsupported media type: {media_type!r}")
-        rule = self.path_rules.match(media_type, source_path) if self.path_rules and source_path else None
+        host_source = (
+            self.path_rules.host_path_for_downloader(source_path)
+            if self.path_rules and source_path
+            else source_path
+        )
+        rule = self.path_rules.match(media_type, host_source) if self.path_rules and host_source else None
         if rule:
             host_target = Path(rule["target_path"])
         elif media_type == "movie":

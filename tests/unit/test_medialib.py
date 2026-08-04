@@ -8,6 +8,7 @@ from pydantic import ValidationError
 
 from ainas.config import Settings
 from ainas.medialib import HardlinkError, MediaLibraryService
+from ainas.path_rules import PathRuleRepository
 
 
 def media_settings(tmp_path: Path, enabled: bool = True) -> tuple[Settings, Path, Path]:
@@ -356,6 +357,25 @@ def test_hardlink_rejects_a_source_whose_size_disagrees_with_qbittorrent(tmp_pat
             [{"name": "Season 01/测试剧 - S01E01.mkv", "priority": 1, "size": 123456}],
             {"media_type": "tv", "media_name": "测试剧", "root_name": "测试剧"},
         )
+
+
+def test_hardlink_translates_downloader_container_path_to_nas_source(tmp_path):
+    settings, _, mount = media_settings(tmp_path)
+    rules = PathRuleRepository(settings)
+    rules.update("default-tv", {"downloader_path": "/Downloads/TV"})
+    source = mount / "Downloads" / "TV" / "Season 01" / "测试剧 - S01E01.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"episode")
+
+    result = MediaLibraryService(settings, path_rules=rules).link_completed(
+        {"save_path": "/Downloads/TV"},
+        [{"name": "Season 01/测试剧 - S01E01.mkv", "priority": 1, "size": 7}],
+        {"media_type": "tv", "media_name": "测试剧", "root_name": "测试剧"},
+    )
+
+    target = mount / "video" / "tv" / "测试剧" / "Season 01" / source.name
+    assert result["linked"] == 1
+    assert target.stat().st_ino == source.stat().st_ino
 
 
 @pytest.mark.parametrize("name", ["../secret.mkv", "/etc/passwd", "folder\\..\\secret.mkv"])

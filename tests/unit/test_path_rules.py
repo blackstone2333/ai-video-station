@@ -50,6 +50,9 @@ def test_path_rules_support_multiple_mappings_defaults_and_longest_match(tmp_pat
     assert sum(item["default_download"] for item in movie_rules) == 1
     assert settings.download_movie_path == Path(domestic["source_path"])
     assert domestic["downloader_path"] == "/Downloads/Movie/CN"
+    assert repository.host_path_for_downloader("/Downloads/Movie/CN/Film/movie.mkv") == (
+        base / "Downloads" / "Movie" / "CN" / "Film" / "movie.mkv"
+    )
 
     matched = repository.match("movie", base / "Downloads" / "Movie" / "CN" / "Film" / "movie.mkv")
     assert matched["id"] == domestic["id"]

@@ -257,3 +257,18 @@ class PathRuleRepository:
         if candidates:
             return deepcopy(max(candidates, key=lambda pair: pair[0])[1])
         return deepcopy(self._primary(self.list(), media_type))
+
+    def host_path_for_downloader(self, downloader_path: Any) -> Path:
+        """Translate a downloader-container path back to the NAS host namespace."""
+        value = self._normalized(downloader_path, "downloader_path")
+        candidates = []
+        for item in self.list():
+            if not item["enabled"]:
+                continue
+            downloader_root = Path(item["downloader_path"])
+            try:
+                relative = value.relative_to(downloader_root)
+                candidates.append((len(downloader_root.parts), Path(item["source_path"]) / relative))
+            except ValueError:
+                continue
+        return max(candidates, key=lambda pair: pair[0])[1] if candidates else value
