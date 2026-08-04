@@ -38,7 +38,13 @@ Diagnosis was read-only. Do not use the affected E02 torrent as a live test; its
 
 ## Verification
 
-- `pytest -q -o addopts=''` → 91 passed
+- `pytest -q -o addopts=''` → 93 passed
 - `python3 -m compileall -q ainas` → passed
 - `git diff --check` → passed
 - The regression suite includes a temporary-filesystem chain from queued TV download through completion, rename verification, and same-inode hardlink creation.
+
+## Admin progress recurrence (v1.5.4)
+
+The management page could keep showing the progress captured on its initial load even after qB completed a task. A production read-only comparison found 438 matching hashes and zero field differences between AVS `/api/downloader/tasks` and qB `/api/v2/torrents/info`; the affected episode was `pausedUP / progress=1` in both APIs. The stale `0%` was therefore a browser refresh problem, not backend state corruption.
+
+v1.5.4 refreshes visible download data every 15 seconds and exposes the last synchronization time plus a manual refresh button. Progress normalization uses independent completion signals but deliberately preserves qB `missingFiles` and `error` progress, so a task with historical completion metadata and missing source files is not shown as complete. Regression coverage is in `tests/unit/test_qbittorrent.py`; release commit: `a494d52`.
