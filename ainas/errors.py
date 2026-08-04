@@ -45,6 +45,11 @@ class ForbiddenError(AppError):
         super().__init__("Forbidden", detail, "forbidden", 403)
 
 
+class ConflictError(AppError):
+    def __init__(self, detail: str) -> None:
+        super().__init__("Conflict", detail, "conflict", 409)
+
+
 class RateLimitError(AppError):
     def __init__(self, retry_after: int) -> None:
         super().__init__(

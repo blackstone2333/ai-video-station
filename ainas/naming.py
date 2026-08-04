@@ -370,6 +370,17 @@ class NamingJobRepository:
                     return deepcopy(item)
         raise NotFoundError("naming job", job_id)
 
+    def delete(self, job_id: str) -> Dict[str, Any]:
+        """Delete only the AVS job record; downloader tasks and files are untouched."""
+        with self._lock:
+            data = self._read()
+            for index, item in enumerate(data["items"]):
+                if item["id"] == job_id:
+                    deleted = data["items"].pop(index)
+                    self._write(data)
+                    return deepcopy(deleted)
+        raise NotFoundError("naming job", job_id)
+
 
 class NamingService:
     def __init__(

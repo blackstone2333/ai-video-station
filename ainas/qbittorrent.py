@@ -14,6 +14,32 @@ from .torrent_meta import parse_torrent_metadata
 
 logger = logging.getLogger(__name__)
 MAGNET_HASH_RE = re.compile(r"(?i)[?&]xt=urn:btih:([a-z0-9]+)")
+COMPLETED_STATES = {"uploading", "stalledUP", "queuedUP", "forcedUP", "pausedUP", "checkingUP"}
+BROKEN_STATES = {"missingFiles", "error"}
+
+
+def normalized_task_progress(item: Dict[str, Any]) -> float:
+    """Resolve stale/missing downloader progress from independent completion fields."""
+    try:
+        progress = float(item.get("progress") or 0)
+    except (TypeError, ValueError):
+        progress = 0.0
+    if item.get("state") in BROKEN_STATES:
+        return max(0.0, min(1.0, progress))
+    try:
+        size = float(item.get("size") or 0)
+        downloaded = float(item.get("downloaded") or 0)
+    except (TypeError, ValueError):
+        size = downloaded = 0.0
+    if size > 0:
+        progress = max(progress, downloaded / size)
+    try:
+        completed_at = float(item.get("completion_on") or 0)
+    except (TypeError, ValueError):
+        completed_at = 0.0
+    if completed_at > 0 or item.get("state") in COMPLETED_STATES:
+        progress = 1.0
+    return max(0.0, min(1.0, progress))
 
 
 def torrent_hash(download_link: str) -> Optional[str]:
@@ -289,4 +315,8 @@ class QBittorrentClient:
             "added_on",
             "completion_on",
         )
-        return [{field: item.get(field) for field in fields} for item in values]
+        tasks = [{field: item.get(field) for field in fields} for item in values]
+        for task in tasks:
+            task["progress"] = normalized_task_progress(task)
+            task["completed"] = task["progress"] >= 0.999999
+        return tasks

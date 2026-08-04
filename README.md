@@ -4,6 +4,13 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v1.5.4 更新说明
+
+- 规范命名和硬链接失败后，可在对应记录上直接查看完整任务状态、错误、尝试次数和原始任务数据，并按任务单独重试。
+- 失败记录可从后台删除；此操作只清理 AVS 记录，不会删除下载器任务、下载文件或媒体库文件。
+- 下载记录在页面可见时每 15 秒只读同步一次，也可手动刷新；这不是 Agent 心跳，不会修改 qBittorrent/Transmission。
+- 下载进度会结合 `progress`、已下载字节、完成时间和完成状态归一化，避免下载器已完成但 AVS 因单一陈旧字段显示 `0%`。
+
 ## v1.5.3 更新说明
 
 - 下载接收与后处理解耦：qB 接收任务后，AVS 立即登记订阅链接和集数；规范命名改由后台任务执行，后续暂时性错误不会让订阅记录回退为“未下载”。
@@ -321,6 +328,8 @@ NAS 根挂载：宿主机路径 → /medialib
 | `POST /api/watchlist/check` | 立即检查订阅 |
 | `GET /api/naming/jobs` | 命名任务列表 |
 | `POST /api/naming/jobs/check` | 重试命名或硬链接 |
+| `POST /api/naming/jobs/{job_id}/retry` | 单独重试一个命名或硬链接任务 |
+| `DELETE /api/naming/jobs/{job_id}` | 只删除失败的 AVS 记录，不删除下载或文件 |
 | `GET /api/hardlinks` | 硬链接入库记录 |
 | `GET /api/logs` | 脱敏后的结构化运行日志 |
 | `GET /api/settings/path-rules` | 多目录映射 |

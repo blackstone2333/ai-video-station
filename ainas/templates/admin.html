@@ -92,7 +92,7 @@
 
     <section id="panel-downloads" class="panel" data-panel="downloads">
       <article class="card">
-        <header class="card-head action-head"><div><p>DOWNLOADER</p><h2>下载队列与记录</h2></div><div class="head-actions"><span id="download-count" class="count-chip">0 条</span><button class="primary-button" data-open-download type="button">＋ 新增下载</button></div></header>
+        <header class="card-head action-head"><div><p>DOWNLOADER</p><h2>下载队列与记录</h2></div><div class="head-actions"><span id="download-synced" class="sync-note">等待读取</span><span id="download-count" class="count-chip">0 条</span><button id="refresh-downloads" class="quiet-button" type="button">刷新进度</button><button class="primary-button" data-open-download type="button">＋ 新增下载</button></div></header>
         <div id="downloads-list" class="download-stack roomy"></div>
       </article>
     </section>
@@ -103,7 +103,7 @@
           <div><p>EMBY NORMALIZER</p><h2>规范命名任务</h2></div>
           <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="completed">命名完成</option><option value="waiting_metadata">等待元数据</option><option value="waiting_download">等待下载</option><option value="done">硬链接完成</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
         </header>
-        <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th></tr></thead><tbody id="naming-body"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="naming-body"></tbody></table></div>
       </article>
     </section>
 
@@ -111,9 +111,9 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>MEDIA LIBRARY</p><h2>硬链接入库记录</h2></div>
-          <select id="hardlink-filter" class="filter-input"><option value="done">成功任务</option><option value="all">全部任务</option><option value="waiting_download">等待下载</option><option value="retrying">重试中</option><option value="failed">失败</option></select>
+          <select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="retrying">重试中</option><option value="failed">失败</option></select>
         </header>
-        <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>目标目录</th><th>链接文件</th><th>状态</th><th>完成时间</th></tr></thead><tbody id="hardlinks-body"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>目标目录</th><th>链接文件</th><th>状态</th><th>错误</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="hardlinks-body"></tbody></table></div>
       </article>
     </section>
 
@@ -265,6 +265,17 @@
       <button id="create-agent-config" class="primary-button wide" type="button">生成并复制连接方案</button>
       <div id="agent-config-wrap" class="hidden"><label>把下面内容发给你的 Agent<textarea id="agent-config" rows="10" readonly></textarea></label><button id="copy-agent-config" class="quiet-button" type="button">再次复制</button></div>
       <div class="agent-list-head"><b>已授权 Agent</b><span id="agent-count">0 个</span></div><div id="agent-list" class="agent-list"></div>
+    </div>
+  </div>
+
+  <div id="job-detail-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="job-detail-title">
+    <div class="modal-card diagnostic-card">
+      <header><div><span class="auth-kicker">TASK DIAGNOSTICS</span><h2 id="job-detail-title">任务详情</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <p>这里显示 AVS 的命名、硬链接状态和完整错误。删除失败记录只清理 AVS 记录，不会删除 qB/Transmission 任务或任何文件。</p>
+      <div id="job-detail-summary" class="job-detail-grid"></div>
+      <section class="diagnostic-section"><b>当前错误</b><pre id="job-detail-error">—</pre></section>
+      <details open><summary>完整任务数据</summary><pre id="job-detail-json" class="diagnostic-json"></pre></details>
+      <div class="modal-actions"><button id="job-detail-logs" class="quiet-button" type="button">在系统日志中查找此任务</button></div>
     </div>
   </div>
 

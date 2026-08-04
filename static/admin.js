@@ -9,7 +9,7 @@ const state = {
   apiKey: sessionStorage.getItem("aiVideoStationApiKey") || sessionStorage.getItem("sixvApiKey") || "",
   watchlist: [], downloads: [], naming: [], hardlinks: [], sites: [], pathRules: [], agents: [], logs: [],
   paths: null, downloaderSettings: null, systemSettings: null, qb: null, loading: false,
-  pathsDirty: false, downloaderDirty: false, systemDirty: false,
+  pathsDirty: false, downloaderDirty: false, systemDirty: false, downloadsLoading: false, downloadSyncedAt: null,
   theme: {...DEFAULT_THEME, ...storedTheme()},
 };
 
@@ -47,8 +47,9 @@ function formatDate(value) {
 
 function stateLabel(value) {
   const labels = {
-    downloading:"下载中", stalledDL:"等待数据", metaDL:"获取元数据", queuedDL:"排队中", pausedDL:"已暂停",
-    uploading:"做种中", stalledUP:"做种等待", pausedUP:"已完成", completed:"已完成", pending:"待处理",
+    downloading:"下载中", stalledDL:"等待数据", metaDL:"获取元数据", queuedDL:"排队中", forcedDL:"强制下载", checkingDL:"校验中", pausedDL:"已暂停",
+    uploading:"做种中", stalledUP:"做种等待", queuedUP:"做种排队", forcedUP:"强制做种", checkingUP:"校验完成资源", pausedUP:"已完成", completed:"已完成", pending:"待处理",
+    missingFiles:"文件缺失", error:"下载器错误",
     waiting_metadata:"等待元数据", retrying:"重试中", failed:"失败", found:"已找到", monitoring:"追更中", expired:"超期监听",
     waiting_download:"等待下载完成", done:"硬链接完成", disabled:"硬链接已关闭", site_disabled:"已停用",
   };
@@ -138,8 +139,18 @@ function renderMetrics() {
   $("#metric-hardlink-note").textContent = `${hardlinkDone} 成功 · ${state.hardlinks.length - hardlinkDone} 处理中`;
 }
 
+function downloadProgress(item) {
+  let progress = Number(item.progress || 0);
+  if (["missingFiles","error"].includes(item.state)) return Math.max(0, Math.min(100, progress * 100));
+  const size = Number(item.size || 0);
+  const downloaded = Number(item.downloaded || 0);
+  if (size > 0) progress = Math.max(progress, downloaded / size);
+  if (item.completed || Number(item.completion_on || 0) > 0 || ["uploading","stalledUP","queuedUP","forcedUP","pausedUP","checkingUP"].includes(item.state)) progress = 1;
+  return Math.max(0, Math.min(100, progress * 100));
+}
+
 function downloadMarkup(item) {
-  const progress = Math.max(0, Math.min(100, Number(item.progress || 0) * 100));
+  const progress = downloadProgress(item);
   return `<article class="download-item">
     <div class="download-title" title="${escapeHTML(item.name)}">${escapeHTML(item.name || "未命名任务")}</div>
     <div class="download-meta">${escapeHTML(stateLabel(item.state))} · ${formatBytes(item.size)} · ${escapeHTML(item.category || "无分类")}</div>
@@ -151,8 +162,9 @@ function downloadMarkup(item) {
 function renderDownloads() {
   const values = state.downloads;
   $("#download-count").textContent = `${values.length} 条`;
+  $("#download-synced").textContent = state.downloadSyncedAt ? `同步于 ${new Date(state.downloadSyncedAt).toLocaleTimeString("zh-CN", {hour12:false})}` : "等待读取";
   $("#downloads-list").innerHTML = values.length ? values.map(downloadMarkup).join("") : '<div class="empty">当前没有下载记录</div>';
-  const active = values.filter((item) => Number(item.progress || 0) < .999).slice(0,4);
+  const active = values.filter((item) => downloadProgress(item) < 99.9).slice(0,4);
   $("#overview-downloads").innerHTML = active.length ? active.map(downloadMarkup).join("") : '<div class="empty">队列安静，当前没有进行中的下载</div>';
 }
 
@@ -183,8 +195,10 @@ function renderHardlinks() {
     <td><div class="cell-main">${escapeHTML(item.name || "未命名")}<small>${escapeHTML(item.id.slice(0,8))}</small></div></td>
     <td>${escapeHTML(mediaTypeLabel(item.type))}</td>
     <td><button class="target-button" data-copy-target="${escapeHTML(item.target || "")}" title="点击复制目录：${escapeHTML(item.target || "")}" type="button">${escapeHTML(item.target || "—")}</button></td>
-    <td>${Number(item.linked || 0)} 链接 / ${Number(item.skipped || 0)} 跳过</td><td>${chip(item.status)}</td><td>${formatDate(item.completed_at)}</td>
-  </tr>`).join("") : '<tr><td colspan="6"><div class="empty">暂无符合条件的硬链接任务</div></td></tr>';
+    <td>${Number(item.linked || 0)} 链接 / ${Number(item.skipped || 0)} 跳过</td><td>${chip(item.status)}</td>
+    <td class="error-text" title="${escapeHTML(item.error || "")}">${escapeHTML(item.error || "—")}</td><td>${formatDate(item.completed_at)}</td>
+    <td>${jobActionMarkup(item.id, ["failed","retrying","waiting_download"].includes(item.status), item.status === "failed")}</td>
+  </tr>`).join("") : '<tr><td colspan="8"><div class="empty">暂无符合条件的硬链接任务</div></td></tr>';
   const recent = state.hardlinks.slice(0,4);
   $("#overview-hardlinks").innerHTML = recent.length ? recent.map((item) => `<button class="activity hardlink-activity" data-go="hardlinks" type="button">${chip(item.status)}<strong title="${escapeHTML(item.name)}">${escapeHTML(item.name || "未命名")}</strong><small>${Number(item.linked || 0)} 个文件 · ${formatDate(item.completed_at)}</small></button>`).join("") : '<div class="empty">尚无硬链接记录</div>';
 }
@@ -207,9 +221,75 @@ function renderNaming() {
     <td title="${escapeHTML(item.plan?.link_name || "")}">${escapeHTML(item.plan?.link_name || "—")}</td><td>${chip(namingStatus(item))}</td>
     <td>${item.result?.file_count ?? item.result?.video_count ?? "—"}</td><td>${formatDate(item.updated_at)}</td>
     <td class="error-text" title="${escapeHTML(item.hardlink_error || item.last_error || "")}">${escapeHTML(item.hardlink_error || item.last_error || "—")}</td>
-  </tr>`).join("") : '<tr><td colspan="6"><div class="empty">暂无命名任务</div></td></tr>';
+    <td>${jobActionMarkup(
+      item.id,
+      ["pending","waiting_metadata","waiting_download","retrying","failed"].includes(item.status) || ["waiting_download","retrying","failed"].includes(item.hardlink_status),
+      item.status === "failed" || item.hardlink_status === "failed",
+    )}</td>
+  </tr>`).join("") : '<tr><td colspan="7"><div class="empty">暂无命名任务</div></td></tr>';
   const recent = state.naming.slice(0,4);
   $("#overview-naming").innerHTML = recent.length ? recent.map((item) => `<button class="activity hardlink-activity" data-go="naming" type="button">${chip(namingStatus(item))}<strong title="${escapeHTML(item.plan?.root_name)}">${escapeHTML(item.plan?.root_name || "未命名")}</strong><small>${formatDate(item.updated_at)}</small></button>`).join("") : '<div class="empty">尚无规范命名记录</div>';
+}
+
+function jobActionMarkup(id, retryable, deletable) {
+  return `<div class="job-actions"><button class="quiet-button" data-job-detail="${escapeHTML(id)}" type="button">详情</button>${retryable ? `<button class="quiet-button" data-retry-job="${escapeHTML(id)}" type="button">重试</button>` : ""}${deletable ? `<button class="danger-button" data-delete-job="${escapeHTML(id)}" type="button">删除记录</button>` : ""}</div>`;
+}
+
+function renderJobDetail(item) {
+  const error = item.hardlink_error || item.last_error || "当前没有错误";
+  $("#job-detail-title").textContent = item.plan?.root_name || "任务详情";
+  $("#job-detail-summary").innerHTML = [
+    ["媒体类型", mediaTypeLabel(item.plan?.media_type)],
+    ["命名状态", `${stateLabel(item.status)} · ${Number(item.attempts || 0)} 次失败尝试`],
+    ["硬链接状态", `${stateLabel(item.hardlink_status)} · ${Number(item.hardlink_attempts || 0)} 次失败尝试`],
+    ["Torrent Hash", item.torrent_hash || "—"],
+    ["下载分类", item.final_category || "—"],
+    ["最近检查", formatDate(item.last_check)],
+  ].map(([label,value]) => `<div class="job-detail-item"><span>${escapeHTML(label)}</span><strong>${escapeHTML(value)}</strong></div>`).join("");
+  $("#job-detail-error").textContent = error;
+  $("#job-detail-json").textContent = JSON.stringify(item, null, 2);
+  $("#job-detail-logs").dataset.jobId = item.id;
+}
+
+async function showJobDetail(jobId) {
+  try {
+    const result = await api(`/api/naming/jobs/${encodeURIComponent(jobId)}`);
+    renderJobDetail(result.item);
+    openModal("#job-detail-modal");
+  } catch (error) { toast(error.message, true); }
+}
+
+async function showJobLogs(jobId) {
+  $("#job-detail-modal").classList.add("hidden");
+  $("#log-query").value = jobId || "";
+  setTab("logs");
+  try {
+    state.logs = (await api(`/api/logs?query=${encodeURIComponent(jobId || "")}&limit=500`)).items;
+    renderLogs();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function retryJob(jobId, button) {
+  if (!confirm("只重试这个 AVS 命名/硬链接任务，不会删除或重新添加下载器任务。继续吗？")) return;
+  button.disabled = true;
+  try {
+    const report = await api(`/api/naming/jobs/${encodeURIComponent(jobId)}/retry`, {method:"POST", body:"{}"});
+    toast(report.running ? "任务正在由其他检查处理" : "任务重试已执行");
+    await loadAll(true);
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
+}
+
+async function deleteFailedJob(jobId, button) {
+  if (!confirm("仅删除这条 AVS 失败记录；下载器任务、下载文件和媒体库文件都会保留。确定删除吗？")) return;
+  button.disabled = true;
+  try {
+    await api(`/api/naming/jobs/${encodeURIComponent(jobId)}`, {method:"DELETE"});
+    $("#job-detail-modal").classList.add("hidden");
+    toast("失败记录已删除，下载器和文件未受影响");
+    await loadAll(true);
+  } catch (error) { toast(error.message, true); }
+  finally { button.disabled = false; }
 }
 
 function renderAutomation() {
@@ -311,7 +391,9 @@ async function loadAll(silent = false) {
     const authFailure = requests.find((item) => item.status === "rejected" && item.reason instanceof AuthError);
     if (authFailure) throw authFailure.reason;
     const value = (index, fallback) => requests[index].status === "fulfilled" ? requests[index].value : fallback;
-    state.qb = value(0, {configured:false,connected:false}); state.downloads = value(1, {tasks:[]}).tasks;
+    const downloadsResult = value(1, {tasks:[]});
+    state.qb = value(0, {configured:false,connected:false}); state.downloads = downloadsResult.tasks;
+    state.downloadSyncedAt = downloadsResult.synced_at || new Date().toISOString();
     state.watchlist = value(2, {items:[]}).items; state.naming = value(3, {items:[]}).items; state.hardlinks = value(4, {items:[]}).items;
     state.sites = value(5, {items:[]}).items; state.paths = value(6, {settings:state.paths}).settings; state.pathRules = value(7, {items:[]}).items;
     state.downloaderSettings = value(8, {settings:state.downloaderSettings}).settings; state.systemSettings = value(9, {settings:state.systemSettings}).settings; state.agents = value(10, {items:[]}).items; state.logs = value(11, {items:[]}).items;
@@ -320,6 +402,21 @@ async function loadAll(silent = false) {
   } catch (error) {
     if (error instanceof AuthError) showAuth(error.message); else if (!silent) toast(error.message, true);
   } finally { state.loading = false; $("#refresh-all").classList.remove("loading"); }
+}
+
+async function refreshDownloads(silent = false) {
+  if (state.loading || state.downloadsLoading || document.hidden || !state.apiKey) return;
+  state.downloadsLoading = true;
+  const button = $("#refresh-downloads");
+  button.disabled = true;
+  try {
+    const result = await api("/api/downloader/tasks");
+    state.downloads = result.tasks || [];
+    state.downloadSyncedAt = result.synced_at || new Date().toISOString();
+    renderDownloads(); renderMetrics();
+  } catch (error) {
+    if (error instanceof AuthError) showAuth(error.message); else if (!silent) toast(error.message, true);
+  } finally { state.downloadsLoading = false; button.disabled = false; }
 }
 
 async function runAction(button, path, message, body = {}) {
@@ -364,12 +461,16 @@ function bindEvents() {
   document.addEventListener("click", (event) => {
     const go = event.target.closest("[data-go]"); if (go) setTab(go.dataset.go);
     const close = event.target.closest("[data-close-modal]"); if (close) closeModal(close);
+    const detail = event.target.closest("[data-job-detail]"); if (detail) showJobDetail(detail.dataset.jobDetail);
+    const retry = event.target.closest("[data-retry-job]"); if (retry) retryJob(retry.dataset.retryJob, retry);
+    const removeJob = event.target.closest("[data-delete-job]"); if (removeJob) deleteFailedJob(removeJob.dataset.deleteJob, removeJob);
   });
   $$(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => openModal("#download-modal")));
-  $("#refresh-all").addEventListener("click", () => loadAll()); $("#watch-filter").addEventListener("input", renderWatchlist);
+  $("#refresh-all").addEventListener("click", () => loadAll()); $("#refresh-downloads").addEventListener("click", () => refreshDownloads()); $("#watch-filter").addEventListener("input", renderWatchlist);
   $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks);
   $("#log-level").addEventListener("change", renderLogs); $("#log-query").addEventListener("input", renderLogs); $("#refresh-logs").addEventListener("click", loadLogs);
+  $("#job-detail-logs").addEventListener("click", (event) => showJobLogs(event.currentTarget.dataset.jobId));
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
   $("#watchlist-body").addEventListener("click", async (event) => {
@@ -441,3 +542,4 @@ function tickClock() { $("#clock").textContent = new Date().toLocaleTimeString("
 applyTheme(); bindEvents(); tickClock();
 const initialTab = location.hash.slice(1); if ($(`[data-panel="${CSS.escape(initialTab)}"]`)) setTab(initialTab);
 loadAll(); setInterval(tickClock, 60000);
+setInterval(() => refreshDownloads(true), 15000);

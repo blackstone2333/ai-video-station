@@ -9,7 +9,7 @@ import requests
 
 from .config import Settings
 from .errors import ServiceUnavailableError, UpstreamError
-from .qbittorrent import QBittorrentClient, torrent_hash
+from .qbittorrent import QBittorrentClient, normalized_task_progress, torrent_hash
 from .torrent_meta import parse_torrent_metadata
 
 
@@ -244,7 +244,7 @@ class TransmissionClient:
             "doneDate",
         ]
         values = self._rpc("torrent-get", {"fields": fields}).get("torrents", [])
-        return [
+        tasks = [
             {
                 "hash": item.get("hashString"),
                 "name": item.get("name"),
@@ -261,3 +261,7 @@ class TransmissionClient:
             }
             for item in values
         ]
+        for task in tasks:
+            task["progress"] = normalized_task_progress(task)
+            task["completed"] = task["progress"] >= 0.999999
+        return tasks

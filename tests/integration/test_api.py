@@ -126,6 +126,8 @@ def test_health_auth_search_download_and_qb(tmp_path):
     page = admin.get_data(as_text=True)
     assert 'id="header-theme-mode"' in page
     assert 'data-panel="logs"' in page
+    assert 'id="refresh-downloads"' in page
+    assert 'id="job-detail-modal"' in page
     assert "每 20 秒" not in page
     assert "AI Video Station 媒体调度台" in admin.get_data(as_text=True)
     assert "路径设置" in admin.get_data(as_text=True)
@@ -155,7 +157,9 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert response.status_code == 200
     assert response.json["qb_task_id"] == "a" * 40
     assert client.get("/api/qb/status", headers=headers).json["connected"] is True
-    assert client.get("/api/qb/tasks", headers=headers).json["count"] == 1
+    tasks = client.get("/api/qb/tasks", headers=headers).json
+    assert tasks["count"] == 1
+    assert tasks["synced_at"]
 
 
 def test_validation_search_is_read_only_and_watchlist_crud(tmp_path):
@@ -233,6 +237,31 @@ def test_naming_job_api_lists_gets_and_checks_jobs(tmp_path):
     checked = client.post("/api/naming/jobs/check", json={"job_id": item["id"]}, headers=headers)
     assert checked.json["completed"] == 1
     assert client.get("/api/naming/jobs?page=bad", headers=headers).status_code == 422
+
+    services.naming_jobs.update(
+        item["id"],
+        {"status": "failed", "attempts": 3, "last_error": "rename failed"},
+    )
+    retried = client.post(f"/api/naming/jobs/{item['id']}/retry", headers=headers)
+    assert retried.status_code == 200
+    assert retried.json["checked"] == 1
+
+    deleted = client.delete(f"/api/naming/jobs/{item['id']}", headers=headers)
+    assert deleted.status_code == 204
+    assert client.get(f"/api/naming/jobs/{item['id']}", headers=headers).status_code == 404
+
+
+def test_naming_job_delete_rejects_non_failed_records(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "test-key"}
+    plan = NamingPlan("movie", "大黄蜂", "大黄蜂 (2018)", 2018, None, None, "DHF.mp4")
+    item = services.naming_jobs.upsert("a" * 40, plan, "sixv-movie")
+
+    response = client.delete(f"/api/naming/jobs/{item['id']}", headers=headers)
+
+    assert response.status_code == 409
+    assert services.naming_jobs.get(item["id"])["status"] == "pending"
 
 
 def test_hardlink_history_and_site_settings_api(tmp_path):

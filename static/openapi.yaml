@@ -316,6 +316,26 @@ paths:
       responses:
         '200': {description: 命名任务}
         '404': {description: 任务不存在}
+    delete:
+      summary: 删除失败的 AVS 任务记录
+      description: 只删除 AVS 记录，不删除下载器任务、下载文件或媒体库文件。
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters:
+        - {in: path, name: job_id, required: true, schema: {type: string}}
+      responses:
+        '204': {description: 失败记录已删除}
+        '404': {description: 任务不存在}
+        '409': {description: 任务不是失败状态}
+  /api/naming/jobs/{job_id}/retry:
+    post:
+      summary: 重试单个命名或硬链接任务
+      description: 继续使用现有下载器任务和文件，不重新添加下载。
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters:
+        - {in: path, name: job_id, required: true, schema: {type: string}}
+      responses:
+        '200': {description: 重试报告}
+        '404': {description: 任务不存在}
   /api/naming/jobs/check:
     post:
       summary: 立即处理或重试命名/硬链接任务

@@ -12,7 +12,7 @@ from werkzeug.exceptions import BadRequest, HTTPException
 from . import __version__
 from .config import Settings
 from .agent_access import AgentAccessRepository
-from .errors import AppError, ForbiddenError, ServiceUnavailableError, ValidationAppError
+from .errors import AppError, ConflictError, ForbiddenError, ServiceUnavailableError, ValidationAppError
 from .logging_config import configure_logging, read_log_entries
 from .middleware import install_middleware
 from .models import (
@@ -36,6 +36,7 @@ from .path_settings import PathSettingsRepository
 from .runtime_settings import DownloaderSettingsRepository, SystemSettingsRepository
 from .services import AppServices, build_services
 from .sites import SiteConfig
+from .watchlist import utc_now_iso
 
 
 logger = logging.getLogger(__name__)
@@ -303,7 +304,7 @@ def create_app(
     @app.get("/api/qb/tasks")
     def qb_tasks():
         tasks = services.qb.tasks()
-        return jsonify({"success": True, "tasks": tasks, "count": len(tasks)})
+        return jsonify({"success": True, "tasks": tasks, "count": len(tasks), "synced_at": utc_now_iso()})
 
     @app.route("/api/watchlist/add", methods=["POST", "OPTIONS"])
     def watchlist_add():
@@ -367,6 +368,26 @@ def create_app(
             raise ServiceUnavailableError("automatic naming is not initialized")
         return jsonify({"success": True, "item": services.naming_jobs.get(job_id)})
 
+    @app.post("/api/naming/jobs/<job_id>/retry")
+    def naming_retry(job_id: str):
+        if not services.naming or not services.naming_jobs:
+            raise ServiceUnavailableError("automatic naming is not initialized")
+        services.naming_jobs.get(job_id)
+        report = services.naming.check(job_id)
+        logger.info("naming_job_manual_retry", extra={"job_id": job_id, "running": report["running"]})
+        return jsonify({"success": True, **report})
+
+    @app.delete("/api/naming/jobs/<job_id>")
+    def naming_job_delete(job_id: str):
+        if not services.naming_jobs:
+            raise ServiceUnavailableError("automatic naming is not initialized")
+        item = services.naming_jobs.get(job_id)
+        if item.get("status") != "failed" and item.get("hardlink_status") != "failed":
+            raise ConflictError("only failed AVS records can be deleted")
+        services.naming_jobs.delete(job_id)
+        logger.info("naming_job_record_deleted", extra={"job_id": job_id})
+        return "", 204
+
     @app.post("/api/naming/jobs/check")
     def naming_check():
         if not services.naming:
@@ -399,6 +420,9 @@ def create_app(
                 "skipped": (item.get("hardlink_result") or {}).get("skipped", 0),
                 "files": (item.get("hardlink_result") or {}).get("files", []),
                 "error": item.get("hardlink_error"),
+                "attempts": item.get("hardlink_attempts", 0),
+                "last_check": item.get("last_check"),
+                "torrent_hash": item.get("torrent_hash"),
                 "completed_at": item.get("updated_at"),
             }
             for item in jobs

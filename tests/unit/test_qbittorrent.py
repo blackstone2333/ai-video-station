@@ -79,6 +79,48 @@ def test_add_status_and_tasks(tmp_path):
 
 
 @responses.activate
+def test_tasks_normalize_completed_state_when_qb_progress_is_stale(tmp_path):
+    settings = Settings(
+        data_dir=tmp_path,
+        qb_host="qb.test",
+        qb_password="secret",
+        scheduler_enabled=False,
+    )
+    base = "http://qb.test:8080"
+    responses.post(f"{base}/api/v2/auth/login", body="Ok.")
+    responses.get(
+        f"{base}/api/v2/torrents/info",
+        json=[
+            {
+                "hash": "abc",
+                "name": "Completed episode",
+                "state": "pausedUP",
+                "progress": 0,
+                "size": 512,
+                "downloaded": 0,
+                "completion_on": 100,
+            },
+            {
+                "hash": "missing",
+                "name": "Missing episode",
+                "state": "missingFiles",
+                "progress": 0,
+                "size": 512,
+                "downloaded": 512,
+                "completion_on": 100,
+            },
+        ],
+    )
+
+    completed, missing = QBittorrentClient(settings).tasks()
+
+    assert completed["progress"] == 1.0
+    assert completed["completed"] is True
+    assert missing["progress"] == 0.0
+    assert missing["completed"] is False
+
+
+@responses.activate
 def test_existing_category_is_reused_without_rewriting_qbittorrent_configuration(tmp_path):
     settings = Settings(data_dir=tmp_path, qb_host="qb.test", scheduler_enabled=False)
     client = QBittorrentClient(settings)

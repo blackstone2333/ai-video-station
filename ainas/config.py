@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     sixv_address_page: str = "https://www.6v123.net"
     request_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     search_detail_limit: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5.3; +NAS)"
+    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5.4; +NAS)"
 
     downloader_type: str = "qbittorrent"
     qb_host: Optional[str] = None
