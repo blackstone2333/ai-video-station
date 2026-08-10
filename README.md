@@ -4,6 +4,12 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v2.0.1 更新说明
+
+- 手动磁力优先读取链接中的 `dn` 资源名；无资源名时明确要求填写标题，不再以“手动下载”占位词创建错误任务。
+- 未开始改名的 AVS 任务和等待硬链接的孤儿记录可以安全放弃；该操作只删除 AVS 后处理记录，不会删除下载器任务或任何文件。
+- 下载器中已不存在的任务会在有限次数检查后进入可诊断、可重试或可放弃的失败状态，不再永久占据处理中列表。
+
 ## v2.0.0 更新说明
 
 - 搜索与订阅彻底解耦：搜索默认只返回结果，订阅使用独立接口，避免 Agent 多轮搜索产生重复监听。
@@ -75,6 +81,8 @@ docker compose up -d --build --remove-orphans
 - 管理后台：标题栏主题切换、订阅周期、下载记录、命名任务、硬链接记录、系统日志、站点、目录和下载器设置
 - Agent 连接：顶部一键生成独立、可撤销、只显示一次的 Agent 令牌
 - Agent 操作面：REST/OpenAPI 与 `python -m ainas.cli` 命令行，按需连接，无需心跳
+
+手动磁力会优先读取链接中的 `dn` 资源名；如果链接本身不含名称，后台会要求先填写标题，不再用“手动下载”等占位词创建任务。放弃未完成的 AVS 命名/硬链接记录只会停止 AVS 后处理，不会删除下载器任务或任何文件。
 
 ## 命名规范
 
@@ -457,8 +465,8 @@ docker compose up -d --build --remove-orphans
 部署已发布镜像时，请固定一个版本，不要使用浮动标签：
 
 ```bash
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.0 docker compose pull
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.0 docker compose up -d --no-build --remove-orphans
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.1 docker compose pull
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.1 docker compose up -d --no-build --remove-orphans
 ```
 
 回滚就是在完成并校验备份后，将上述版本替换为上一个已验证的 `v*` 标签并重新执行两条命令。若升级涉及运行时数据变化，先停止服务并按上一节恢复对应备份，再启动旧版本。

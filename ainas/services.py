@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional
+from urllib.parse import quote
 
 from .config import Settings
 from .crawler import SixVClient
@@ -203,8 +204,23 @@ class DownloadService:
         episode_title: Optional[str] = None,
         path_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        source_name = link_display_name(download_link, title or "手动下载")
-        selected_title = (title or source_name).strip()
+        provided_title = (title or "").strip()
+        if provided_title.casefold() in {"手动下载", "manual download"}:
+            provided_title = ""
+        source_name = link_display_name(download_link, "").strip()
+        if not provided_title and not source_name:
+            raise ValidationAppError(
+                "磁力链接不包含可识别的资源名称，请填写标题后再下载",
+                [
+                    {
+                        "field": "title",
+                        "message": "链接缺少 dn 资源名时必须填写标题",
+                        "code": "TITLE_REQUIRED_FOR_NAMELESS_LINK",
+                    }
+                ],
+            )
+        selected_title = provided_title or source_name
+        source_name = source_name or selected_title
         resolved_type = self._manual_type(selected_title, source_name, media_type)
         result_id = release_id("manual", download_link)
         release = build_release(selected_title, source_name, "", download_link, resolved_type)
@@ -234,7 +250,7 @@ class DownloadService:
         metadata = parse_torrent_metadata(content)
         selected_title = (title or metadata.name).strip()
         resolved_type = self._manual_type(selected_title, metadata.name, media_type)
-        magnet = f"magnet:?xt=urn:btih:{metadata.info_hash}&dn={metadata.name}"
+        magnet = f"magnet:?xt=urn:btih:{metadata.info_hash}&dn={quote(metadata.name, safe='')}"
         release = build_release(selected_title, metadata.name, "", magnet, resolved_type)
         if release is None:
             release = self._fallback_release(metadata.info_hash[:16], magnet, selected_title, resolved_type)

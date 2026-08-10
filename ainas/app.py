@@ -536,15 +536,10 @@ def create_app(
 
     @app.delete("/api/naming/jobs/<job_id>")
     def naming_job_delete(job_id: str):
-        if not services.naming_jobs:
+        if not services.naming or not services.naming_jobs:
             raise ServiceUnavailableError("automatic naming is not initialized")
-        item = services.naming_jobs.get(job_id)
-        naming_failure = item.get("status") in {"failed", "missing_in_downloader"}
-        hardlink_failure = item.get("hardlink_status") in {"failed", "partial", "conflict"}
-        if not naming_failure and not hardlink_failure:
-            raise ConflictError("only failed or conflicted AVS records can be deleted")
-        services.naming_jobs.delete(job_id)
-        logger.info("naming_job_record_deleted", extra={"job_id": job_id})
+        services.naming.discard_record(job_id)
+        logger.info("naming_job_record_discarded", extra={"job_id": job_id})
         return "", 204
 
     @app.post("/api/naming/jobs/check")

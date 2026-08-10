@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config import Settings
-from .errors import AppError, NotFoundError
+from .errors import AppError, ConflictError, NotFoundError
 from .media_policies import policy_for
 from .qbittorrent import QBittorrentClient, torrent_hash
 from .quality import Release, canonical_media_name, detect_episode, detect_season
@@ -438,6 +438,46 @@ class NamingService:
         self.path_rules = path_rules
         self._lock = threading.Lock()
 
+    @staticmethod
+    def _rename_started(job: Dict[str, Any]) -> bool:
+        checkpoint = dict(job.get("rename_checkpoint") or {})
+        return bool(
+            int(checkpoint.get("files") or 0)
+            or int(checkpoint.get("folders") or 0)
+            or checkpoint.get("torrent")
+        )
+
+    def discard_record(self, job_id: str) -> Dict[str, Any]:
+        """Abandon AVS post-processing without touching downloader tasks or files."""
+        if not self._lock.acquire(blocking=False):
+            raise ConflictError("naming job is currently being processed; retry after it finishes")
+        try:
+            job = self.repository.get(job_id)
+            naming_failure = job.get("status") in {"failed", "missing_in_downloader"}
+            active_unfinished = job.get("status") in {
+                "submitting",
+                "awaiting_binding",
+                "pending",
+                "waiting_metadata",
+                "waiting_download",
+                "retrying",
+            }
+            hardlink_unfinished = job.get("status") == "completed" and job.get("hardlink_status") in {
+                "pending",
+                "waiting_download",
+                "retrying",
+                "failed",
+                "partial",
+                "conflict",
+            }
+            if active_unfinished and self._rename_started(job):
+                raise ConflictError("cannot discard an active job after rename operations have started")
+            if not naming_failure and not active_unfinished and not hardlink_unfinished:
+                raise ConflictError("only failed or safely abandonable AVS records can be discarded")
+            return self.repository.delete(job_id)
+        finally:
+            self._lock.release()
+
     def _download_path(
         self,
         plan: NamingPlan,
@@ -806,7 +846,19 @@ class NamingService:
             )
         try:
             torrent = self.qb.torrent_info(job["torrent_hash"])
-            progress = float(torrent.get("progress", 0)) if torrent else 0
+            if not torrent:
+                attempts = int(job.get("hardlink_attempts", 0)) + 1
+                failed = attempts >= self.settings.naming_max_attempts
+                return self.repository.update(
+                    job["id"],
+                    {
+                        "hardlink_status": "failed" if failed else "waiting_download",
+                        "hardlink_attempts": attempts,
+                        "hardlink_error": "torrent is absent from downloader",
+                        "last_check": now,
+                    },
+                )
+            progress = float(torrent.get("progress", 0))
             if progress < 0.999999:
                 return self.repository.update(
                     job["id"],

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AI Video Station API
-  version: 2.0.0
+  version: 2.0.1
   description: >-
     Media search, downloads, watchlists, naming jobs, path rules and Agent access.
     Unless an operation says otherwise, an Agent token needs the documented x-agent-scope.
@@ -100,7 +100,7 @@ components:
       additionalProperties: false
       properties:
         download_link: {type: string, minLength: 8, maxLength: 8192}
-        title: {type: [string, 'null'], minLength: 1, maxLength: 500}
+        title: {type: [string, 'null'], minLength: 1, maxLength: 500, description: Required when the link does not contain a usable resource name such as a magnet dn parameter.}
         type: {$ref: '#/components/schemas/MediaType'}
         original_title: {type: [string, 'null'], maxLength: 300}
         edition: {type: [string, 'null'], maxLength: 100}
@@ -491,8 +491,8 @@ paths:
       security: [{ApiKey: []}, {AgentToken: []}]
       responses: {'200': {description: Job}, '404': {$ref: '#/components/responses/NotFound'}, default: {$ref: '#/components/responses/Problem'}}
     delete:
-      summary: Delete a failed, missing or conflicted AVS naming record
-      description: Failed, missing_in_downloader, partial and conflict records may be removed. Only the AVS record is deleted; downloader tasks, downloaded files and media library files are untouched.
+      summary: Abandon a failed, missing or safely stoppable AVS naming record
+      description: Failed records and unfinished jobs that have not begun renaming may be abandoned; completed jobs waiting for hardlinks may also be removed. Only the AVS record is deleted. Downloader tasks, downloaded files and media library files are untouched.
       x-agent-scope: naming
       security: [{ApiKey: []}, {AgentToken: []}]
       responses: {'204': {description: Deleted}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, default: {$ref: '#/components/responses/Problem'}}

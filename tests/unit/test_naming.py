@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ainas.config import Settings
-from ainas.errors import UpstreamError
+from ainas.errors import ConflictError, UpstreamError
 from ainas.medialib import MediaLibraryService
 from ainas.naming import EmbyNamingPlanner, NamingJobRepository, NamingPlan, NamingService, safe_name
 from ainas.path_rules import PathRuleRepository
@@ -166,6 +166,64 @@ def test_repository_is_persistent_and_idempotent(tmp_path):
     assert repository.update(first["id"], {"status": "completed"})["status"] == "completed"
     with pytest.raises(Exception):
         repository.get("missing-job")
+
+
+def test_discard_record_abandons_safe_jobs_without_touching_downloader(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb)
+    plan = EmbyNamingPlanner.from_release(movie_release())
+
+    pending = repository.upsert("1" * 40, plan, settings.qb_movie_category)
+    assert service.discard_record(pending["id"])["id"] == pending["id"]
+    assert qb.calls == []
+
+    waiting = repository.upsert("2" * 40, plan, settings.qb_movie_category)
+    repository.update(
+        waiting["id"],
+        {
+            "status": "completed",
+            "hardlink_status": "waiting_download",
+            "rename_checkpoint": {"files": 1, "folders": 0, "torrent": True},
+        },
+    )
+    assert service.discard_record(waiting["id"])["id"] == waiting["id"]
+    assert qb.calls == []
+
+
+def test_discard_record_rejects_active_job_after_rename_started(tmp_path):
+    settings = naming_settings(tmp_path)
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, FakeQB())
+    item = repository.upsert("3" * 40, EmbyNamingPlanner.from_release(movie_release()), settings.qb_movie_category)
+    repository.update(
+        item["id"],
+        {"status": "retrying", "rename_checkpoint": {"files": 1, "folders": 0, "torrent": False}},
+    )
+
+    with pytest.raises(ConflictError, match="rename operations"):
+        service.discard_record(item["id"])
+
+
+def test_missing_downloader_task_eventually_fails_waiting_hardlink(tmp_path):
+    settings = naming_settings(tmp_path, naming_max_attempts=2)
+    qb = FakeQB(torrent=False)
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb, hardlinker=FakeHardlinker())
+    item = repository.upsert("4" * 40, EmbyNamingPlanner.from_release(movie_release()), settings.qb_movie_category)
+    repository.update(item["id"], {"status": "completed", "hardlink_status": "waiting_download"})
+
+    service.check(item["id"])
+    first = repository.get(item["id"])
+    assert first["hardlink_status"] == "waiting_download"
+    assert first["hardlink_attempts"] == 1
+    assert first["hardlink_error"] == "torrent is absent from downloader"
+
+    service.check(item["id"])
+    failed = repository.get(item["id"])
+    assert failed["hardlink_status"] == "failed"
+    assert failed["hardlink_attempts"] == 2
 
 
 class FakeQB:

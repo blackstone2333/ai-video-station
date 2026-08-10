@@ -280,8 +280,7 @@ function renderNaming() {
     <td>${(() => {
       const retryable = ["pending","submitting","awaiting_binding","waiting_metadata","waiting_download","retrying","failed","missing_in_downloader"].includes(item.status)
         || ["waiting_download","retrying","failed","partial","conflict"].includes(item.hardlink_status);
-      const deletable = ["failed","missing_in_downloader"].includes(item.status)
-        || ["failed","partial","conflict"].includes(item.hardlink_status);
+      const deletable = canDiscardJob(item);
       const correctable = ["failed","missing_in_downloader"].includes(item.status) || item.hardlink_status === "failed";
       return jobActionMarkup(item.id, retryable, deletable, correctable);
     })()}</td>
@@ -336,7 +335,15 @@ async function actOnSearchResult(index, action, button) {
 }
 
 function jobActionMarkup(id, retryable, deletable, correctable = false) {
-  return `<div class="job-actions"><button class="quiet-button" data-job-detail="${escapeHTML(id)}" type="button">详情</button>${correctable ? `<button class="quiet-button" data-correct-job="${escapeHTML(id)}" type="button">修正预览</button><button class="quiet-button" data-relocate-job="${escapeHTML(id)}" type="button">安全迁移</button>` : ""}${retryable ? `<button class="quiet-button" data-retry-job="${escapeHTML(id)}" type="button">重试</button>` : ""}${deletable ? `<button class="danger-button" data-delete-job="${escapeHTML(id)}" type="button">删除记录</button>` : ""}</div>`;
+  return `<div class="job-actions"><button class="quiet-button" data-job-detail="${escapeHTML(id)}" type="button">详情</button>${correctable ? `<button class="quiet-button" data-correct-job="${escapeHTML(id)}" type="button">修正预览</button><button class="quiet-button" data-relocate-job="${escapeHTML(id)}" type="button">安全迁移</button>` : ""}${retryable ? `<button class="quiet-button" data-retry-job="${escapeHTML(id)}" type="button">重试</button>` : ""}${deletable ? `<button class="danger-button" data-delete-job="${escapeHTML(id)}" type="button">放弃 AVS 记录</button>` : ""}</div>`;
+}
+
+function canDiscardJob(item) {
+  const checkpoint = item.rename_checkpoint || {};
+  const pristine = !Number(checkpoint.files || 0) && !Number(checkpoint.folders || 0) && !checkpoint.torrent;
+  const active = ["submitting","awaiting_binding","pending","waiting_metadata","waiting_download","retrying"].includes(item.status);
+  const hardlink = item.status === "completed" && ["pending","waiting_download","retrying","failed","partial","conflict"].includes(item.hardlink_status);
+  return ["failed","missing_in_downloader"].includes(item.status) || (active && pristine) || hardlink;
 }
 
 function renderJobDetail(item) {
@@ -385,12 +392,12 @@ async function retryJob(jobId, button) {
 }
 
 async function deleteFailedJob(jobId, button) {
-  if (!confirm("仅删除这条 AVS 失败记录；下载器任务、下载文件和媒体库文件都会保留。确定删除吗？")) return;
+  if (!confirm("只放弃这条 AVS 命名/硬链接记录；即使下载器中仍有任务，qB/Transmission 任务、下载文件和媒体库文件也绝不会被删除。确定继续吗？")) return;
   button.disabled = true;
   try {
     await api(`/api/naming/jobs/${encodeURIComponent(jobId)}`, {method:"DELETE"});
     $("#job-detail-modal").classList.add("hidden");
-    toast("失败记录已删除，下载器和文件未受影响");
+    toast("AVS 记录已放弃，下载器和文件未受影响");
     await loadAll(true);
   } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
@@ -613,6 +620,23 @@ function manualSourceChanged() {
   $$('[data-source-panel]').forEach((element) => element.classList.toggle("hidden", element.dataset.sourcePanel !== selected));
 }
 
+function manualLinkDisplayName(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    if (parsed.protocol === "magnet:") return (parsed.searchParams.get("dn") || "").trim();
+    const basename = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).at(-1) || "");
+    return basename.trim();
+  } catch (_) { return ""; }
+}
+
+function updateManualLinkName() {
+  const name = manualLinkDisplayName($("#manual-link").value);
+  $("#manual-link-detected").textContent = name
+    ? `已识别资源名：${name}`
+    : "未读取到资源名；如果磁力链接没有 dn 参数，请填写中文标题";
+  return name;
+}
+
 function agentPrompt(agent) {
   const origin = location.origin;
   return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\nCLI：python -m ainas.cli\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 首次使用时 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink","logs"]}\n3. 不需要发送心跳；仅在需要查看或操作时调用 API，任意有效请求都会更新最近使用时间\n4. 也可以设置 AVS_URL=${origin} 与 AVS_TOKEN 后使用 CLI；先运行 python -m ainas.cli status\n5. 搜索时省略 add_to_watchlist 或明确传 false；只有用户明确要求订阅时才调用 /api/watchlist/add\n6. 读取 OpenAPI 后再调用业务接口；涉及新增下载、删除或修改设置时，先向我确认目标\n7. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
@@ -681,14 +705,15 @@ function bindEvents() {
     } catch (error) { $("#provider-preview-result").textContent = error.message; showError(error); } finally { button.disabled = false; }
   });
   $('input[name="download-source"][value="magnet"]').closest(".source-switch").addEventListener("change", manualSourceChanged);
+  $("#manual-link").addEventListener("input", updateManualLinkName);
   $("#manual-download-form").addEventListener("submit", async (event) => {
     event.preventDefault(); const button = $("#submit-manual-download"); const source = $('input[name="download-source"]:checked').value;
     const shared = {title:$("#manual-title").value.trim() || undefined,type:$("#manual-type").value,path_rule_id:$("#manual-path-rule").value || undefined,original_title:$("#manual-original-title").value.trim() || undefined,edition:$("#manual-edition").value.trim() || undefined,episode_title:$("#manual-episode-title").value.trim() || undefined};
     button.disabled = true;
     try {
-      if (source === "magnet") { const link = $("#manual-link").value.trim(); if (!link) throw new Error("请输入磁力链接或种子链接"); await api("/api/download/manual", {method:"POST",body:JSON.stringify({...shared,download_link:link})}); }
+      if (source === "magnet") { const link = $("#manual-link").value.trim(); if (!link) throw new Error("请输入磁力链接或种子链接"); if (!shared.title && !updateManualLinkName()) { $("#manual-title").focus(); throw new Error("这个链接没有资源名，请先填写标题"); } await api("/api/download/manual", {method:"POST",body:JSON.stringify({...shared,download_link:link})}); }
       else { const file = $("#manual-torrent").files[0]; if (!file) throw new Error("请选择 .torrent 文件"); const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); await api("/api/download/manual", {method:"POST",body:form}); }
-      toast("资源已识别并加入下载队列"); $("#download-modal").classList.add("hidden"); event.currentTarget.reset(); manualSourceChanged(); await loadAll(true);
+      toast("资源已识别并加入下载队列"); $("#download-modal").classList.add("hidden"); event.currentTarget.reset(); manualSourceChanged(); updateManualLinkName(); await loadAll(true);
     } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#path-hardlink-enabled").addEventListener("change", () => { state.pathsDirty = true; });

@@ -7,6 +7,7 @@ from pathlib import Path
 from ainas.app import create_app
 from ainas.config import Settings
 from ainas.download_records import DismissedDownloadRepository
+from ainas.errors import ConflictError
 from ainas.naming import NamingJobRepository, NamingPlan
 from ainas.quality import build_release
 from ainas.services import AppServices, ResultCache, SearchOutcome
@@ -101,8 +102,21 @@ class StubWatchlistService:
 
 
 class StubNamingService:
+    def __init__(self, repository):
+        self.repository = repository
+
     def check(self, job_id=None):
         return {"running": False, "checked": 1, "completed": 1, "results": []}
+
+    def discard_record(self, job_id):
+        item = self.repository.get(job_id)
+        naming_failure = item.get("status") in {"failed", "missing_in_downloader"}
+        hardlink_unfinished = item.get("status") == "completed" and item.get("hardlink_status") in {
+            "pending", "waiting_download", "retrying", "failed", "partial", "conflict"
+        }
+        if not naming_failure and not hardlink_unfinished:
+            raise ConflictError("record cannot be discarded")
+        return self.repository.delete(job_id)
 
     def preview_corrected_plan(self, job_id, overrides):
         return {
@@ -143,7 +157,7 @@ def build_test_app(tmp_path: Path):
         download=StubDownload(qb),
         watchlist_service=StubWatchlistService(watchlist),
         naming_jobs=naming_jobs,
-        naming=StubNamingService(),
+        naming=StubNamingService(naming_jobs),
         sites=sites,
         dismissed_downloads=dismissed_downloads,
     )
@@ -370,6 +384,20 @@ def test_naming_job_delete_accepts_missing_partial_and_conflict_records(tmp_path
 
         assert response.status_code == 204
         assert client.get(f"/api/naming/jobs/{item['id']}", headers=headers).status_code == 404
+
+
+def test_naming_job_delete_can_abandon_waiting_hardlink_record(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "integration-api-key-1234"}
+    plan = NamingPlan("movie", "手动下载", "手动下载", None, None, None, None)
+    item = services.naming_jobs.upsert("c" * 40, plan, "Movie")
+    services.naming_jobs.update(item["id"], {"status": "completed", "hardlink_status": "waiting_download"})
+
+    response = client.delete(f"/api/naming/jobs/{item['id']}", headers=headers)
+
+    assert response.status_code == 204
+    assert client.get(f"/api/naming/jobs/{item['id']}", headers=headers).status_code == 404
 
 
 def test_hardlink_history_and_site_settings_api(tmp_path):
