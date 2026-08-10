@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     sixv_address_page: str = "https://www.6v123.net"
     request_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     search_detail_limit: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/1.5.6; +NAS)"
+    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/2.0.0; +NAS)"
 
     downloader_type: str = "qbittorrent"
     qb_host: Optional[str] = None
@@ -75,6 +75,8 @@ class Settings(BaseSettings):
     medialib_mount_path: Path = Path("/medialib")
 
     api_key: Optional[SecretStr] = None
+    # Deliberately opt-in: this is only appropriate on an isolated, trusted LAN.
+    allow_insecure_lan: bool = False
     cors_origins: str = ""
     rate_limit_per_minute: int = Field(default=60, ge=1, le=10000)
     max_torrent_upload_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=32 * 1024 * 1024)
@@ -219,6 +221,10 @@ class Settings(BaseSettings):
         return self.data_dir / "watchlist.json"
 
     @property
+    def state_db_path(self) -> Path:
+        return self.data_dir / "state.db"
+
+    @property
     def naming_jobs_path(self) -> Path:
         return self.data_dir / "naming_jobs.json"
 
@@ -259,3 +265,31 @@ class Settings(BaseSettings):
             return None
         value = self.api_key.get_secret_value().strip()
         return value or None
+
+    def has_usable_api_key(self) -> bool:
+        """Whether API authentication is configured with a non-placeholder key.
+
+        This is intentionally checked at request time rather than during settings
+        construction so a bad deployment fails closed instead of preventing local
+        maintenance commands from starting.
+        """
+        value = self.api_key_value()
+        if not value:
+            return False
+        normalized = value.casefold().replace("_", "-").replace(" ", "")
+        placeholders = {
+            "changeme",
+            "change-me",
+            "replace-me",
+            "replace-with-a-long-random-string",
+            "your-api-key",
+            "your-api-key-here",
+            "api-key",
+            "example-api-key",
+            "password",
+            "secret",
+            "default",
+        }
+        # 128 bits of entropy is the operational target; this modest length
+        # floor catches accidental examples without imposing a format on users.
+        return len(value) >= 16 and normalized not in placeholders

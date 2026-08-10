@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from .config import Settings
 from .errors import AppError
+from .media_policies import UnsupportedMediaType, policy_for
 
 
 logger = logging.getLogger(__name__)
@@ -96,24 +97,17 @@ class MediaLibraryService:
         )
 
     def _target_root(self, media_type: str, source_path: Any = None) -> Path:
-        if media_type not in {"movie", "tv", "anime", "custom"}:
-            raise HardlinkError(f"unsupported media type: {media_type!r}")
+        try:
+            policy = policy_for(media_type)
+        except UnsupportedMediaType as exc:
+            raise HardlinkError(str(exc)) from exc
         host_source = (
             self.path_rules.host_path_for_downloader(source_path)
             if self.path_rules and source_path
             else source_path
         )
         rule = self.path_rules.match(media_type, host_source) if self.path_rules and host_source else None
-        if rule:
-            host_target = Path(rule["target_path"])
-        elif media_type == "movie":
-            host_target = self.settings.medialib_movie_path
-        elif media_type == "anime":
-            host_target = self.settings.medialib_anime_path
-        elif media_type == "custom":
-            host_target = self.settings.medialib_custom_path
-        else:
-            host_target = self.settings.medialib_tv_path
+        host_target = Path(rule["target_path"]) if rule else policy.medialib_path_for(self.settings)
         return self._container_path(host_target, f"{media_type} media library path")
 
     def _source_candidates(
@@ -276,9 +270,11 @@ class MediaLibraryService:
         target_root: Optional[Path] = None,
     ) -> Path:
         media_type = str(plan.get("media_type") or "")
-        if media_type not in {"movie", "tv", "anime", "custom"}:
-            raise HardlinkError(f"unsupported media type: {media_type!r}")
-        if media_type == "custom":
+        try:
+            policy = policy_for(media_type)
+        except UnsupportedMediaType as exc:
+            raise HardlinkError(str(exc)) from exc
+        if policy.target_layout == "preserve":
             root_name = self._safe_component(plan.get("root_name"), "custom resource link name")
             if content_root_name and relative.parts[0].casefold() == content_root_name.casefold():
                 relative = Path(*relative.parts[1:]) if len(relative.parts) > 1 else Path(relative.name)
@@ -287,12 +283,12 @@ class MediaLibraryService:
         media_name = self._safe_component(plan.get("media_name") or root_name, "media name")
         removable_roots = [root_name, media_name]
         if content_root_name and not (
-            media_type in {"tv", "anime"} and SEASON_DIRECTORY_RE.fullmatch(content_root_name)
+            policy.target_layout == "season" and SEASON_DIRECTORY_RE.fullmatch(content_root_name)
         ):
             removable_roots.append(content_root_name)
         relative = self._strip_media_root(relative, removable_roots)
 
-        if media_type == "movie":
+        if policy.target_layout == "title":
             return (target_root or self._target_root(media_type)) / root_name / relative
         return (target_root or self._target_root(media_type)) / root_name / self._tv_relative(relative)
 
@@ -418,7 +414,7 @@ class MediaLibraryService:
             prepared.append((source, destination))
 
         results: List[Dict[str, str]] = []
-        linked = skipped = already_linked = 0
+        linked = skipped = already_linked = conflicts = 0
         for source, destination in prepared:
             if os.path.lexists(destination):
                 skipped += 1
@@ -426,7 +422,11 @@ class MediaLibraryService:
                     already_linked += 1
                     status = "already-linked"
                 else:
-                    status = "skipped-existing"
+                    # Never overwrite or silently treat a same-name but
+                    # different file as successful.  The caller can surface
+                    # this safely and an operator can decide the correction.
+                    conflicts += 1
+                    status = "conflict"
                 results.append(self._result(status, source, destination))
                 continue
             try:
@@ -437,11 +437,13 @@ class MediaLibraryService:
             results.append(self._result("linked", source, destination))
             logger.info("medialib_hardlink_created", extra={"source": str(source), "target": str(destination)})
 
+        status = "conflict" if conflicts and not linked else ("partial" if conflicts else "done")
         return {
-            "status": "done",
+            "status": status,
             "linked": linked,
             "skipped": skipped,
             "already_linked": already_linked,
+            "conflicts": conflicts,
             "target": str(self._destination(Path("placeholder"), plan_value, content_root_name, target_root).parent),
             "files": results,
         }

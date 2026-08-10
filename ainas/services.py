@@ -13,11 +13,11 @@ from .crawler import SixVClient
 from .errors import AppError, NotFoundError, ValidationAppError
 from .download_records import DismissedDownloadRepository
 from .medialib import MediaLibraryService
+from .media_policies import policy_for
 from .naming import NamingJobRepository, NamingService
 from .path_rules import PathRuleRepository
 from .path_settings import PathSettingsRepository
 from .quality import (
-    EPISODIC_MEDIA_TYPES,
     Release,
     canonical_media_name,
     detect_episode,
@@ -37,6 +37,7 @@ from .runtime_settings import (
     SystemSettingsRepository,
 )
 from .agent_access import AgentAccessRepository
+from .state import StateStore, StateStoreError
 
 
 logger = logging.getLogger(__name__)
@@ -97,11 +98,16 @@ class DownloadService:
         qb: Any,
         cache: ResultCache,
         naming: Optional[NamingService] = None,
+        path_rules: Optional[PathRuleRepository] = None,
     ) -> None:
         self.settings = settings
         self.qb = qb
         self.cache = cache
         self.naming = naming
+        self.path_rules = path_rules or getattr(naming, "path_rules", None)
+
+    def _route_for(self, media_type: str, path_rule_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        return self.path_rules.resolve(media_type, path_rule_id) if self.path_rules else None
 
     @staticmethod
     def _fallback_release(
@@ -112,7 +118,8 @@ class DownloadService:
     ) -> Release:
         year_match = re.search(r"(?<!\d)((?:19|20)\d{2})(?!\d)", title)
         resolved_type = infer_media_type(title, download_link, media_type)
-        season = detect_season(title) if resolved_type in EPISODIC_MEDIA_TYPES else None
+        policy = policy_for(resolved_type)
+        season = detect_season(title) if policy.episodic else None
         return Release(
             id=result_id,
             title=title,
@@ -125,7 +132,7 @@ class DownloadService:
             hdr=None,
             encoding=None,
             media_type=resolved_type,
-            episode=detect_episode(title) if resolved_type in EPISODIC_MEDIA_TYPES else None,
+            episode=detect_episode(title) if policy.episodic else None,
             media_name=canonical_media_name(title),
             year=int(year_match.group(1)) if year_match else None,
             season=season,
@@ -138,6 +145,7 @@ class DownloadService:
         download_link: str,
         title: str,
         media_type: str,
+        path_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         cached = self.cache.get(result_id)
         if cached and cached.download_link != download_link:
@@ -153,25 +161,18 @@ class DownloadService:
                 "media type could not be detected; choose movie, tv, anime, or custom",
                 [{"field": "type", "message": "explicit media type required", "code": "TYPE_REQUIRED"}],
             )
-        if resolved_type == "custom":
-            category = self.settings.qb_custom_category
-        elif resolved_type == "anime":
-            category = self.settings.qb_anime_category
-        elif resolved_type == "tv":
-            category = self.settings.qb_tv_category
-        else:
-            category = self.settings.qb_movie_category
+        category = self._category_for(resolved_type)
         release = cached or self._fallback_release(result_id, download_link, title, resolved_type)
-        result = self.naming.add_download(release, category) if self.naming else self.qb.add_download(download_link, category)
-        return {**result, "title": title, "type": resolved_type}
+        route = self._route_for(resolved_type, path_rule_id)
+        result = (
+            self.naming.add_download(release, category, path_rule_id=route["id"] if route else None)
+            if self.naming
+            else (self.qb.add_download(download_link, category, save_path=route["downloader_path"]) if route else self.qb.add_download(download_link, category))
+        )
+        return {**result, "title": title, "type": resolved_type, "path_rule_id": route["id"] if route else None}
 
     def _category_for(self, media_type: str) -> str:
-        return {
-            "movie": self.settings.qb_movie_category,
-            "tv": self.settings.qb_tv_category,
-            "anime": self.settings.qb_anime_category,
-            "custom": self.settings.qb_custom_category,
-        }[media_type]
+        return policy_for(media_type).category_for(self.settings)
 
     @staticmethod
     def _manual_type(title: str, source_name: str, media_type: str) -> str:
@@ -200,6 +201,7 @@ class DownloadService:
         original_title: Optional[str] = None,
         edition: Optional[str] = None,
         episode_title: Optional[str] = None,
+        path_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         source_name = link_display_name(download_link, title or "手动下载")
         selected_title = (title or source_name).strip()
@@ -210,8 +212,13 @@ class DownloadService:
             release = self._fallback_release(result_id, download_link, selected_title, resolved_type)
         release = self._with_manual_metadata(release, original_title, edition, episode_title)
         category = self._category_for(resolved_type)
-        result = self.naming.add_download(release, category) if self.naming else self.qb.add_download(download_link, category)
-        return {**result, "title": selected_title, "type": resolved_type, "source_name": source_name}
+        route = self._route_for(resolved_type, path_rule_id)
+        result = (
+            self.naming.add_download(release, category, path_rule_id=route["id"] if route else None)
+            if self.naming
+            else (self.qb.add_download(download_link, category, save_path=route["downloader_path"]) if route else self.qb.add_download(download_link, category))
+        )
+        return {**result, "title": selected_title, "type": resolved_type, "source_name": source_name, "path_rule_id": route["id"] if route else None}
 
     def manual_torrent(
         self,
@@ -222,6 +229,7 @@ class DownloadService:
         original_title: Optional[str] = None,
         edition: Optional[str] = None,
         episode_title: Optional[str] = None,
+        path_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         metadata = parse_torrent_metadata(content)
         selected_title = (title or metadata.name).strip()
@@ -232,6 +240,7 @@ class DownloadService:
             release = self._fallback_release(metadata.info_hash[:16], magnet, selected_title, resolved_type)
         release = self._with_manual_metadata(release, original_title, edition, episode_title)
         category = self._category_for(resolved_type)
+        route = self._route_for(resolved_type, path_rule_id)
         if self.naming:
             result = self.naming.add_torrent_file(
                 release,
@@ -239,10 +248,11 @@ class DownloadService:
                 content,
                 filename,
                 metadata.info_hash,
+                path_rule_id=route["id"] if route else None,
             )
         else:
-            result = self.qb.add_torrent_file(content, filename, category)
-        return {**result, "title": selected_title, "type": resolved_type, "source_name": metadata.name}
+            result = self.qb.add_torrent_file(content, filename, category, save_path=route["downloader_path"]) if route else self.qb.add_torrent_file(content, filename, category)
+        return {**result, "title": selected_title, "type": resolved_type, "source_name": metadata.name, "path_rule_id": route["id"] if route else None}
 
 
 class WatchlistService:
@@ -253,13 +263,34 @@ class WatchlistService:
         search: SearchService,
         qb: Any,
         naming: Optional[NamingService] = None,
+        path_rules: Optional[PathRuleRepository] = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.search_service = search
         self.qb = qb
         self.naming = naming
+        self.path_rules = path_rules or getattr(naming, "path_rules", None)
         self._check_lock = threading.Lock()
+
+    def _category_for(self, media_type: str) -> str:
+        return policy_for(media_type).category_for(self.settings)
+
+    def add(self, keyword: str, media_type: str, path_rule_id: Optional[str] = None) -> Dict[str, Any]:
+        """Create an idempotent subscription and pin a selected route."""
+        route = None
+        if self.path_rules and path_rule_id:
+            # ``auto`` cannot be type-checked until a result arrives, but the
+            # explicit id is still captured and enforced at that point.
+            route = self.path_rules.get(path_rule_id) if media_type == "auto" else self.path_rules.resolve(media_type, path_rule_id)
+            if not route["enabled"]:
+                raise ValidationAppError(
+                    "路径规则已禁用",
+                    [{"field": "path_rule_id", "message": "请启用规则或选择其他规则", "code": "PATH_RULE_DISABLED"}],
+                )
+        elif self.path_rules and media_type != "auto":
+            route = self.path_rules.resolve(media_type)
+        return self.repository.add(keyword, media_type, route["id"] if route else None, route)
 
     def _is_expired(self, item: Dict[str, Any]) -> bool:
         try:
@@ -313,17 +344,17 @@ class WatchlistService:
 
             downloaded_links = set(item.get("downloaded_links", []))
             downloaded_episodes = set(item.get("downloaded_episodes", []))
-            if resolved_type in EPISODIC_MEDIA_TYPES:
+            # A subscription pins its initial route.  Older records are upgraded
+            # on first successful resolution so changing defaults is predictable.
+            route = self.path_rules.resolve(resolved_type, item.get("path_rule_id")) if self.path_rules else None
+            if route and item.get("path_rule_id") != route["id"]:
+                base_changes["path_rule_id"] = route["id"]
+                base_changes["path_rule_snapshot"] = route
+            if policy_for(resolved_type).episodic:
                 candidates = self._select_tv_releases(releases, downloaded_episodes)
-                category = (
-                    self.settings.qb_anime_category if resolved_type == "anime" else self.settings.qb_tv_category
-                )
-            elif resolved_type == "custom":
-                candidates = releases[:1]
-                category = self.settings.qb_custom_category
             else:
                 candidates = releases[:1]
-                category = self.settings.qb_movie_category
+            category = self._category_for(resolved_type)
 
             added = 0
             for release in candidates:
@@ -331,9 +362,12 @@ class WatchlistService:
                     continue
                 try:
                     if self.naming:
-                        self.naming.add_download(release, category)
+                        self.naming.add_download(release, category, path_rule_id=route["id"] if route else None)
                     else:
-                        self.qb.add_download(release.download_link, category)
+                        if route:
+                            self.qb.add_download(release.download_link, category, save_path=route["downloader_path"])
+                        else:
+                            self.qb.add_download(release.download_link, category)
                 except AppError as exc:
                     failed_changes = {
                         **base_changes,
@@ -341,7 +375,7 @@ class WatchlistService:
                         "downloaded_episodes": sorted(downloaded_episodes),
                         "status": (
                             "monitoring"
-                            if resolved_type in EPISODIC_MEDIA_TYPES
+                            if policy_for(resolved_type).episodic
                             else item.get("status", "pending")
                         ),
                         "found_at": item.get("found_at") or (now if downloaded_links else None),
@@ -368,7 +402,7 @@ class WatchlistService:
                         **base_changes,
                         "downloaded_links": sorted(downloaded_links),
                         "downloaded_episodes": sorted(downloaded_episodes),
-                        "status": "monitoring" if resolved_type in EPISODIC_MEDIA_TYPES else "found",
+                        "status": "monitoring" if policy_for(resolved_type).episodic else "found",
                         "found_at": item.get("found_at") or now,
                     },
                 )
@@ -377,7 +411,7 @@ class WatchlistService:
                 {
                     "downloaded_links": sorted(downloaded_links),
                     "downloaded_episodes": sorted(downloaded_episodes),
-                    "status": "monitoring" if resolved_type in EPISODIC_MEDIA_TYPES else "found",
+                    "status": "monitoring" if policy_for(resolved_type).episodic else "found",
                     "found_at": item.get("found_at") or now,
                 }
             )
@@ -434,15 +468,20 @@ class AppServices:
     system_settings: Optional[SystemSettingsRepository] = None
     agents: Optional[AgentAccessRepository] = None
     dismissed_downloads: Optional[DismissedDownloadRepository] = None
+    state_store: Optional[StateStore] = None
 
 
 def build_services(settings: Settings) -> AppServices:
-    path_settings = PathSettingsRepository(settings)
-    downloader_settings = DownloaderSettingsRepository(settings)
-    system_settings = SystemSettingsRepository(settings)
-    path_rules = PathRuleRepository(settings)
-    agents = AgentAccessRepository(settings)
-    dismissed_downloads = DismissedDownloadRepository(settings.dismissed_downloads_path)
+    try:
+        state_store = StateStore(settings.state_db_path)
+    except StateStoreError as exc:
+        raise AppError("State Error", f"could not open persistent application state: {exc}", "state-error", 500) from exc
+    path_settings = PathSettingsRepository(settings, state_store)
+    downloader_settings = DownloaderSettingsRepository(settings, state_store)
+    system_settings = SystemSettingsRepository(settings, state_store)
+    path_rules = PathRuleRepository(settings, state_store)
+    agents = AgentAccessRepository(settings, state_store)
+    dismissed_downloads = DismissedDownloadRepository(settings.dismissed_downloads_path, state_store)
     default_site = {
         "id": "sixv",
         "name": "6v",
@@ -452,17 +491,17 @@ def build_services(settings: Settings) -> AppServices:
         "address_page": settings.sixv_address_page,
         "default_type": "auto",
     }
-    sites = SiteRepository(settings.sites_path, default_site)
+    sites = SiteRepository(settings.sites_path, default_site, state_store)
     crawler = ProviderRegistry(settings, sites)
     qb = DownloaderManager(settings)
-    watchlist = WatchlistRepository(settings.watchlist_path)
+    watchlist = WatchlistRepository(settings.watchlist_path, state_store)
     cache = ResultCache()
     search = SearchService(crawler, cache)
-    naming_jobs = NamingJobRepository(settings.naming_jobs_path)
+    naming_jobs = NamingJobRepository(settings.naming_jobs_path, state_store)
     hardlinker = MediaLibraryService(settings, path_rules=path_rules)
     naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker, path_rules=path_rules)
-    download = DownloadService(settings, qb, cache, naming)
-    watchlist_service = WatchlistService(settings, watchlist, search, qb, naming)
+    download = DownloadService(settings, qb, cache, naming, path_rules)
+    watchlist_service = WatchlistService(settings, watchlist, search, qb, naming, path_rules)
     return AppServices(
         crawler=crawler,
         qb=qb,
@@ -480,4 +519,5 @@ def build_services(settings: Settings) -> AppServices:
         system_settings=system_settings,
         agents=agents,
         dismissed_downloads=dismissed_downloads,
+        state_store=state_store,
     )

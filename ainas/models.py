@@ -35,6 +35,7 @@ class DownloadRequest(StrictModel):
     download_link: str = Field(min_length=8, max_length=8192)
     title: str = Field(min_length=1, max_length=500)
     media_type: MediaType = Field(default="auto", alias="type")
+    path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
 
     @field_validator("title")
     @classmethod
@@ -49,6 +50,7 @@ class ManualDownloadRequest(StrictModel):
     original_title: Optional[str] = Field(default=None, max_length=300)
     edition: Optional[str] = Field(default=None, max_length=100)
     episode_title: Optional[str] = Field(default=None, max_length=300)
+    path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
 
 
 class ManualTorrentRequest(StrictModel):
@@ -57,11 +59,13 @@ class ManualTorrentRequest(StrictModel):
     original_title: Optional[str] = Field(default=None, max_length=300)
     edition: Optional[str] = Field(default=None, max_length=100)
     episode_title: Optional[str] = Field(default=None, max_length=300)
+    path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
 
 
 class WatchlistAddRequest(StrictModel):
     keyword: str = Field(min_length=1, max_length=100)
     media_type: MediaType = Field(default="auto", alias="type")
+    path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
 
     @field_validator("keyword")
     @classmethod
@@ -104,6 +108,7 @@ class SitePatchRequest(StrictModel):
     default_type: Optional[Literal["auto", "movie", "tv", "anime", "custom"]] = None
     tv_path_patterns: Optional[List[str]] = None
     anime_path_patterns: Optional[List[str]] = None
+    allow_private_hosts: Optional[bool] = None
 
 
 class PathSettingsPatchRequest(StrictModel):
@@ -146,6 +151,75 @@ class PathRulePatchRequest(StrictModel):
         return self
 
 
+class PathRulePreflightRequest(StrictModel):
+    rule_id: str = Field(min_length=8, max_length=64)
+
+
+class PathRuleDeleteRequest(StrictModel):
+    disable_media_path: bool = False
+
+
+class PaginationParams(StrictModel):
+    page: int = Field(default=1, ge=1)
+    page_size: int = Field(default=50, ge=1, le=200)
+
+
+class NamingJobFilterRequest(PaginationParams):
+    status: Optional[
+        Literal[
+            "submitting",
+            "awaiting_binding",
+            "pending",
+            "waiting_metadata",
+            "waiting_download",
+            "retrying",
+            "missing_in_downloader",
+            "completed",
+            "failed",
+        ]
+    ] = None
+    media_type: Optional[Literal["movie", "tv", "anime", "custom"]] = None
+    query: Optional[str] = Field(default=None, max_length=200)
+
+
+class NamingPlanOverrideRequest(StrictModel):
+    media_type: Optional[Literal["movie", "tv", "anime", "custom"]] = None
+    media_name: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    original_title: Optional[str] = Field(default=None, max_length=300)
+    year: Optional[int] = Field(default=None, ge=1888, le=2100)
+    season: Optional[int] = Field(default=None, ge=0, le=999)
+    episode: Optional[str] = Field(default=None, max_length=100)
+    episode_title: Optional[str] = Field(default=None, max_length=300)
+    edition: Optional[str] = Field(default=None, max_length=100)
+    part: Optional[str] = Field(default=None, max_length=100)
+    video_format: Optional[str] = Field(default=None, max_length=100)
+    rename_enabled: Optional[bool] = None
+
+    @model_validator(mode="after")
+    def require_override(self) -> "NamingPlanOverrideRequest":
+        if not (self.model_fields_set - {"job_id"}):
+            raise ValueError("at least one naming override is required")
+        return self
+
+
+class NamingPlanPreviewRequest(StrictModel):
+    media_type: Literal["movie", "tv", "anime", "custom"]
+    source_name: str = Field(min_length=1, max_length=500)
+    path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
+    media_name: Optional[str] = Field(default=None, min_length=1, max_length=300)
+    original_title: Optional[str] = Field(default=None, max_length=300)
+    year: Optional[int] = Field(default=None, ge=1888, le=2100)
+    season: Optional[int] = Field(default=None, ge=0, le=999)
+    episode: Optional[str] = Field(default=None, max_length=100)
+    episode_title: Optional[str] = Field(default=None, max_length=300)
+    edition: Optional[str] = Field(default=None, max_length=100)
+    rename_enabled: Optional[bool] = None
+
+
+class NamingPlanApplyRequest(NamingPlanOverrideRequest):
+    job_id: str = Field(min_length=8, max_length=64)
+
+
 class DownloaderSettingsPatchRequest(StrictModel):
     downloader_type: Optional[Literal["qbittorrent", "transmission"]] = None
     qb_host: Optional[str] = Field(default=None, max_length=500)
@@ -175,8 +249,23 @@ class SystemSettingsPatchRequest(StrictModel):
 
 class AgentBootstrapRequest(StrictModel):
     name: str = Field(default="My Agent", min_length=1, max_length=100)
+    scopes: List[Literal["read", "search", "download", "watchlist", "naming", "settings"]] = Field(
+        default_factory=lambda: ["read"], max_length=6
+    )
 
 
 class AgentConnectRequest(StrictModel):
     name: str = Field(default="My Agent", min_length=1, max_length=100)
     capabilities: List[str] = Field(default_factory=list, max_length=50)
+
+
+class AgentScopesUpdateRequest(StrictModel):
+    scopes: List[Literal["read", "search", "download", "watchlist", "naming", "settings"]] = Field(
+        min_length=1, max_length=6
+    )
+
+
+class ProviderPreviewRequest(StrictModel):
+    keyword: str = Field(default="test", min_length=1, max_length=100)
+    media_type: MediaType = Field(default="auto", alias="type")
+    site_id: Optional[str] = Field(default=None, min_length=4, max_length=64)

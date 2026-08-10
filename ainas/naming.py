@@ -15,9 +15,11 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .config import Settings
 from .errors import AppError, NotFoundError
+from .media_policies import policy_for
 from .qbittorrent import QBittorrentClient, torrent_hash
-from .quality import EPISODIC_MEDIA_TYPES, Release, canonical_media_name, detect_episode, detect_season
+from .quality import Release, canonical_media_name, detect_episode, detect_season
 from .watchlist import utc_now_iso
+from .state import StateStore, StateStoreError
 
 
 logger = logging.getLogger(__name__)
@@ -27,10 +29,29 @@ INVALID_FILENAME_RE = re.compile(r"[\\/:*?\"<>|\x00-\x1f]")
 
 
 def safe_name(value: str, max_length: int = 180) -> str:
+    """Return a portable filename component bounded in UTF-8 bytes.
+
+    Most NAS filesystems enforce a 255-byte component limit, not a character
+    limit.  Preserve an extension because it is material to media discovery.
+    """
     normalized = unicodedata.normalize("NFC", value)
     normalized = INVALID_FILENAME_RE.sub(" ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip(" .")
-    return (normalized[:max_length].rstrip(" .") or "未命名媒体")
+    normalized = normalized or "未命名媒体"
+    suffix = Path(normalized).suffix
+    stem = normalized[: -len(suffix)] if suffix else normalized
+    limit = max(1, int(max_length))
+    def trim(value: str, budget: int) -> str:
+        result = ""
+        for char in value:
+            if len((result + char).encode("utf-8")) > budget:
+                break
+            result += char
+        return result.rstrip(" .")
+    # A pathological extension is less useful than a valid component.
+    if len(suffix.encode("utf-8")) >= limit:
+        return trim(suffix, limit) or "_"
+    return (trim(stem, limit - len(suffix.encode("utf-8"))) + suffix).rstrip(" .") or "未命名媒体"
 
 
 def _episode_with_default_season(value: Optional[str], season: Optional[int]) -> Optional[str]:
@@ -66,9 +87,10 @@ class NamingPlan:
 class EmbyNamingPlanner:
     @staticmethod
     def from_release(release: Release) -> NamingPlan:
+        policy = policy_for(release.media_type)
         media_name = safe_name(release.media_name or canonical_media_name(release.title))
         year = release.year
-        if release.media_type == "custom":
+        if policy.naming_layout == "preserve":
             link_name = release.link_name or media_name
             root_name = safe_name(PurePosixPath(link_name.replace("\\", "/")).name)
             if root_name.casefold().endswith(".torrent"):
@@ -89,7 +111,7 @@ class EmbyNamingPlanner:
             edition=safe_name(release.edition) if release.edition else None,
             video_format=safe_name(release.video_format) if release.video_format else None,
             episode_title=safe_name(release.episode_title) if release.episode_title else None,
-            rename_enabled=release.media_type != "custom",
+            rename_enabled=policy.rename_enabled,
         )
 
     @staticmethod
@@ -223,7 +245,7 @@ class EmbyNamingPlanner:
         for index, item in enumerate(videos):
             old_path = item["name"]
             old_value = PurePosixPath(old_path)
-            if plan.media_type in EPISODIC_MEDIA_TYPES:
+            if policy_for(plan.media_type).naming_layout == "episodic":
                 detected = detect_episode(old_value.name) or (plan.episode if len(videos) == 1 else None)
                 season = detect_season(old_value.name) or plan.season
                 episode = _episode_with_default_season(detected, season)
@@ -285,21 +307,32 @@ class EmbyNamingPlanner:
 
 
 class NamingJobRepository:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, state_store: StateStore | None = None) -> None:
         self.path = path
+        self.state_store = state_store
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
+        if self.state_store:
+            try: self.state_store.ensure_records("naming_jobs", legacy_path=self.path)
+            except StateStoreError as exc: raise AppError("Naming Job Repository Error", str(exc), "naming-repository-error", 500) from exc
+        elif not self.path.exists():
             self._write({"items": []})
 
     def _read(self) -> Dict[str, Any]:
+        if self.state_store:
+            try: return {"items": self.state_store.list_records("naming_jobs")}
+            except StateStoreError as exc: raise AppError("Naming Job Repository Error", str(exc), "naming-repository-error", 500) from exc
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 value = json.load(handle)
             if not isinstance(value, dict) or not isinstance(value.get("items"), list):
                 raise ValueError("invalid naming jobs shape")
             return value
-        except (OSError, ValueError, json.JSONDecodeError):
+        except OSError as exc:
+            # A transient disk/permission failure must never look like an empty
+            # job database: that loses the only reconciliation record.
+            raise AppError("Naming Job Repository Error", f"could not read naming jobs: {exc}", "naming-repository-error", 500) from exc
+        except (ValueError, json.JSONDecodeError):
             backup = self.path.with_suffix(f".corrupt-{uuid.uuid4().hex[:8]}.json")
             if self.path.exists():
                 self.path.replace(backup)
@@ -308,6 +341,9 @@ class NamingJobRepository:
             return value
 
     def _write(self, value: Dict[str, Any]) -> None:
+        if self.state_store:
+            try: self.state_store.replace_records("naming_jobs", value["items"]); return
+            except StateStoreError as exc: raise AppError("Naming Job Repository Error", str(exc), "naming-repository-error", 500) from exc
         fd, temp_name = tempfile.mkstemp(prefix="naming-jobs-", suffix=".json", dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -330,11 +366,11 @@ class NamingJobRepository:
                     return deepcopy(item)
         raise NotFoundError("naming job", job_id)
 
-    def upsert(self, torrent_hash_value: str, plan: NamingPlan, final_category: str) -> Dict[str, Any]:
+    def upsert(self, torrent_hash_value: str, plan: NamingPlan, final_category: str, **submission: Any) -> Dict[str, Any]:
         with self._lock:
             data = self._read()
             for item in data["items"]:
-                if item["torrent_hash"] == torrent_hash_value:
+                if item.get("torrent_hash") == torrent_hash_value:
                     return deepcopy(item)
             now = utc_now_iso()
             item = {
@@ -354,6 +390,8 @@ class NamingJobRepository:
                 "hardlink_attempts": 0,
                 "hardlink_error": None,
                 "hardlink_result": None,
+                "rename_checkpoint": {"files": 0, "folders": 0, "torrent": False},
+                **deepcopy(submission),
             }
             data["items"].append(item)
             self._write(data)
@@ -407,39 +445,137 @@ class NamingService:
         rule: Optional[Dict[str, Any]] = None,
     ) -> Path:
         """Return the downloader-visible path, distinct from AVS's host source path."""
-        roots = {
-            "movie": self.settings.download_movie_path,
-            "tv": self.settings.download_tv_path,
-            "anime": self.settings.download_anime_path,
-            "custom": self.settings.download_custom_path,
-        }
-        root = (rule or {}).get("downloader_path") or roots.get(
-            plan.media_type,
-            self.settings.download_path_for_category(final_category),
-        )
+        policy = policy_for(plan.media_type)
+        root = (rule or {}).get("downloader_path") or policy.download_path_for(self.settings)
         return Path(root) / safe_name(plan.root_name)
 
-    def add_download(self, release: Release, final_category: str) -> Dict[str, Any]:
+    def preview_plan(
+        self, release: Release, final_category: str, path_rule_id: Optional[str] = None, overrides: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Preview naming and path-rule choices without creating a job or torrent."""
         plan = self.planner.from_release(release)
-        rule = None
-        if self.path_rules:
-            source = self.settings.download_path_for_category(final_category)
-            rule = self.path_rules.match(release.media_type, source)
-            if rule:
-                plan = replace(plan, rename_enabled=bool(rule["rename_enabled"]) and release.media_type != "custom")
+        rule = self._rule_for(release.media_type, final_category, path_rule_id)
+        if rule:
+            plan = replace(plan, rename_enabled=bool(rule["rename_enabled"]) and policy_for(release.media_type).rename_enabled)
+        if overrides:
+            allowed = set(NamingPlan.__dataclass_fields__)
+            plan = replace(plan, **{key: value for key, value in overrides.items() if key in allowed})
+        return {"plan": plan.to_dict(), "save_path": str(self._download_path(plan, final_category, rule)), "path_rule_id": rule.get("id") if rule else None}
+
+    def apply_corrected_plan(self, job_id: str, plan: NamingPlan | Dict[str, Any]) -> Dict[str, Any]:
+        """Replace an uncommitted plan; completed links make this unsafe."""
+        job = self.repository.get(job_id)
+        if job.get("hardlink_status") in {"done", "partial", "conflict"}:
+            raise AppError("Naming Plan Locked", "cannot replace a plan after hardlinks were created", "naming-plan-locked", 409)
+        value = plan.to_dict() if isinstance(plan, NamingPlan) else NamingPlan(**plan).to_dict()
+        final_category = policy_for(value["media_type"]).category_for(self.settings)
+        return self.repository.update(
+            job_id,
+            {
+                "plan": value,
+                "final_category": final_category,
+                "result": None,
+                "rename_checkpoint": {"files": 0, "folders": 0, "torrent": False},
+                "status": "retrying",
+                "attempts": 0,
+                "last_error": None,
+            },
+        )
+
+    def preview_corrected_plan(self, job_id: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
+        """Preview a correction against the downloader's current file list."""
+        job = self.repository.get(job_id)
+        if job.get("hardlink_status") in {"done", "partial", "conflict"}:
+            raise AppError(
+                "Naming Plan Locked",
+                "cannot replace a plan after hardlinks were created",
+                "naming-plan-locked",
+                409,
+            )
+        current = dict(job["plan"])
+        for key, value in overrides.items():
+            if key in NamingPlan.__dataclass_fields__:
+                current[key] = value
+        media_name = safe_name(str(current.get("media_name") or "未命名媒体"))
+        current["media_name"] = media_name
+        policy = policy_for(str(current.get("media_type") or ""))
+        if policy.naming_layout == "preserve":
+            current["root_name"] = safe_name(str(current.get("link_name") or media_name))
+            current["rename_enabled"] = False
+        else:
+            current["root_name"] = safe_name(
+                f"{media_name} ({current['year']})" if current.get("year") else media_name
+            )
+        plan = NamingPlan(**current)
+        torrent = None
+        files: List[Dict[str, Any]] = []
+        task_hash = str(job.get("torrent_hash") or "")
+        if task_hash and not task_hash.startswith("pending:"):
+            torrent = self.qb.torrent_info(task_hash)
+            files = self.qb.files(task_hash) if torrent else []
+        preview = self.planner.plan_files(files, plan) if files else None
+        return {"job_id": job_id, "plan": plan.to_dict(), "preview": preview, "torrent_found": bool(torrent)}
+
+    def _rule_for(self, media_type: str, final_category: str, path_rule_id: Optional[str]) -> Optional[Dict[str, Any]]:
+        if not self.path_rules:
+            return None
+        if path_rule_id:
+            rule = self.path_rules.get(path_rule_id)
+            if rule.get("media_type") != media_type or not rule.get("enabled"):
+                raise AppError("Invalid Path Rule", "selected path rule is disabled or does not match this media type", "invalid-path-rule", 400)
+            return rule
+        return self.path_rules.match(media_type, self.settings.download_path_for_category(final_category))
+
+    def _submission(self, plan: NamingPlan, final_category: str, current_category: str, save_path: Path) -> Dict[str, Any]:
+        return {"submission": {"category": current_category, "final_category": final_category,
+                "save_path": str(save_path), "root_name": plan.root_name}}
+
+    def add_download(self, release: Release, final_category: str, path_rule_id: Optional[str] = None) -> Dict[str, Any]:
+        plan = self.planner.from_release(release)
+        rule = self._rule_for(release.media_type, final_category, path_rule_id)
+        if rule:
+            plan = replace(plan, rename_enabled=bool(rule["rename_enabled"]) and policy_for(release.media_type).rename_enabled)
         hash_value = torrent_hash(release.download_link)
-        use_staging = self.settings.naming_enabled and plan.rename_enabled and bool(hash_value)
-        track_only = not plan.rename_enabled and self.settings.medialib_hardlink_enabled and bool(hash_value)
+        use_staging = self.settings.naming_enabled and plan.rename_enabled
+        track_only = not plan.rename_enabled and self.settings.medialib_hardlink_enabled
         current_category = self.settings.qb_naming_category if use_staging else final_category
+        save_path = self._download_path(plan, final_category, rule)
+        # Persist before submitting.  If qB accepts but the later local write
+        # fails, this record is sufficient to resume without duplicating work.
+        pending_hash = hash_value or f"pending:{release.id}"
+        job = (
+            self.repository.upsert(
+                pending_hash,
+                plan,
+                final_category,
+                **self._submission(plan, final_category, current_category, save_path),
+            )
+            if (use_staging or track_only)
+            else None
+        )
+        if job and not hash_value:
+            job = self.repository.update(job["id"], {"status": "submitting"})
         result = self.qb.add_download(
             release.download_link,
             current_category,
             rename=plan.root_name if self.settings.naming_enabled and plan.rename_enabled else None,
-            save_path=self._download_path(plan, final_category, rule),
+            save_path=save_path,
         )
-        job = None
-        if (use_staging or track_only) and hash_value:
-            job = self.repository.upsert(hash_value, plan, final_category)
+        task_id = result.get("qb_task_id") or hash_value
+        if job and not task_id:
+            reconciler = getattr(self.qb, "reconcile_submission", None)
+            if callable(reconciler):
+                matched = reconciler(
+                    category=current_category,
+                    save_path=save_path,
+                    root_name=plan.root_name,
+                    expected_hash=None,
+                )
+                task_id = (matched or {}).get("hash")
+        if job and task_id:
+            job = self.repository.update(job["id"], {"torrent_hash": task_id, "status": "pending"})
+        elif job:
+            job = self.repository.update(job["id"], {"status": "awaiting_binding"})
         return {
             **result,
             "category": final_category,
@@ -457,27 +593,26 @@ class NamingService:
         content: bytes,
         filename: str,
         torrent_hash_value: str,
+        path_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
-        rule = None
-        if self.path_rules:
-            source = self.settings.download_path_for_category(final_category)
-            rule = self.path_rules.match(release.media_type, source)
-            if rule:
-                plan = replace(plan, rename_enabled=bool(rule["rename_enabled"]) and release.media_type != "custom")
+        rule = self._rule_for(release.media_type, final_category, path_rule_id)
+        if rule:
+            plan = replace(plan, rename_enabled=bool(rule["rename_enabled"]) and policy_for(release.media_type).rename_enabled)
         use_staging = self.settings.naming_enabled and plan.rename_enabled
         track_only = not plan.rename_enabled and self.settings.medialib_hardlink_enabled
         current_category = self.settings.qb_naming_category if use_staging else final_category
+        save_path = self._download_path(plan, final_category, rule)
+        job = self.repository.upsert(torrent_hash_value, plan, final_category, **self._submission(plan, final_category, current_category, save_path)) if (use_staging or track_only) else None
         result = self.qb.add_torrent_file(
             content,
             filename,
             current_category,
             rename=plan.root_name if use_staging else None,
-            save_path=self._download_path(plan, final_category, rule),
+            save_path=save_path,
         )
-        job = None
-        if use_staging or track_only:
-            job = self.repository.upsert(torrent_hash_value, plan, final_category)
+        if job and result.get("qb_task_id") and result["qb_task_id"] != job.get("torrent_hash"):
+            job = self.repository.update(job["id"], {"torrent_hash": result["qb_task_id"]})
         return {
             **result,
             "category": final_category,
@@ -498,6 +633,40 @@ class NamingService:
     def _process_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
         now = utc_now_iso()
         checks = int(job.get("checks", 0)) + 1
+        task_hash = str(job.get("torrent_hash") or "")
+        if task_hash.startswith("pending:") or job.get("status") in {"submitting", "awaiting_binding"}:
+            submission = dict(job.get("submission") or {})
+            reconciler = getattr(self.qb, "reconcile_submission", None)
+            match = None
+            if callable(reconciler) and submission:
+                try:
+                    match = reconciler(
+                        category=str(submission.get("category") or ""),
+                        save_path=submission.get("save_path"),
+                        root_name=str(submission.get("root_name") or ""),
+                        expected_hash=None,
+                    )
+                except AppError as exc:
+                    return self.repository.update(
+                        job["id"],
+                        {"status": "awaiting_binding", "checks": checks, "last_check": now, "last_error": exc.detail},
+                    )
+            bound_hash = str((match or {}).get("hash") or "")
+            if not bound_hash:
+                terminal = checks >= self.settings.naming_max_attempts
+                return self.repository.update(
+                    job["id"],
+                    {
+                        "status": "missing_in_downloader" if terminal else "awaiting_binding",
+                        "checks": checks,
+                        "last_check": now,
+                        "last_error": "accepted submission could not yet be bound to a downloader task",
+                    },
+                )
+            job = self.repository.update(
+                job["id"],
+                {"torrent_hash": bound_hash, "status": "pending", "last_error": None},
+            )
         try:
             torrent = self.qb.torrent_info(job["torrent_hash"])
         except AppError as exc:
@@ -513,6 +682,12 @@ class NamingService:
                 },
             )
         if not torrent:
+            # This is distinct from a temporary metadata delay.  The bounded
+            # threshold prevents a permanently lost downloader task from
+            # leaving an invisible pending job forever; explicit check(job)
+            # resets it for manual recovery.
+            if checks >= self.settings.naming_max_attempts:
+                return self.repository.update(job["id"], {"status": "missing_in_downloader", "checks": checks, "last_check": now, "last_error": "torrent is absent from downloader"})
             return self.repository.update(
                 job["id"],
                 {"status": "waiting_metadata", "checks": checks, "last_check": now, "last_error": None},
@@ -550,7 +725,12 @@ class NamingService:
                 },
             )
         plan = NamingPlan(**job["plan"])
-        preview = self.planner.plan_files(files, plan)
+        # The preview is an operation journal: do not re-plan on a retry,
+        # because changes in qB metadata would otherwise rename a different
+        # set of paths mid-job.
+        preview = job.get("result") or self.planner.plan_files(files, plan)
+        if not job.get("result"):
+            job = self.repository.update(job["id"], {"result": preview, "rename_checkpoint": job.get("rename_checkpoint") or {"files": 0, "folders": 0, "torrent": False}})
         try:
             verifier = getattr(self.hardlinker, "verify_named_sources", None)
             already_named = False
@@ -562,11 +742,22 @@ class NamingService:
                     pass
             if plan.rename_enabled:
                 if not already_named:
-                    for operation in preview["operations"]:
+                    checkpoint = dict(job.get("rename_checkpoint") or {})
+                    file_index = int(checkpoint.get("files", 0))
+                    folder_index = int(checkpoint.get("folders", 0))
+                    for index, operation in enumerate(preview["operations"][file_index:], start=file_index):
                         self.qb.rename_file(job["torrent_hash"], operation["old_path"], operation["new_path"])
-                    for operation in preview["folder_operations"]:
+                        checkpoint["files"] = index + 1
+                        job = self.repository.update(job["id"], {"rename_checkpoint": checkpoint, "result": preview})
+                    for index, operation in enumerate(preview["folder_operations"][folder_index:], start=folder_index):
                         self.qb.rename_folder(job["torrent_hash"], operation["old_path"], operation["new_path"])
-                self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
+                        checkpoint["folders"] = index + 1
+                        job = self.repository.update(job["id"], {"rename_checkpoint": checkpoint, "result": preview})
+                if not (job.get("rename_checkpoint") or {}).get("torrent"):
+                    self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
+                    checkpoint = dict(job.get("rename_checkpoint") or {})
+                    checkpoint["torrent"] = True
+                    job = self.repository.update(job["id"], {"rename_checkpoint": checkpoint, "result": preview})
             if callable(verifier):
                 verifier(torrent, files, preview)
             self.qb.set_category(job["torrent_hash"], job["final_category"])
@@ -637,10 +828,13 @@ class NamingService:
                 NamingPlan(**job["plan"]),
                 job.get("result") or {},
             )
+            hardlink_status = str(result.get("status") or "done") if isinstance(result, dict) else "done"
+            if hardlink_status not in {"done", "partial", "conflict"}:
+                hardlink_status = "failed"
             return self.repository.update(
                 job["id"],
                 {
-                    "hardlink_status": "done",
+                    "hardlink_status": hardlink_status,
                     "hardlink_result": result,
                     "hardlink_error": None,
                     "last_check": now,
@@ -670,7 +864,7 @@ class NamingService:
         try:
             if job_id:
                 job = self.repository.get(job_id)
-                if job["status"] == "failed":
+                if job["status"] in {"failed", "missing_in_downloader"}:
                     job = self.repository.update(job_id, {"status": "retrying", "attempts": 0, "last_error": None})
                 if job["status"] == "completed":
                     if job.get("hardlink_status") == "failed":
@@ -692,7 +886,7 @@ class NamingService:
                 jobs = [
                     item
                     for item in self.repository.list()
-                    if item["status"] in {"pending", "waiting_metadata", "waiting_download", "retrying"}
+                    if item["status"] in {"submitting", "awaiting_binding", "pending", "waiting_metadata", "waiting_download", "retrying"}
                 ]
             results = [self._process_job(item) for item in jobs]
             processed_ids = {item["id"] for item in results}

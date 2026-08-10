@@ -4,6 +4,19 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v2.0.0 更新说明
+
+- 搜索与订阅彻底解耦：搜索默认只返回结果，订阅使用独立接口，避免 Agent 多轮搜索产生重复监听。
+- 命名和硬链接增加可恢复检查点、下载器任务延迟绑定、缺失终态、部分入库与冲突状态；失败、缺失、部分和冲突记录都可重试或只删除 AVS 记录。
+- 目录映射成为下载路由：电影、电视剧、动漫、自定义每类可配置多条规则，手动下载、搜索结果和订阅都能明确选择规则并先做只读预检。
+- Agent 改为后台授予最小权限，API 默认拒绝未鉴权访问；管理页可随时调整 `read/search/download/watchlist/naming/settings` 范围。
+- 运行状态迁移到 `data/state.db`。首次启动会一次性导入旧 JSON，但不会删除或改写旧文件；SQLite 此后成为权威状态源。
+- 增加并发 Provider、受控适配器注册、私网/重定向/响应体保护、Provider 预览，以及显式下载器能力契约。
+- 管理页补齐资源搜索、分页、命名修正预览、安全迁移、路径诊断、Agent 权限、完整错误与请求 ID 展示。
+- 新增强类型 CLI 和独立的 REST-only MCP stdio 适配器；同时加入离线备份恢复、CI、多架构镜像发布与固定版本回滚流程。
+
+这是一次涉及鉴权和状态存储的主版本升级。升级前请先停止服务并按“升级现有安装”执行离线备份；必须配置有效的随机 `API_KEY`，除非在隔离局域网中明确设置 `ALLOW_INSECURE_LAN=true`。
+
 ## v1.5.6 更新说明
 
 - 每条目录映射新增“下载器容器目录”，明确区分 NAS 下载源路径、qB/Transmission 容器路径和媒体库目标路径。
@@ -96,9 +109,12 @@ cp .env.example .env
 
 ```env
 PORT=16666
+# 默认仅供本机反向代理访问；直连可信局域网时改为 NAS 的具体内网 IP
+BIND_ADDRESS=127.0.0.1
 PUID=1000
 PGID=1000
 API_KEY=替换成随机长字符串
+ALLOW_INSECURE_LAN=false
 
 DOWNLOADER_TYPE=qbittorrent
 QB_HOST=192.168.31.10
@@ -133,11 +149,15 @@ TRANSMISSION_PASSWORD=你的密码
 
 ```bash
 docker compose up -d --build --remove-orphans
-curl http://NAS_IP:16666/health
-curl http://NAS_IP:16666/ready
+curl http://127.0.0.1:16666/health
+curl http://127.0.0.1:16666/ready
 ```
 
 管理后台：`http://NAS_IP:16666/admin`。
+
+默认 Compose 仅绑定 `127.0.0.1`，适合由 NAS 上的反向代理接入。若需要直接在可信局域网访问，请在 `.env` 中将 `BIND_ADDRESS` 设为 NAS 的**具体内网 IP**（不要使用 `0.0.0.0`），并在 NAS 防火墙中仅允许可信网段。公网访问必须放在 TLS 终止的反向代理之后，并配置访问控制；本服务自身不应直接暴露到互联网。
+
+`/health` 是容器存活探针；监控和告警应使用 `/ready`，因为它会检查 SQLite 状态完整性，并反映站点与下载器依赖是否处于可用状态。
 
 Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下载目录与媒体库目标目录必须位于该根目录内、处在同一个文件系统并允许容器用户读写，才能通过硬链接实现零额外媒体空间占用。
 
@@ -149,7 +169,7 @@ Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下�
 - 是否规范命名
 - 是否作为该类型的默认下载目录
 
-运行时配置保存在 `data/`，重建容器不会丢失。`MEDIALIB_BASE_PATH` 是 Docker 根挂载，不能在后台运行时修改；更换它需要修改 `.env` 后重建容器。
+运行时配置保存在 `data/state.db`，日志和兼容迁移文件也位于 `data/`，重建容器不会丢失。首次升级会一次性导入旧 JSON，导入后不会再用旧 JSON 覆盖 SQLite。`MEDIALIB_BASE_PATH` 是 Docker 根挂载，不能在后台运行时修改；更换它需要修改 `.env` 后重建容器。
 
 ## 让 AI 读取 README 一键安装
 
@@ -222,9 +242,11 @@ MEDIALIB_BASE_PATH（例如 /volume1/video）：
 
 ```env
 PORT=16666
+BIND_ADDRESS=127.0.0.1
 PUID=1000
 PGID=1000
 API_KEY=<随机长密钥>
+ALLOW_INSECURE_LAN=false
 DATA_DIR=/data
 
 DOWNLOADER_TYPE=qbittorrent
@@ -371,6 +393,9 @@ python -m ainas.cli watchlist
 python -m ainas.cli naming
 python -m ainas.cli hardlinks
 python -m ainas.cli logs
+python -m ainas.cli search 'Rick and Morty' --type anime
+python -m ainas.cli watchlist-add 'Rick and Morty' --type anime
+python -m ainas.cli naming-retry <任务ID>
 ```
 
 Agent 也可以通过通用命令调用 OpenAPI 中的任意路径：
@@ -381,15 +406,64 @@ python -m ainas.cli request POST /api/naming/jobs/check --data '{"job_id":"任�
 
 生产容器内同样可执行 `python -m ainas.cli`。CLI 与网页后台共用 REST 权限规则：Agent 可以搜索、下载、查看任务和日志，修改系统设置仍要求管理员 API Key。
 
+## Agent MCP 适配器
+
+[`mcp_adapter/`](mcp_adapter/) 是一个独立安装的 stdio MCP 服务，只调用 AVS REST，不直接读取状态库、媒体文件或下载器，也不新增网络端口。它提供搜索、添加下载、查看下载/命名/硬链接、重试命名和订阅等 9 个白名单工具。
+
+```bash
+cd mcp_adapter
+python3.12 -m venv .venv
+.venv/bin/pip install .
+
+export AVS_URL=http://NAS_IP:16666
+export AVS_TOKEN='后台生成的最小权限 Agent Token'
+.venv/bin/avs-mcp
+```
+
+Codex、Claude Desktop 等客户端的 stdio 配置示例、工具与权限对照见 [`mcp_adapter/README.md`](mcp_adapter/README.md)。推荐为 MCP 单独创建 Agent Token，只授予实际使用的 `read/search/download/watchlist/naming` 范围，不授予 `settings`。
+
 ## 升级现有安装
 
-升级前先备份 `.env` 和 `data/`。然后执行：
+升级前必须先做离线备份：停止服务后再复制数据，避免运行中写入造成不一致。运行时 `data/` 与备份都可能含有令牌和下载器凭据；仓库会忽略它们，切勿提交或上传到公开位置。
+
+```bash
+docker compose stop
+python -m ainas.maintenance backup --data-dir ./data --backup-dir ./backups --include-env --env-file ./.env
+python -m ainas.maintenance verify ./backups/avs-backup-v1-YYYYMMDDTHHMMSSZ
+docker compose up -d
+```
+
+备份是带版本清单的离线目录：每个文件都有 SHA-256 校验，目录/文件权限分别收紧为仅备份所有者可访问。命令不会打印 `.env` 的内容。恢复同样必须先停止服务，且默认拒绝覆盖已有数据：
+
+```bash
+docker compose stop
+python -m ainas.maintenance verify ./backups/avs-backup-v1-YYYYMMDDTHHMMSSZ
+python -m ainas.maintenance restore ./backups/avs-backup-v1-YYYYMMDDTHHMMSSZ --data-dir ./data
+# 仅在已人工确认目标与备份后，才显式允许覆盖：
+# python -m ainas.maintenance restore ./backups/avs-backup-v1-YYYYMMDDTHHMMSSZ --data-dir ./data --overwrite
+docker compose up -d
+```
+
+`.env` 不会在恢复时自动写回；如确有需要，额外指定 `--restore-env --env-file ./.env`。恢复会先验证清单，拒绝路径穿越和符号链接；数据先写入同一文件系统的暂存目录并执行 SQLite `integrity_check`，验证通过后再交换整个数据目录。提交失败会自动换回原目录，备份中没有的旧文件以及陈旧的 `state.db-wal` / `state.db-shm` 不会残留到恢复结果中。备份后再执行升级：
 
 ```bash
 docker compose up -d --build --remove-orphans
 ```
 
-旧版 `data/path_settings.json` 会继续生效；首次运行新版时会根据它生成四条默认目录映射。运行时数据还包括 `path_rules.json`、`downloader_settings.json`、`system_settings.json`、`agents.json` 和自动轮转的 `ai-video-station.log`。
+## CI、发布与回滚
+
+每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.0.0` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
+
+部署已发布镜像时，请固定一个版本，不要使用浮动标签：
+
+```bash
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.0 docker compose pull
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.0 docker compose up -d --no-build --remove-orphans
+```
+
+回滚就是在完成并校验备份后，将上述版本替换为上一个已验证的 `v*` 标签并重新执行两条命令。若升级涉及运行时数据变化，先停止服务并按上一节恢复对应备份，再启动旧版本。
+
+旧版 `watchlist.json`、`naming_jobs.json`、`path_settings.json`、`path_rules.json`、`downloader_settings.json`、`system_settings.json`、`agents.json` 和站点配置会在 `state.db` 对应命名空间尚未初始化时导入一次。旧文件会原样保留以便回滚，但此后以 SQLite 为准。运行时目录还包含自动轮转的 `ai-video-station.log`。
 
 ## 是否加入刮削
 

@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from .errors import NotFoundError
+from .errors import AppError
+from .state import StateStore, StateStoreError
 
 
 def utc_now_iso() -> str:
@@ -18,14 +20,25 @@ def utc_now_iso() -> str:
 
 
 class WatchlistRepository:
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, state_store: Optional[StateStore] = None) -> None:
         self.path = path
+        self.state_store = state_store
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
+        if self.state_store:
+            try:
+                self.state_store.ensure_records("watchlist", legacy_path=self.path)
+            except StateStoreError as exc:
+                raise AppError("State Error", str(exc), "state-error", 500) from exc
+        elif not self.path.exists():
             self._write({"items": []})
 
     def _read(self) -> Dict[str, Any]:
+        if self.state_store:
+            try:
+                return {"items": self.state_store.list_records("watchlist")}
+            except StateStoreError as exc:
+                raise AppError("State Error", str(exc), "state-error", 500) from exc
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 value = json.load(handle)
@@ -41,6 +54,12 @@ class WatchlistRepository:
             return value
 
     def _write(self, value: Dict[str, Any]) -> None:
+        if self.state_store:
+            try:
+                self.state_store.replace_records("watchlist", value["items"])
+                return
+            except StateStoreError as exc:
+                raise AppError("State Error", str(exc), "state-error", 500) from exc
         fd, temp_name = tempfile.mkstemp(prefix="watchlist-", suffix=".json", dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -77,12 +96,21 @@ class WatchlistRepository:
                     return deepcopy(item)
         return None
 
-    def add(self, keyword: str, media_type: str) -> Dict[str, Any]:
+    def add(
+        self,
+        keyword: str,
+        media_type: str,
+        path_rule_id: Optional[str] = None,
+        path_rule_snapshot: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         normalized = keyword.strip().casefold()
         with self._lock:
             data = self._read()
             for item in data["items"]:
-                if item["keyword"].casefold() == normalized and item["type"] == media_type:
+                # A prior auto subscription and a subsequently resolved type are
+                # the same intent; do not create parallel polling/download jobs.
+                equivalent_type = item["type"] == media_type or item["type"] == "auto" or media_type == "auto"
+                if item["keyword"].casefold() == normalized and equivalent_type:
                     return deepcopy(item)
             now = utc_now_iso()
             item = {
@@ -97,6 +125,8 @@ class WatchlistRepository:
                 "status": "monitoring" if media_type in {"tv", "anime"} else "pending",
                 "found_at": None,
                 "last_error": None,
+                "path_rule_id": path_rule_id,
+                "path_rule_snapshot": deepcopy(path_rule_snapshot) if path_rule_snapshot else None,
             }
             data["items"].append(item)
             self._write(data)

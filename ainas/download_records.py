@@ -10,17 +10,22 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List
 
 from .errors import NotFoundError, ValidationAppError
+from .state import StateStore, StateStoreError
 from .watchlist import utc_now_iso
 
 
 class DismissedDownloadRepository:
     """Persist AVS-only hidden downloader rows without mutating the downloader."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, state_store: StateStore | None = None) -> None:
         self.path = path
+        self.state_store = state_store
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        if not self.path.exists():
+        if self.state_store:
+            try: self.state_store.ensure_records("dismissed_downloads", legacy_path=self.path)
+            except StateStoreError as exc: raise ValidationAppError(f"dismissed downloads state is unavailable: {exc}") from exc
+        elif not self.path.exists():
             self._write({"items": []})
 
     @staticmethod
@@ -31,6 +36,9 @@ class DismissedDownloadRepository:
         return normalized
 
     def _read(self) -> Dict[str, Any]:
+        if self.state_store:
+            try: return {"items": self.state_store.list_records("dismissed_downloads")}
+            except StateStoreError as exc: raise ValidationAppError(f"dismissed downloads state is unavailable: {exc}") from exc
         try:
             with self.path.open("r", encoding="utf-8") as handle:
                 value = json.load(handle)
@@ -46,6 +54,9 @@ class DismissedDownloadRepository:
             return value
 
     def _write(self, value: Dict[str, Any]) -> None:
+        if self.state_store:
+            try: self.state_store.replace_records("dismissed_downloads", value["items"]); return
+            except StateStoreError as exc: raise ValidationAppError(f"dismissed downloads state is unavailable: {exc}") from exc
         fd, temp_name = tempfile.mkstemp(prefix="dismissed-downloads-", suffix=".json", dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:

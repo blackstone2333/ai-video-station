@@ -80,3 +80,21 @@ def test_path_rules_reject_relative_and_outside_paths(tmp_path):
         repository.add({**common, "source_path": "Downloads/TV2"})
     with pytest.raises(ValidationAppError, match="Docker 可访问范围"):
         repository.add({**common, "source_path": "/another-volume/TV2"})
+
+
+def test_preflight_checks_container_mount_paths_not_unmounted_host_paths(tmp_path):
+    settings = rule_settings(tmp_path)
+    repository = PathRuleRepository(settings)
+    container_source = settings.medialib_mount_path / "Downloads" / "Movie"
+    container_target = settings.medialib_mount_path / "Library" / "Movies"
+    container_source.mkdir(parents=True)
+    container_target.mkdir(parents=True)
+
+    report = repository.preflight("default-movie")
+
+    assert report["status"] == "ok"
+    assert report["source"]["nas_path"] == str(settings.download_movie_path)
+    assert report["source"]["container_path"] == str(container_source)
+    assert report["source"]["exists"] is True
+    assert report["target"]["container_path"] == str(container_target)
+    assert report["same_filesystem"] is True

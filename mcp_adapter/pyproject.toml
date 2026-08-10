@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "avs-mcp-adapter"
+version = "0.1.0"
+description = "Thin stdio MCP adapter for the AI Video Station REST API"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+  "httpx>=0.27,<1",
+  "mcp>=2.0,<3",
+]
+
+[project.optional-dependencies]
+test = [
+  "pytest>=8",
+  "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+avs-mcp = "avs_mcp_adapter.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/avs_mcp_adapter"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-q"

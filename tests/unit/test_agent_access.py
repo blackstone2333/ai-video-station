@@ -26,3 +26,24 @@ def test_agent_tokens_are_one_time_hashed_revocable_and_track_presence(tmp_path)
     repository.revoke(created["id"])
     assert repository.authenticate(token) is None
     assert repository.list()[0]["revoked"] is True
+
+
+def test_agent_scopes_are_admin_granted_and_old_records_get_read_only_scope(tmp_path):
+    settings = Settings(data_dir=tmp_path, scheduler_enabled=False)
+    repository = AgentAccessRepository(settings)
+    created = repository.create("Scoped Agent", scopes=["read", "download"])
+    token = created["token"]
+    assert created["scopes"] == ["read", "download"]
+
+    # Capabilities are only a connection report and must not change the grant.
+    connected = repository.connect(created["id"], "Scoped Agent", ["write", "admin"])
+    assert connected["scopes"] == ["read", "download"]
+    assert connected["capabilities"] == ["write", "admin"]
+    assert repository.authenticate(token, touch=False)["scopes"] == ["read", "download"]
+
+    legacy = json.loads(settings.agents_path.read_text())
+    legacy["items"][0].pop("scopes")
+    settings.agents_path.write_text(json.dumps(legacy), encoding="utf-8")
+    migrated = repository.authenticate(token, touch=False)
+    assert migrated["scopes"] == ["read"]
+    assert json.loads(settings.agents_path.read_text())["items"][0]["scopes"] == ["read"]

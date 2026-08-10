@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import hmac
+import logging
+import re
 import threading
 import time
 import uuid
-from collections import defaultdict, deque
+from collections import deque
 from typing import Any, Deque, Dict, Optional, Tuple
 
 from flask import Flask, g, request
@@ -13,17 +15,28 @@ from .config import Settings
 from .errors import RateLimitError, UnauthorizedError
 
 
+logger = logging.getLogger(__name__)
+_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
 class SimpleRateLimiter:
-    def __init__(self, limit: int, window_seconds: int = 60) -> None:
+    def __init__(self, limit: int, window_seconds: int = 60, max_keys: int = 10_000) -> None:
         self.limit = limit
         self.window_seconds = window_seconds
-        self._requests: Dict[str, Deque[float]] = defaultdict(deque)
+        self.max_keys = max_keys
+        self._requests: Dict[str, Deque[float]] = {}
         self._lock = threading.Lock()
 
     def consume(self, key: str) -> Tuple[int, int]:
         now = time.monotonic()
         with self._lock:
-            values = self._requests[key]
+            values = self._requests.get(key)
+            if values is None:
+                self._purge_expired(now)
+                # A bounded shared bucket prevents unbounded memory use if clients
+                # cycle through source identities (or a proxy passes them through).
+                key = key if len(self._requests) < self.max_keys else "__overflow__"
+                values = self._requests.setdefault(key, deque())
             while values and values[0] <= now - self.window_seconds:
                 values.popleft()
             if len(values) >= self.limit:
@@ -32,24 +45,41 @@ class SimpleRateLimiter:
             values.append(now)
             return self.limit - len(values), int(time.time() + self.window_seconds)
 
+    def _purge_expired(self, now: float) -> None:
+        expired = []
+        for key, values in self._requests.items():
+            while values and values[0] <= now - self.window_seconds:
+                values.popleft()
+            if not values:
+                expired.append(key)
+        for key in expired:
+            del self._requests[key]
+
 
 def install_middleware(app: Flask, settings: Settings, agents: Optional[Any] = None) -> None:
     limiter = SimpleRateLimiter(settings.rate_limit_per_minute)
 
     @app.before_request
     def before_request() -> None:
-        g.request_id = request.headers.get("X-Request-Id", uuid.uuid4().hex)
+        supplied_request_id = request.headers.get("X-Request-Id", "")
+        g.request_id = supplied_request_id if _REQUEST_ID_RE.fullmatch(supplied_request_id) else uuid.uuid4().hex
         g.started_at = time.monotonic()
         g.rate_remaining = settings.rate_limit_per_minute
         g.rate_reset = int(time.time() + 60)
         if not request.path.startswith("/api") or request.method == "OPTIONS":
             return
-        key = request.headers.get("X-Api-Key") or request.remote_addr or "unknown"
-        g.rate_remaining, g.rate_reset = limiter.consume(key)
+        # Never bucket by a caller-supplied API key: invalid keys otherwise create
+        # unlimited buckets and can evade the limiter by changing their value.
+        source = request.remote_addr or "unknown"
+        g.rate_remaining, g.rate_reset = limiter.consume(source)
         expected = settings.api_key_value()
-        g.auth_kind = "admin" if not expected else None
+        g.auth_kind = None
         g.agent = None
-        if expected:
+        if not settings.has_usable_api_key():
+            if not settings.allow_insecure_lan:
+                raise UnauthorizedError()
+            g.auth_kind = "admin"
+        elif expected:
             authorization = request.headers.get("Authorization", "")
             supplied = request.headers.get("X-Api-Key", "")
             if authorization.lower().startswith("bearer "):
@@ -67,6 +97,20 @@ def install_middleware(app: Flask, settings: Settings, agents: Optional[Any] = N
 
     @app.after_request
     def after_request(response):
+        if request.path.startswith("/api") and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            actor_kind = getattr(g, "auth_kind", None) or "anonymous"
+            agent = getattr(g, "agent", None) or {}
+            logger.info(
+                "api_mutation",
+                extra={
+                    "request_id": getattr(g, "request_id", None),
+                    "actor_kind": actor_kind,
+                    "actor_id": agent.get("id") if actor_kind == "agent" else actor_kind,
+                    "method": request.method,
+                    "path": request.path,
+                    "status_code": response.status_code,
+                },
+            )
         response.headers["X-Request-Id"] = getattr(g, "request_id", "")
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["X-Frame-Options"] = "DENY"

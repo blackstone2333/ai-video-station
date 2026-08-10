@@ -165,6 +165,27 @@ class QBittorrentClient:
         except UpstreamError:
             return False
 
+    def reconcile_submission(
+        self, *, category: str, save_path: Any, root_name: str, expected_hash: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Bind an HTTP .torrent submission without title-only guessing.
+
+        qB's add endpoint does not always return a hash.  The info-hash is
+        preferred; otherwise all planned submission invariants must match.
+        """
+        if expected_hash:
+            return self.torrent_info(expected_hash)
+        self.login()
+        response = self._request("GET", "/api/v2/torrents/info", params={"category": category})
+        wanted_path = str(save_path).rstrip("/")
+        matches = [
+            item for item in (response.json() or [])
+            if str(item.get("category") or "") == category
+            and str(item.get("save_path") or "").rstrip("/") == wanted_path
+            and str(item.get("name") or "") == root_name
+        ]
+        return matches[0] if len(matches) == 1 else None
+
     def add_download(
         self,
         download_link: str,
@@ -193,7 +214,7 @@ class QBittorrentClient:
         if not self._accepted_or_registered(response, task_hash):
             raise UpstreamError("qBittorrent", "torrent was not accepted")
         logger.info("qb_download_added", extra={"task_hash": task_hash, "category": category})
-        return {"qb_task_id": task_hash, "category": category}
+        return {"qb_task_id": task_hash, "category": category, "submission": {"save_path": payload["savepath"], "root_name": rename}}
 
     def add_torrent_file(
         self,
@@ -223,7 +244,7 @@ class QBittorrentClient:
         if not self._accepted_or_registered(response, metadata.info_hash):
             raise UpstreamError("qBittorrent", "torrent file was not accepted")
         logger.info("qb_torrent_file_added", extra={"task_hash": metadata.info_hash, "category": category})
-        return {"qb_task_id": metadata.info_hash, "category": category, "torrent_name": metadata.name}
+        return {"qb_task_id": metadata.info_hash, "category": category, "torrent_name": metadata.name, "submission": {"save_path": payload["savepath"], "root_name": rename}}
 
     def torrent_info(self, hash_value: str) -> Optional[Dict[str, Any]]:
         self.login()

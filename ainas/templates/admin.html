@@ -47,17 +47,25 @@
       <button class="metric red" data-go="hardlinks" type="button"><span>硬链接记录</span><strong id="metric-hardlinks">—</strong><small id="metric-hardlink-note">等待读取</small></button>
     </section>
 
-    <nav class="tabs" aria-label="后台功能">
-      <button class="tab active" data-tab="overview" type="button">总览 <span>01</span></button>
-      <button class="tab" data-tab="watchlist" type="button">订阅监听 <span>02</span></button>
-      <button class="tab" data-tab="downloads" type="button">下载记录 <span>03</span></button>
-      <button class="tab" data-tab="naming" type="button">规范命名 <span>04</span></button>
-      <button class="tab" data-tab="hardlinks" type="button">媒体入库 <span>05</span></button>
-      <button class="tab" data-tab="sites" type="button">站点设置 <span>06</span></button>
-      <button class="tab" data-tab="paths" type="button">路径设置 <span>07</span></button>
-      <button class="tab" data-tab="system" type="button">系统设置 <span>08</span></button>
-      <button class="tab" data-tab="logs" type="button">系统日志 <span>09</span></button>
+    <nav class="tabs" aria-label="后台功能" role="tablist">
+      <button id="tab-overview" class="tab active" data-tab="overview" type="button" role="tab" aria-selected="true" aria-controls="panel-overview">总览 <span>01</span></button>
+      <button id="tab-search" class="tab" data-tab="search" type="button" role="tab" aria-selected="false" aria-controls="panel-search">资源搜索 <span>02</span></button>
+      <button class="tab" data-tab="watchlist" type="button" role="tab" aria-selected="false" aria-controls="panel-watchlist">订阅监听 <span>03</span></button>
+      <button class="tab" data-tab="downloads" type="button" role="tab" aria-selected="false" aria-controls="panel-downloads">下载记录 <span>04</span></button>
+      <button class="tab" data-tab="naming" type="button" role="tab" aria-selected="false" aria-controls="panel-naming">规范命名 <span>05</span></button>
+      <button class="tab" data-tab="hardlinks" type="button" role="tab" aria-selected="false" aria-controls="panel-hardlinks">媒体入库 <span>06</span></button>
+      <button class="tab" data-tab="sites" type="button" role="tab" aria-selected="false" aria-controls="panel-sites">站点设置 <span>07</span></button>
+      <button class="tab" data-tab="paths" type="button" role="tab" aria-selected="false" aria-controls="panel-paths">路径设置 <span>08</span></button>
+      <button class="tab" data-tab="system" type="button" role="tab" aria-selected="false" aria-controls="panel-system">系统设置 <span>09</span></button>
+      <button class="tab" data-tab="logs" type="button" role="tab" aria-selected="false" aria-controls="panel-logs">系统日志 <span>10</span></button>
     </nav>
+
+    <section id="panel-search" class="panel" data-panel="search" role="tabpanel" aria-labelledby="tab-search">
+      <article class="card">
+        <header class="card-head action-head"><div><p>RESOURCE DISCOVERY</p><h2>资源搜索</h2></div><form id="search-form" class="head-actions"><input id="search-keyword" class="filter-input" type="search" required placeholder="片名、剧名或关键词"><select id="search-type" class="filter-input"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select><button id="search-submit" class="primary-button" type="submit">搜索资源</button></form></header>
+        <div id="search-provider-note" class="search-provider-note">将使用已启用的站点搜索。</div><div id="search-results" class="search-results"><div class="empty">输入关键词，跨已启用站点查找资源。</div></div>
+      </article>
+    </section>
 
     <section id="panel-overview" class="panel active" data-panel="overview">
       <div class="panel-grid">
@@ -101,9 +109,10 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>EMBY NORMALIZER</p><h2>规范命名任务</h2></div>
-          <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="completed">命名完成</option><option value="waiting_metadata">等待元数据</option><option value="waiting_download">等待下载</option><option value="done">硬链接完成</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
+          <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="submitting">提交中</option><option value="awaiting_binding">等待绑定下载器</option><option value="waiting_metadata">等待元数据</option><option value="waiting_download">等待下载</option><option value="missing_in_downloader">下载器中缺失</option><option value="completed">命名完成</option><option value="done">硬链接完成</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
         </header>
         <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="naming-body"></tbody></table></div>
+        <div id="naming-pagination" class="pagination"></div>
       </article>
     </section>
 
@@ -111,9 +120,10 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>MEDIA LIBRARY</p><h2>硬链接入库记录</h2></div>
-          <select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="retrying">重试中</option><option value="failed">失败</option></select>
+          <select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select>
         </header>
         <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>目标目录</th><th>链接文件</th><th>状态</th><th>错误</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="hardlinks-body"></tbody></table></div>
+        <div id="hardlinks-pagination" class="pagination"></div>
       </article>
     </section>
 
@@ -132,6 +142,7 @@
             <label>默认分类<select id="site-default-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label>
             <label>电视剧路径关键词<input id="site-tv-patterns" value="/tv/,/series/" placeholder="用英文逗号分隔"></label>
             <label>动漫路径关键词<input id="site-anime-patterns" value="/anime/,/animation/,/dm/" placeholder="用英文逗号分隔"></label>
+            <label class="toggle-row compact"><span><b>允许访问局域网站点</b><small>仅为可信 NAS/内网站点开启；默认阻止私网地址</small></span><input id="site-allow-private" type="checkbox"></label>
             <button class="primary-button wide" type="submit">保存站点</button>
             <small>适用于无复杂反爬、可通过 CSS 选择器定位结果和下载链接的网站。</small>
           </form>
@@ -139,6 +150,13 @@
         <article class="card span-7">
           <header class="card-head"><div><p>ACTIVE SOURCES</p><h2>已配置站点</h2></div><span id="site-count" class="count-chip">0 个</span></header>
           <div class="table-wrap"><table><thead><tr><th>站点</th><th>适配器</th><th>地址</th><th>状态</th><th></th></tr></thead><tbody id="sites-body"></tbody></table></div>
+          <form id="provider-preview-form" class="provider-preview-form">
+            <label>测试站点<select id="provider-preview-site" required aria-label="选择要测试的站点"></select></label>
+            <label>搜索词<input id="provider-preview-keyword" required maxlength="100" value="test" placeholder="用于探测与搜索"></label>
+            <label>媒体类型<select id="provider-preview-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label>
+            <button id="provider-preview-submit" class="quiet-button" type="submit">预览 / 测试</button>
+          </form>
+          <pre id="provider-preview-result" class="provider-preview-result" aria-live="polite">选择已保存站点后，可执行连通性与最多三条搜索样本的只读测试。</pre>
         </article>
       </div>
     </section>
@@ -216,7 +234,7 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>DIAGNOSTICS</p><h2>系统运行日志</h2></div>
-          <div class="head-actions"><select id="log-level" class="filter-input"><option value="">全部级别</option><option value="debug">DEBUG</option><option value="info">INFO</option><option value="warning">WARNING</option><option value="error">ERROR</option><option value="critical">CRITICAL</option></select><input id="log-query" class="filter-input" type="search" placeholder="搜索消息、任务 ID 或路径"><span id="log-count" class="count-chip">0 条</span><button id="refresh-logs" class="primary-button" type="button">刷新日志</button></div>
+          <div class="head-actions"><select id="log-level" class="filter-input"><option value="">全部级别</option><option value="debug">DEBUG</option><option value="info">INFO</option><option value="warning">WARNING</option><option value="error">ERROR</option><option value="critical">CRITICAL</option></select><input id="log-query" class="filter-input" type="search" placeholder="搜索消息、任务 ID 或路径"><input id="log-since" class="filter-input time-filter" type="datetime-local" aria-label="起始时间"><span id="log-count" class="count-chip">0 条</span><button id="refresh-logs" class="primary-button" type="button">刷新日志</button></div>
         </header>
         <div id="log-list" class="log-list"><div class="empty">正在读取日志…</div></div>
       </article>
@@ -240,7 +258,7 @@
       <div class="source-switch"><label><input type="radio" name="download-source" value="magnet" checked> 磁力 / 种子链接</label><label><input type="radio" name="download-source" value="torrent"> BT 种子文件</label></div>
       <div data-source-panel="magnet"><label>下载链接<textarea id="manual-link" rows="3" placeholder="magnet:?xt=urn:btih:…"></textarea></label></div>
       <div data-source-panel="torrent" class="hidden"><label>BT 种子<input id="manual-torrent" type="file" accept=".torrent,application/x-bittorrent"></label></div>
-      <div class="field-pair"><label>媒体类型<select id="manual-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>中文标题（可选）<input id="manual-title" maxlength="500" placeholder="不填则读取链接/种子名称"></label></div>
+      <div class="field-pair"><label>媒体类型<select id="manual-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>目录映射<select id="manual-path-rule"><option value="">自动选择路径规则</option></select></label><label>中文标题（可选）<input id="manual-title" maxlength="500" placeholder="不填则读取链接/种子名称"></label></div>
       <details><summary>补充命名信息（可选）</summary><div class="field-pair detail-fields"><label>原始标题<input id="manual-original-title" maxlength="300"></label><label>版本<input id="manual-edition" maxlength="100" placeholder="IMAX / Director's Cut"></label><label>集标题<input id="manual-episode-title" maxlength="300"></label></div></details>
       <button id="submit-manual-download" class="primary-button wide" type="submit">识别并加入下载</button>
     </form>
@@ -263,10 +281,21 @@
     <div class="modal-card agent-card">
       <header><div><span class="auth-kicker">AGENT BRIDGE</span><h2 id="agent-title">连接你的 Agent</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
       <p>生成一枚独立、可随时撤销的 Agent 令牌。Agent 按需调用 REST/OpenAPI 或 CLI，不需要持续心跳。</p>
+      <label>Agent 名称<input id="agent-name" maxlength="100" required placeholder="例如：客厅自动化助手"></label>
+      <fieldset class="scope-picker"><legend>授予范围</legend><label><input type="checkbox" name="agent-scope" value="read" checked> 只读</label><label><input type="checkbox" name="agent-scope" value="search" checked> 搜索</label><label><input type="checkbox" name="agent-scope" value="download" checked> 下载</label><label><input type="checkbox" name="agent-scope" value="watchlist" checked> 订阅</label><label><input type="checkbox" name="agent-scope" value="naming"> 命名与入库</label><label><input type="checkbox" name="agent-scope" value="settings"> 设置</label></fieldset>
       <button id="create-agent-config" class="primary-button wide" type="button">生成并复制连接方案</button>
       <div id="agent-config-wrap" class="hidden"><label>把下面内容发给你的 Agent<textarea id="agent-config" rows="10" readonly></textarea></label><button id="copy-agent-config" class="quiet-button" type="button">再次复制</button></div>
       <div class="agent-list-head"><b>已授权 Agent</b><span id="agent-count">0 个</span></div><div id="agent-list" class="agent-list"></div>
     </div>
+  </div>
+
+  <div id="agent-scopes-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="agent-scopes-title">
+    <form id="agent-scopes-form" class="modal-card">
+      <header><div><span class="auth-kicker">AGENT PERMISSIONS</span><h2 id="agent-scopes-title">编辑 Agent 权限</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <p id="agent-scopes-description">更新会立即替换该 Agent 的授权范围，令牌保持不变。</p><input id="agent-scopes-id" type="hidden">
+      <fieldset class="scope-picker"><legend>管理员授予的范围</legend><label><input type="checkbox" name="agent-edit-scope" value="read"> 只读</label><label><input type="checkbox" name="agent-edit-scope" value="search"> 搜索</label><label><input type="checkbox" name="agent-edit-scope" value="download"> 下载</label><label><input type="checkbox" name="agent-edit-scope" value="watchlist"> 订阅</label><label><input type="checkbox" name="agent-edit-scope" value="naming"> 命名与入库</label><label><input type="checkbox" name="agent-edit-scope" value="settings"> 设置</label></fieldset>
+      <div id="agent-scopes-errors" class="field-errors" aria-live="polite"></div><div class="modal-actions"><button class="primary-button" type="submit">保存权限</button></div>
+    </form>
   </div>
 
   <div id="job-detail-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="job-detail-title">
@@ -288,7 +317,18 @@
     </div>
   </div>
 
-  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+  <div id="naming-plan-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="naming-plan-title">
+    <form id="naming-plan-form" class="modal-card">
+      <header><div><span class="auth-kicker">CORRECT &amp; PREVIEW</span><h2 id="naming-plan-title">修正规范命名</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <p id="naming-plan-help">修正后先预览，再确认保存计划并重试。成功或部分硬链接的任务不可修改。</p><input id="naming-plan-id" type="hidden"><input id="naming-plan-hash" type="hidden">
+      <div id="naming-plan-fields" class="field-pair"><label>媒体名<input id="plan-media-name" maxlength="300"></label><label>原始标题<input id="plan-original-title" maxlength="300"></label><label>年份<input id="plan-year" type="number" min="1888" max="2100"></label><label>媒体类型<select id="plan-type"><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>季<input id="plan-season" type="number" min="0" max="999"></label><label>集<input id="plan-episode" type="text" maxlength="100" placeholder="S01E02"><small>按原样保留季集编号，例如 S01E02。</small></label><label>集标题<input id="plan-episode-title" maxlength="300"></label></div>
+      <div id="naming-relocate-fields" class="relocation-fields hidden"><label>新的下载器保存路径<input id="relocate-location" type="text" placeholder="/downloads/Movies/Example" autocomplete="off"></label><small>将把当前下载器任务迁移到此绝对路径；不会修改已入库文件，也不会修改命名计划。</small></div>
+      <div id="naming-preview" class="preflight-box">尚未预览。</div><div id="naming-plan-errors" class="field-errors" aria-live="polite"></div>
+      <div class="modal-actions"><button id="preview-naming-plan" class="quiet-button" type="button">预览路径</button><button id="save-naming-plan" class="primary-button" type="submit">确认计划并重试</button></div>
+    </form>
+  </div>
+
+  <div id="action-summary" class="action-summary" role="status" aria-live="polite"></div><div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/static/admin.js?v={{ version }}" defer></script>
 </body>
 </html>
