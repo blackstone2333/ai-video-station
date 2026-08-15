@@ -4,6 +4,12 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v2.0.2 更新说明
+
+- 6V 搜索与订阅改为名称匹配优先：同名内容即使被发布到错误栏目，也不会再被站点分类提前过滤。
+- 媒体判型依次参考内容特征、用户在 AVS 选择的类型和站点栏目；6V 栏目只作辅助，不再覆盖电影、电视剧、动漫的入库分类。
+- 动漫订阅可以命中误放在电视剧栏目的资源并继续进入动漫下载、命名和媒体库路径；明显的剧集编号仍能纠正误选的电影类型。
+
 ## v2.0.1 更新说明
 
 - 手动磁力优先读取链接中的 `dn` 资源名；无资源名时明确要求填写标题，不再以“手动下载”占位词创建错误任务。
@@ -465,8 +471,8 @@ docker compose up -d --build --remove-orphans
 部署已发布镜像时，请固定一个版本，不要使用浮动标签：
 
 ```bash
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.1 docker compose pull
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.1 docker compose up -d --no-build --remove-orphans
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.2 docker compose pull
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.2 docker compose up -d --no-build --remove-orphans
 ```
 
 回滚就是在完成并校验备份后，将上述版本替换为上一个已验证的 `v*` 标签并重新执行两条命令。若升级涉及运行时数据变化，先停止服务并按上一节恢复对应备份，再启动旧版本。

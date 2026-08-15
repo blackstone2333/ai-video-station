@@ -5,7 +5,7 @@ import html
 import logging
 import re
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable, List, Mapping, Optional, Sequence, Tuple
 from urllib.parse import urlencode, urljoin, urlparse, urlunparse
 
@@ -291,11 +291,18 @@ class SixVClient:
                 effective = urlparse(response.url)
                 effective_base = f"{effective.scheme}://{effective.netloc}"
                 items = self.parse_search_page(self.decode_html(response.content), effective_base)
-                if media_type != "auto":
-                    items = [item for item in items if item.media_type in {media_type, "auto"}]
                 title_matches = [item for item in items if keyword.casefold() in item.title.casefold()]
                 if title_matches:
                     items = title_matches
+                    # 6V sections are editorial hints, not a reliable media
+                    # taxonomy.  An exact name hit must survive a misplaced
+                    # section; the user's AVS type becomes the detail-page hint.
+                    if media_type != "auto":
+                        items = [replace(item, media_type=media_type) for item in items]
+                elif media_type != "auto":
+                    # When the name did not identify a result, keep the site
+                    # section as a fallback to avoid broad unrelated matches.
+                    items = [item for item in items if item.media_type in {media_type, "auto"}]
                 items.sort(key=lambda item: (keyword.casefold() in item.title.casefold(), item.title), reverse=True)
                 releases: List[Release] = []
                 for item in items[: self.settings.search_detail_limit]:

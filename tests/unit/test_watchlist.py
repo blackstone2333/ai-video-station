@@ -31,6 +31,15 @@ class StubQB:
         return {"qb_task_id": "x", "category": category}
 
 
+class StubNaming:
+    def __init__(self):
+        self.added = []
+
+    def add_download(self, release, category, path_rule_id=None):
+        self.added.append((release, category, path_rule_id))
+        return {"qb_task_id": "x", "category": category}
+
+
 def make_release(label, hash_char="a", media_type="tv"):
     return build_release(
         "测试剧" if media_type == "tv" else "测试电影",
@@ -72,6 +81,21 @@ def test_tv_check_downloads_one_best_version_per_episode(settings):
     second = service.check(item["id"])
     assert second["downloaded"] == 0
     assert repository.get(item["id"])["status"] == "monitoring"
+
+
+def test_anime_subscription_keeps_avs_type_when_sixv_url_looks_like_tv(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    item = repository.add("Rick and Morty", "anime")
+    release = make_release("S01E01 1080p WEB-DL", "e", "anime")
+    naming = StubNaming()
+    service = WatchlistService(settings, repository, StubSearch([release]), StubQB(), naming=naming)
+
+    report = service.check(item["id"])
+
+    assert report["downloaded"] == 1
+    assert naming.added[0][0].media_type == "anime"
+    assert naming.added[0][1] == settings.qb_anime_category
+    assert repository.get(item["id"])["type"] == "anime"
 
 
 def test_movie_failure_is_recorded_for_retry(settings):

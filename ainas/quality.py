@@ -146,20 +146,26 @@ def detect_season(text: str) -> Optional[int]:
 
 
 def infer_media_type(text: str, url: str = "", hint: str = "auto") -> str:
-    """Resolve a media type without treating every unknown category as a movie."""
+    """Resolve content signals first and treat provider sections as weak hints."""
     if hint == "custom":
         return "custom"
     normalized = unquote(text)
-    if ANIME_PATH_RE.search(urlparse(url).path) or ANIME_HINT_RE.search(normalized):
+    path = urlparse(url).path
+    anime_path = bool(ANIME_PATH_RE.search(path))
+    if ANIME_HINT_RE.search(normalized):
         return "anime"
-    if TV_PATH_HINT_RE.search(urlparse(url).path):
-        return "tv"
-    if MOVIE_PATH_HINT_RE.search(urlparse(url).path):
-        return "movie"
-    if hint in EPISODIC_MEDIA_TYPES:
-        return hint
     if detect_episode(normalized) or detect_season(normalized) is not None:
+        if hint == "anime" or (hint == "auto" and anime_path):
+            return "anime"
         return "tv"
+    if hint in {"movie", "tv", "anime"}:
+        return hint
+    if anime_path:
+        return "anime"
+    if TV_PATH_HINT_RE.search(path):
+        return "tv"
+    if MOVIE_PATH_HINT_RE.search(path):
+        return "movie"
     return hint
 
 
