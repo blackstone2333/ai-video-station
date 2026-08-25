@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ainas.config import Settings
-from ainas.errors import ConflictError, UpstreamError
+from ainas.errors import AppError, ConflictError, UpstreamError
 from ainas.medialib import MediaLibraryService
 from ainas.naming import EmbyNamingPlanner, NamingJobRepository, NamingPlan, NamingService, safe_name
 from ainas.path_rules import PathRuleRepository
@@ -335,6 +335,29 @@ class FakeHardlinker:
         return {"status": "done", "linked": 1, "skipped": 0, "files": []}
 
 
+class BatchHardlinker(FakeHardlinker):
+    def link_completed(self, torrent, files, plan, naming_result=None):
+        values = [dict(item) for item in files]
+        self.calls.append((torrent, values, plan, naming_result))
+        results = [
+            {
+                "status": "linked",
+                "source": f"/downloads/{item['index']}",
+                "target": f"/library/{item['index']}",
+            }
+            for item in values
+        ]
+        return {
+            "status": "done",
+            "linked": len(results),
+            "skipped": 0,
+            "already_linked": 0,
+            "conflicts": 0,
+            "target": "/library",
+            "files": results,
+        }
+
+
 class FakeVerifyingHardlinker(FakeHardlinker):
     def __init__(self):
         super().__init__()
@@ -600,10 +623,11 @@ def test_naming_disabled_or_non_magnet_does_not_stage(tmp_path):
     assert disabled["current_category"] == "sixv-movie"
 
 
-def test_naming_waits_for_complete_download_then_hardlinks(tmp_path):
+def test_naming_waits_when_no_selected_file_is_complete_then_hardlinks(tmp_path):
     settings = naming_settings(tmp_path)
     qb = FakeQB()
     qb.torrent_value = {"hash": HASH, "progress": 0.5}
+    qb.file_values[0]["progress"] = 0.5
     hardlinker = FakeHardlinker()
     repository = NamingJobRepository(settings.naming_jobs_path)
     service = NamingService(settings, repository, qb, hardlinker=hardlinker)
@@ -619,12 +643,77 @@ def test_naming_waits_for_complete_download_then_hardlinks(tmp_path):
     assert not hardlinker.calls
 
     qb.torrent_value["progress"] = 1.0
+    qb.file_values[0]["progress"] = 1.0
     report = service.check(job["id"])
     assert report["completed"] == 1
     updated = repository.get(job["id"])
     assert updated["hardlink_status"] == "done"
     assert len(hardlinker.calls) == 1
     assert hardlinker.calls[0][3] == updated["result"]
+
+
+def test_completed_episodes_are_named_and_hardlinked_before_the_torrent_finishes(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB(
+        files=[
+            {"index": 0, "name": "重器.2160p/01.2160p.mkv", "size": 100, "progress": 1.0, "priority": 1},
+            {"index": 1, "name": "重器.2160p/02.2160p.mkv", "size": 100, "progress": 1.0, "priority": 1},
+            {"index": 2, "name": "重器.2160p/03.2160p.mkv", "size": 100, "progress": 0.5, "priority": 1},
+        ]
+    )
+    qb.torrent_value = {"hash": HASH, "progress": 0.8}
+    hardlinker = BatchHardlinker()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    plan = NamingPlan(
+        media_type="tv",
+        media_name="重器[全集]",
+        root_name="重器[全集] (2026)",
+        year=2026,
+        season=None,
+        episode=None,
+        link_name="重器.2160p",
+        video_format="2160p.HD",
+    )
+    job = repository.upsert(HASH, plan, settings.qb_tv_category)
+    service = NamingService(settings, repository, qb, hardlinker=hardlinker)
+
+    first = service.check(job["id"])
+    partial = repository.get(job["id"])
+
+    assert first["completed"] == 0
+    assert partial["status"] == "waiting_download"
+    assert partial["hardlink_status"] == "waiting_download"
+    assert partial["processed_file_indices"] == [0, 1]
+    assert partial["plan"]["root_name"] == "重器 (2026)"
+    assert [item[1] for item in qb.calls if item[0] == "rename_file"] == [
+        "重器.2160p/01.2160p.mkv",
+        "重器.2160p/02.2160p.mkv",
+    ]
+    assert [item["index"] for item in hardlinker.calls[0][1]] == [0, 1]
+    assert partial["hardlink_result"]["linked"] == 2
+    assert not any(call[0] in {"rename_folder", "rename_torrent", "category"} for call in qb.calls)
+    with pytest.raises(AppError, match="processing has started"):
+        service.preview_corrected_plan(job["id"], {"media_name": "错误标题"})
+
+    qb.file_values[2]["progress"] = 1.0
+    qb.torrent_value["progress"] = 1.0
+    second = service.check(job["id"])
+    completed = repository.get(job["id"])
+
+    assert second["completed"] == 1
+    assert completed["status"] == "completed"
+    assert completed["hardlink_status"] == "done"
+    assert completed["processed_file_indices"] == [0, 1, 2]
+    assert [item[1] for item in qb.calls if item[0] == "rename_file"] == [
+        "重器.2160p/01.2160p.mkv",
+        "重器.2160p/02.2160p.mkv",
+        "重器.2160p/03.2160p.mkv",
+    ]
+    assert [item["index"] for item in hardlinker.calls[1][1]] == [2]
+    assert completed["hardlink_result"]["linked"] == 3
+    assert sum(call[0] == "rename_folder" for call in qb.calls) == 1
+    assert sum(call[0] == "rename_torrent" for call in qb.calls) == 1
+    assert sum(call[0] == "category" for call in qb.calls) == 1
 
 
 def test_unresolved_episode_never_reaches_hardlink(tmp_path):

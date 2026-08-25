@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 VIDEO_EXTENSIONS = {".mkv", ".mp4", ".avi", ".mov", ".m4v", ".ts", ".m2ts", ".wmv", ".flv", ".webm"}
 SUBTITLE_EXTENSIONS = {".srt", ".ass", ".ssa", ".vtt", ".sub", ".idx"}
 INVALID_FILENAME_RE = re.compile(r"[\\/:*?\"<>|\x00-\x1f]")
+PADDING_PREFIXES = ("_____padding_file_",)
 
 
 def safe_name(value: str, max_length: int = 180) -> str:
@@ -406,6 +407,7 @@ class NamingJobRepository:
                 "hardlink_attempts": 0,
                 "hardlink_error": None,
                 "hardlink_result": None,
+                "processed_file_indices": [],
                 "rename_checkpoint": {"files": 0, "folders": 0, "torrent": False},
                 **deepcopy(submission),
             }
@@ -462,6 +464,93 @@ class NamingService:
             or int(checkpoint.get("folders") or 0)
             or checkpoint.get("torrent")
         )
+
+    @classmethod
+    def _plan_locked(cls, job: Dict[str, Any]) -> bool:
+        return bool(
+            cls._rename_started(job)
+            or job.get("processed_file_indices")
+            or (job.get("hardlink_result") or {}).get("files")
+            or job.get("hardlink_status") in {"done", "partial", "conflict"}
+        )
+
+    @staticmethod
+    def _is_padding_file(item: Dict[str, Any]) -> bool:
+        path = PurePosixPath(str(item.get("name") or ""))
+        lowered = tuple(part.casefold() for part in path.parts)
+        return bool(
+            ".pad" in lowered
+            or path.suffix.casefold() == ".pad"
+            or path.name.casefold().startswith(PADDING_PREFIXES)
+        )
+
+    @staticmethod
+    def _operation_key(operation: Dict[str, Any]) -> str:
+        return f"{operation.get('old_path') or ''}\0{operation.get('new_path') or ''}"
+
+    @classmethod
+    def _completed_operation_keys(
+        cls,
+        job: Dict[str, Any],
+        preview: Dict[str, Any],
+    ) -> List[str]:
+        checkpoint = dict(job.get("rename_checkpoint") or {})
+        keys = [str(value) for value in checkpoint.get("file_operations") or []]
+        legacy_count = int(checkpoint.get("files") or 0)
+        for operation in (preview.get("operations") or [])[:legacy_count]:
+            key = cls._operation_key(operation)
+            if key not in keys:
+                keys.append(key)
+        return keys
+
+    @staticmethod
+    def _merge_hardlink_results(
+        previous: Optional[Dict[str, Any]],
+        current: Optional[Dict[str, Any]],
+        *,
+        waiting: bool,
+    ) -> Dict[str, Any]:
+        before = dict(previous or {})
+        after = dict(current or {})
+        merged_files: Dict[str, Dict[str, Any]] = {}
+        rank = {"conflict": 0, "already-linked": 1, "linked": 2}
+        for item in [*(before.get("files") or []), *(after.get("files") or [])]:
+            if not isinstance(item, dict):
+                continue
+            key = str(item.get("target") or item.get("source") or len(merged_files))
+            existing = merged_files.get(key)
+            if existing is None or rank.get(str(item.get("status")), 0) >= rank.get(
+                str(existing.get("status")), 0
+            ):
+                merged_files[key] = dict(item)
+        files = list(merged_files.values())
+        if files:
+            linked = sum(item.get("status") == "linked" for item in files)
+            already_linked = sum(item.get("status") == "already-linked" for item in files)
+            conflicts = sum(item.get("status") == "conflict" for item in files)
+            skipped = already_linked + conflicts
+        else:
+            linked = int(before.get("linked") or 0) + int(after.get("linked") or 0)
+            already_linked = int(before.get("already_linked") or 0) + int(
+                after.get("already_linked") or 0
+            )
+            conflicts = int(before.get("conflicts") or 0) + int(after.get("conflicts") or 0)
+            skipped = int(before.get("skipped") or 0) + int(after.get("skipped") or 0)
+        if waiting:
+            status = "waiting_download"
+        elif conflicts:
+            status = "partial" if linked or already_linked else "conflict"
+        else:
+            status = "done"
+        return {
+            "status": status,
+            "linked": linked,
+            "skipped": skipped,
+            "already_linked": already_linked,
+            "conflicts": conflicts,
+            "target": after.get("target") or before.get("target"),
+            "files": files,
+        }
 
     @staticmethod
     def _unresolved_episode_paths(
@@ -580,8 +669,13 @@ class NamingService:
     def apply_corrected_plan(self, job_id: str, plan: NamingPlan | Dict[str, Any]) -> Dict[str, Any]:
         """Replace an uncommitted plan; completed links make this unsafe."""
         job = self.repository.get(job_id)
-        if job.get("hardlink_status") in {"done", "partial", "conflict"}:
-            raise AppError("Naming Plan Locked", "cannot replace a plan after hardlinks were created", "naming-plan-locked", 409)
+        if self._plan_locked(job):
+            raise AppError(
+                "Naming Plan Locked",
+                "cannot replace a plan after naming or hardlink processing has started",
+                "naming-plan-locked",
+                409,
+            )
         value = plan.to_dict() if isinstance(plan, NamingPlan) else NamingPlan(**plan).to_dict()
         final_category = policy_for(value["media_type"]).category_for(self.settings)
         return self.repository.update(
@@ -591,6 +685,7 @@ class NamingService:
                 "final_category": final_category,
                 "result": None,
                 "rename_checkpoint": {"files": 0, "folders": 0, "torrent": False},
+                "processed_file_indices": [],
                 "status": "retrying",
                 "attempts": 0,
                 "last_error": None,
@@ -600,10 +695,10 @@ class NamingService:
     def preview_corrected_plan(self, job_id: str, overrides: Dict[str, Any]) -> Dict[str, Any]:
         """Preview a correction against the downloader's current file list."""
         job = self.repository.get(job_id)
-        if job.get("hardlink_status") in {"done", "partial", "conflict"}:
+        if self._plan_locked(job):
             raise AppError(
                 "Naming Plan Locked",
-                "cannot replace a plan after hardlinks were created",
+                "cannot replace a plan after naming or hardlink processing has started",
                 "naming-plan-locked",
                 409,
             )
@@ -878,16 +973,28 @@ class NamingService:
         progress = float(torrent.get("progress", 0) or 0)
         selected_indices = set(selection.get("selected_indices") or []) if selection.get("applied") else None
         selected = [
-            item
+            {
+                **item,
+                "index": int(item.get("index") if item.get("index") is not None else fallback_index),
+            }
             for fallback_index, item in enumerate(files)
             if (
                 int(item.get("index") if item.get("index") is not None else fallback_index) in selected_indices
                 if selected_indices is not None
                 else int(item.get("priority", 1) or 0) > 0
             )
+            and not self._is_padding_file(item)
         ]
-        files_complete = all(float(item.get("progress", progress) or 0) >= 0.999999 for item in selected)
-        if progress < 0.999999 or not files_complete:
+        if not selected:
+            return self.repository.update(
+                job["id"],
+                {"status": "waiting_metadata", "checks": checks, "last_check": now, "last_error": None},
+            )
+        completed_files = [
+            item for item in selected if float(item.get("progress", progress) or 0) >= 0.999999
+        ]
+        files_complete = len(completed_files) == len(selected)
+        if not completed_files:
             return self.repository.update(
                 job["id"],
                 {
@@ -903,46 +1010,151 @@ class NamingService:
             if normalized_plan != plan:
                 plan = normalized_plan
                 job = self.repository.update(job["id"], {"plan": plan.to_dict(), "result": None})
-        # The preview is an operation journal: do not re-plan on a retry,
-        # because changes in qB metadata would otherwise rename a different
-        # set of paths mid-job.
+        # The preview covers the whole selected torrent and remains the operation
+        # journal while individual completed files are processed incrementally.
         preview = job.get("result") or self.planner.plan_files(selected, plan)
         if not job.get("result"):
-            job = self.repository.update(job["id"], {"result": preview, "rename_checkpoint": job.get("rename_checkpoint") or {"files": 0, "folders": 0, "torrent": False}})
+            job = self.repository.update(
+                job["id"],
+                {
+                    "result": preview,
+                    "rename_checkpoint": job.get("rename_checkpoint")
+                    or {"files": 0, "folders": 0, "torrent": False},
+                },
+            )
+        linking_batch = False
         try:
             self._require_safe_episode_plan(selected, plan, preview)
             verifier = getattr(self.hardlinker, "verify_named_sources", None)
             already_named = False
-            if callable(verifier):
+            if files_complete and callable(verifier):
                 try:
                     verifier(torrent, selected, preview)
                     already_named = True
                 except AppError:
                     pass
-            if plan.rename_enabled:
-                if not already_named:
-                    checkpoint = dict(job.get("rename_checkpoint") or {})
-                    file_index = int(checkpoint.get("files", 0))
-                    folder_index = int(checkpoint.get("folders", 0))
-                    for index, operation in enumerate(preview["operations"][file_index:], start=file_index):
-                        self.qb.rename_file(job["torrent_hash"], operation["old_path"], operation["new_path"])
-                        checkpoint["files"] = index + 1
-                        job = self.repository.update(job["id"], {"rename_checkpoint": checkpoint, "result": preview})
-                    for index, operation in enumerate(preview["folder_operations"][folder_index:], start=folder_index):
-                        self.qb.rename_folder(job["torrent_hash"], operation["old_path"], operation["new_path"])
-                        checkpoint["folders"] = index + 1
-                        job = self.repository.update(job["id"], {"rename_checkpoint": checkpoint, "result": preview})
+            processed_indices = {int(value) for value in job.get("processed_file_indices") or []}
+            ready = [item for item in completed_files if int(item["index"]) not in processed_indices]
+            checkpoint = dict(job.get("rename_checkpoint") or {})
+            completed_operation_keys = self._completed_operation_keys(job, preview)
+            if already_named:
+                completed_operation_keys = [
+                    self._operation_key(operation) for operation in preview.get("operations") or []
+                ]
+                checkpoint["file_operations"] = completed_operation_keys
+                checkpoint["files"] = len(completed_operation_keys)
+                checkpoint["folders"] = len(preview.get("folder_operations") or [])
+                job = self.repository.update(
+                    job["id"], {"rename_checkpoint": checkpoint, "result": preview}
+                )
+            if plan.rename_enabled and not already_named:
+                ready_paths = {str(item.get("name") or "") for item in ready}
+                current_paths = {str(item.get("name") or "") for item in selected}
+                for operation in preview.get("operations") or []:
+                    key = self._operation_key(operation)
+                    if key in completed_operation_keys:
+                        continue
+                    old_path = str(operation.get("old_path") or "")
+                    new_path = str(operation.get("new_path") or "")
+                    if old_path not in ready_paths and new_path not in ready_paths:
+                        continue
+                    if new_path not in current_paths or old_path in current_paths:
+                        self.qb.rename_file(job["torrent_hash"], old_path, new_path)
+                    current_paths.discard(old_path)
+                    current_paths.add(new_path)
+                    completed_operation_keys.append(key)
+                    checkpoint["file_operations"] = completed_operation_keys
+                    checkpoint["files"] = len(completed_operation_keys)
+                    job = self.repository.update(
+                        job["id"], {"rename_checkpoint": checkpoint, "result": preview}
+                    )
+
+            hardlink_enabled = bool(self.hardlinker and self.hardlinker.enabled)
+            hardlink_result = dict(job.get("hardlink_result") or {})
+            if ready:
+                if hardlink_enabled:
+                    linking_batch = True
+                    batch_result = self.hardlinker.link_completed(torrent, ready, plan, preview)
+                    linking_batch = False
+                    hardlink_result = self._merge_hardlink_results(
+                        hardlink_result,
+                        batch_result,
+                        waiting=not files_complete,
+                    )
+                processed_indices.update(int(item["index"]) for item in ready)
+                job = self.repository.update(
+                    job["id"],
+                    {
+                        "status": "waiting_download",
+                        "checks": checks,
+                        "last_check": now,
+                        "last_error": None,
+                        "result": preview,
+                        "processed_file_indices": sorted(processed_indices),
+                        "hardlink_status": "waiting_download" if hardlink_enabled else "disabled",
+                        "hardlink_attempts": 0,
+                        "hardlink_error": None,
+                        "hardlink_result": hardlink_result if hardlink_enabled else None,
+                    },
+                )
+
+            if not files_complete:
+                return self.repository.update(
+                    job["id"],
+                    {
+                        "status": "waiting_download",
+                        "checks": checks,
+                        "last_check": now,
+                        "last_error": None,
+                    },
+                )
+
+            if plan.rename_enabled and not already_named:
+                folder_index = int(checkpoint.get("folders", 0))
+                current_paths = {str(item.get("name") or "") for item in selected}
+                for index, operation in enumerate(
+                    (preview.get("folder_operations") or [])[folder_index:], start=folder_index
+                ):
+                    old_path = str(operation.get("old_path") or "")
+                    new_path = str(operation.get("new_path") or "")
+                    old_prefix = old_path + "/"
+                    new_prefix = new_path + "/"
+                    old_present = any(path == old_path or path.startswith(old_prefix) for path in current_paths)
+                    new_present = any(path == new_path or path.startswith(new_prefix) for path in current_paths)
+                    if old_present or not new_present:
+                        self.qb.rename_folder(job["torrent_hash"], old_path, new_path)
+                    current_paths = {
+                        new_path + path[len(old_path) :]
+                        if path == old_path or path.startswith(old_prefix)
+                        else path
+                        for path in current_paths
+                    }
+                    checkpoint["folders"] = index + 1
+                    job = self.repository.update(
+                        job["id"], {"rename_checkpoint": checkpoint, "result": preview}
+                    )
                 if not (job.get("rename_checkpoint") or {}).get("torrent"):
-                    self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
+                    if str(torrent.get("name") or "") != plan.root_name:
+                        self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
                     checkpoint = dict(job.get("rename_checkpoint") or {})
                     checkpoint["torrent"] = True
-                    job = self.repository.update(job["id"], {"rename_checkpoint": checkpoint, "result": preview})
+                    job = self.repository.update(
+                        job["id"], {"rename_checkpoint": checkpoint, "result": preview}
+                    )
+
             if callable(verifier):
                 verifier(torrent, selected, preview)
             self.qb.set_category(job["torrent_hash"], job["final_category"])
             self.qb.resume(job["torrent_hash"])
-            hardlink_enabled = bool(self.hardlinker and self.hardlinker.enabled)
-            updated = self.repository.update(
+            if hardlink_enabled:
+                hardlink_result = self._merge_hardlink_results(
+                    job.get("hardlink_result"), None, waiting=False
+                )
+                hardlink_status = str(hardlink_result.get("status") or "done")
+            else:
+                hardlink_result = None
+                hardlink_status = "disabled"
+            return self.repository.update(
                 job["id"],
                 {
                     "status": "completed",
@@ -950,31 +1162,38 @@ class NamingService:
                     "last_check": now,
                     "last_error": None,
                     "result": preview,
-                    "hardlink_status": "waiting_download" if hardlink_enabled else "disabled",
+                    "processed_file_indices": sorted(processed_indices),
+                    "hardlink_status": hardlink_status,
                     "hardlink_attempts": 0,
                     "hardlink_error": None,
-                    "hardlink_result": None,
+                    "hardlink_result": hardlink_result,
                 },
             )
-            if hardlink_enabled and float(torrent.get("progress", 0)) >= 0.999999:
-                return self._finish_hardlink(updated)
-            return updated
         except AppError as exc:
             attempts = int(job.get("attempts", 0)) + 1
             failed = attempts >= self.settings.naming_max_attempts
             if failed:
                 self._release_staging_job(job)
-            return self.repository.update(
-                job["id"],
-                {
-                    "status": "failed" if failed else "retrying",
-                    "attempts": attempts,
-                    "checks": checks,
-                    "last_check": now,
-                    "last_error": exc.detail,
-                    "result": preview,
-                },
-            )
+            changes = {
+                "status": "failed" if failed else "retrying",
+                "attempts": attempts,
+                "checks": checks,
+                "last_check": now,
+                "last_error": exc.detail,
+                "result": preview,
+            }
+            if linking_batch:
+                hardlink_attempts = int(job.get("hardlink_attempts", 0)) + 1
+                changes.update(
+                    {
+                        "hardlink_status": "failed"
+                        if hardlink_attempts >= self.settings.naming_max_attempts
+                        else "retrying",
+                        "hardlink_attempts": hardlink_attempts,
+                        "hardlink_error": exc.detail,
+                    }
+                )
+            return self.repository.update(job["id"], changes)
 
     def _finish_hardlink(self, job: Dict[str, Any]) -> Dict[str, Any]:
         now = utc_now_iso()

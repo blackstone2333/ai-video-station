@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AI Video Station API
-  version: 2.1.1
+  version: 2.1.2
   description: >-
     Media search, downloads, watchlists, naming jobs, path rules and Agent access.
     Unless an operation says otherwise, an Agent token needs the documented x-agent-scope.

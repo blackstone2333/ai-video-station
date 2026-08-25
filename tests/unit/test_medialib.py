@@ -173,6 +173,59 @@ def test_hardlink_uses_file_and_folder_paths_from_completed_naming_job(tmp_path)
     assert target.stat().st_ino == source.stat().st_ino
 
 
+def test_partial_episode_hardlinks_before_the_season_folder_is_renamed(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    download_root = mount / "Downloads" / "TV" / "重器[全集] (2026)"
+    source = download_root / "重器.2160p" / "重器 - S01E01 - 2160p.HD.mkv"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"episode-one")
+
+    result = MediaLibraryService(settings).link_completed(
+        {
+            "save_path": str(host / "Downloads" / "TV" / "重器[全集] (2026)"),
+            "content_path": str(
+                host / "Downloads" / "TV" / "重器[全集] (2026)" / "重器.2160p"
+            ),
+        },
+        [
+            {
+                "name": "重器.2160p/01.2160p.HD国语中字.mkv",
+                "size": len(b"episode-one"),
+                "priority": 1,
+            }
+        ],
+        {
+            "media_type": "tv",
+            "media_name": "重器",
+            "root_name": "重器 (2026)",
+        },
+        {
+            "operations": [
+                {
+                    "kind": "file",
+                    "old_path": "重器.2160p/01.2160p.HD国语中字.mkv",
+                    "new_path": "重器.2160p/重器 - S01E01 - 2160p.HD.mkv",
+                }
+            ],
+            "folder_operations": [
+                {"kind": "folder", "old_path": "重器.2160p", "new_path": "Season 01"}
+            ],
+        },
+    )
+
+    target = (
+        mount
+        / "video"
+        / "tv"
+        / "重器 (2026)"
+        / "Season 01"
+        / "重器 - S01E01 - 2160p.HD.mkv"
+    )
+    assert result["linked"] == 1
+    assert source.exists() and target.exists()
+    assert source.stat().st_ino == target.stat().st_ino
+
+
 def test_hardlink_does_not_duplicate_season_when_save_path_is_already_the_season(tmp_path):
     settings, host, mount = media_settings(tmp_path)
     source = (
