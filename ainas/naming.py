@@ -230,12 +230,15 @@ class EmbyNamingPlanner:
                 "file_count": len(values),
                 "operations": [],
                 "folder_operations": [],
+                "unresolved_episodes": [],
             }
         videos = [item for item in values if PurePosixPath(item["name"]).suffix.lower() in VIDEO_EXTENSIONS]
         subtitles = [item for item in values if PurePosixPath(item["name"]).suffix.lower() in SUBTITLE_EXTENSIONS]
         videos.sort(key=lambda item: (-int(item.get("size") or 0), item["name"].casefold()))
         operations: List[Dict[str, str]] = []
         video_map: List[Tuple[str, str]] = []
+        episode_seasons: List[int] = []
+        unresolved_episodes: List[str] = []
         used_paths: set[str] = set()
 
         main_videos = [
@@ -247,11 +250,15 @@ class EmbyNamingPlanner:
             old_path = item["name"]
             old_value = PurePosixPath(old_path)
             if policy_for(plan.media_type).naming_layout == "episodic":
-                detected = detect_episode(old_value.name) or (plan.episode if len(videos) == 1 else None)
+                detected = detect_episode(old_value.name, allow_numeric_prefix=True) or (
+                    plan.episode if len(videos) == 1 else None
+                )
                 season = detect_season(old_value.name) or plan.season
                 episode = _episode_with_default_season(detected, season)
                 if not episode:
+                    unresolved_episodes.append(old_path)
                     continue
+                episode_seasons.append(int(episode[1:3]))
                 # Episodic files are separate episodes, not automatically numbered movie parts.
                 part = self._file_part(old_value, index, len(videos), auto_number=False)
                 value = self._title_prefix(plan, part)
@@ -293,6 +300,13 @@ class EmbyNamingPlanner:
         if video_parents and len(set(video_parents)) == 1:
             old_folder = video_parents[0]
             folder_season = detect_season(old_folder)
+            if (
+                folder_season is None
+                and policy_for(plan.media_type).episodic
+                and len(episode_seasons) == len(videos)
+                and len(set(episode_seasons)) == 1
+            ):
+                folder_season = episode_seasons[0]
             if folder_season is not None:
                 new_folder = f"Season {folder_season:02d}"
                 if old_folder != new_folder:
@@ -304,6 +318,7 @@ class EmbyNamingPlanner:
             "file_count": len(values),
             "operations": operations,
             "folder_operations": folder_operations,
+            "unresolved_episodes": unresolved_episodes,
         }
 
 
@@ -447,6 +462,64 @@ class NamingService:
             or int(checkpoint.get("folders") or 0)
             or checkpoint.get("torrent")
         )
+
+    @staticmethod
+    def _unresolved_episode_paths(
+        files: Iterable[Dict[str, Any]],
+        plan: NamingPlan,
+        preview: Dict[str, Any],
+    ) -> List[str]:
+        """Return episodic videos whose final planned basename has no episode token.
+
+        Deriving this from the operation journal also protects jobs whose
+        preview was persisted by an older AVS version without the diagnostic
+        ``unresolved_episodes`` field.
+        """
+        if not policy_for(plan.media_type).episodic:
+            return []
+        renamed = {
+            str(operation.get("old_path")): str(operation.get("new_path"))
+            for operation in preview.get("operations") or []
+            if isinstance(operation, dict) and operation.get("old_path") and operation.get("new_path")
+        }
+        unresolved: List[str] = []
+        for item in files:
+            old_path = str(item.get("name") or "")
+            if not old_path or PurePosixPath(old_path).suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
+            final_path = renamed.get(old_path, old_path)
+            if not detect_episode(PurePosixPath(final_path).name, allow_numeric_prefix=True):
+                unresolved.append(old_path)
+        return unresolved
+
+    def _require_safe_episode_plan(
+        self,
+        files: Iterable[Dict[str, Any]],
+        plan: NamingPlan,
+        preview: Dict[str, Any],
+    ) -> None:
+        unresolved = self._unresolved_episode_paths(files, plan, preview)
+        if not unresolved:
+            return
+        sample = "、".join(unresolved[:3])
+        suffix = "" if len(unresolved) <= 3 else f" 等 {len(unresolved)} 个文件"
+        raise AppError(
+            "Episode Naming Requires Attention",
+            f"电视剧/动漫文件无法识别集号，已停止入库：{sample}{suffix}",
+            "episode-number-unresolved",
+            409,
+        )
+
+    @staticmethod
+    def _canonicalize_unstarted_plan(plan: NamingPlan) -> NamingPlan:
+        """Drop release qualifiers from legacy episodic plans before any rename."""
+        if not policy_for(plan.media_type).episodic:
+            return plan
+        media_name = safe_name(canonical_media_name(plan.media_name))
+        if media_name == plan.media_name:
+            return plan
+        root_name = safe_name(f"{media_name} ({plan.year})" if plan.year else media_name)
+        return replace(plan, media_name=media_name, root_name=root_name)
 
     def discard_record(self, job_id: str) -> Dict[str, Any]:
         """Abandon AVS post-processing without touching downloader tasks or files."""
@@ -825,6 +898,11 @@ class NamingService:
                 },
             )
         plan = NamingPlan(**job["plan"])
+        if not self._rename_started(job):
+            normalized_plan = self._canonicalize_unstarted_plan(plan)
+            if normalized_plan != plan:
+                plan = normalized_plan
+                job = self.repository.update(job["id"], {"plan": plan.to_dict(), "result": None})
         # The preview is an operation journal: do not re-plan on a retry,
         # because changes in qB metadata would otherwise rename a different
         # set of paths mid-job.
@@ -832,6 +910,7 @@ class NamingService:
         if not job.get("result"):
             job = self.repository.update(job["id"], {"result": preview, "rename_checkpoint": job.get("rename_checkpoint") or {"files": 0, "folders": 0, "torrent": False}})
         try:
+            self._require_safe_episode_plan(selected, plan, preview)
             verifier = getattr(self.hardlinker, "verify_named_sources", None)
             already_named = False
             if callable(verifier):
@@ -934,11 +1013,14 @@ class NamingService:
                         "last_check": now,
                     },
                 )
+            plan = NamingPlan(**job["plan"])
+            naming_result = job.get("result") or {}
+            self._require_safe_episode_plan(files, plan, naming_result)
             result = self.hardlinker.link_completed(
                 torrent,
                 files,
-                NamingPlan(**job["plan"]),
-                job.get("result") or {},
+                plan,
+                naming_result,
             )
             hardlink_status = str(result.get("status") or "done") if isinstance(result, dict) else "done"
             if hardlink_status not in {"done", "partial", "conflict"}:

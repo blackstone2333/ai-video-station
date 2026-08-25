@@ -90,7 +90,7 @@ def parse_size(text: str) -> Tuple[Optional[str], int]:
     return label, size_bytes
 
 
-def detect_episode(text: str) -> Optional[str]:
+def detect_episode(text: str, *, allow_numeric_prefix: bool = False) -> Optional[str]:
     normalized = unquote(text)
     season_episode = EPISODE_PATTERNS[0].search(normalized)
     if season_episode:
@@ -113,6 +113,14 @@ def detect_episode(text: str) -> Optional[str]:
     bare = re.fullmatch(r"(?i)\s*(?:EP?|第)?0*(\d{1,3})(?:集)?\s*", stem)
     if bare:
         return f"E{int(bare.group(1)):02d}"
+    # 6V episode packs commonly use names such as
+    # ``01.2160p.HD国语中字[site].mkv``.  The leading numeric token is the
+    # episode number; require a separator after it so resolutions such as
+    # ``720p`` are not mistaken for episode 720.
+    if allow_numeric_prefix:
+        numeric_prefix = re.match(r"(?i)^\s*(?:EP?|第)?0*(\d{1,3})(?=[ ._\-])", stem)
+        if numeric_prefix:
+            return f"E{int(numeric_prefix.group(1)):02d}"
     return None
 
 
@@ -180,6 +188,12 @@ def canonical_media_name(value: str) -> str:
         name = quoted.group(1).strip()
     name = re.sub(
         r"[\[【(（]\s*(?:第\s*[0-9零〇一二两三四五六七八九十]+\s*季|Season\s*\d+|S\d{1,2})\s*[\]】)）]",
+        "",
+        name,
+        flags=re.IGNORECASE,
+    )
+    name = re.sub(
+        r"[\[【(（]\s*(?:全集|全\s*\d{1,3}\s*集|全季|完结(?:篇)?)\s*[\]】)）]",
         "",
         name,
         flags=re.IGNORECASE,

@@ -98,6 +98,50 @@ def test_tv_plan_turns_bare_numbers_into_emby_episode_names():
     assert preview["folder_operations"] == [{"kind": "folder", "old_path": "第2季", "new_path": "Season 02"}]
 
 
+def test_tv_plan_normalizes_real_sixv_numeric_episode_pack():
+    release = build_release(
+        "重器[全集]",
+        "重器.2160p",
+        "https://sixv.test/dlz/1.html",
+        "magnet:?xt=urn:btih:" + "e" * 40 + "&dn=重器.2160p",
+        "tv",
+        2026,
+    )
+    plan = replace(EmbyNamingPlanner.from_release(release), video_format="2160p.HD")
+    preview = EmbyNamingPlanner().plan_files(
+        [
+            {
+                "name": "重器.2160p/01.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+                "size": 100,
+            },
+            {
+                "name": "重器.2160p/02.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+                "size": 100,
+            },
+        ],
+        plan,
+    )
+
+    assert plan.media_name == "重器"
+    assert plan.root_name == "重器 (2026)"
+    assert preview["operations"] == [
+        {
+            "kind": "file",
+            "old_path": "重器.2160p/01.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+            "new_path": "重器.2160p/重器 - S01E01 - 2160p.HD.mkv",
+        },
+        {
+            "kind": "file",
+            "old_path": "重器.2160p/02.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+            "new_path": "重器.2160p/重器 - S01E02 - 2160p.HD.mkv",
+        },
+    ]
+    assert preview["folder_operations"] == [
+        {"kind": "folder", "old_path": "重器.2160p", "new_path": "Season 01"}
+    ]
+    assert preview["unresolved_episodes"] == []
+
+
 def test_anime_uses_tv_style_emby_naming():
     plan = EmbyNamingPlanner.from_release(anime_release())
     preview = EmbyNamingPlanner().plan_files([{"name": "01.mkv", "size": 100}], plan)
@@ -581,6 +625,69 @@ def test_naming_waits_for_complete_download_then_hardlinks(tmp_path):
     assert updated["hardlink_status"] == "done"
     assert len(hardlinker.calls) == 1
     assert hardlinker.calls[0][3] == updated["result"]
+
+
+def test_unresolved_episode_never_reaches_hardlink(tmp_path):
+    settings = naming_settings(tmp_path, naming_max_attempts=1)
+    qb = FakeQB(
+        files=[
+            {
+                "name": "重器.2160p/幕后花絮.2160p.HD.mkv",
+                "size": 100,
+                "progress": 1.0,
+                "priority": 1,
+            }
+        ]
+    )
+    hardlinker = FakeHardlinker()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb, hardlinker=hardlinker)
+    result = service.add_download(tv_release(), settings.qb_tv_category)
+
+    service.check(result["naming_job_id"])
+    job = repository.get(result["naming_job_id"])
+
+    assert job["status"] == "failed"
+    assert job["hardlink_status"] is None
+    assert job["result"]["unresolved_episodes"] == ["重器.2160p/幕后花絮.2160p.HD.mkv"]
+    assert "无法识别集号" in job["last_error"]
+    assert hardlinker.calls == []
+
+
+def test_pending_legacy_bundle_plan_is_canonicalized_before_rename(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB(
+        files=[
+            {
+                "name": "重器.2160p/27.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+                "size": 100,
+                "progress": 1.0,
+                "priority": 1,
+            }
+        ]
+    )
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    plan = NamingPlan(
+        media_type="tv",
+        media_name="重器[全集]",
+        root_name="重器[全集] (2026)",
+        year=2026,
+        season=None,
+        episode=None,
+        link_name="重器.2160p",
+        video_format="2160p.HD",
+    )
+    job = repository.upsert(HASH, plan, settings.qb_tv_category)
+    service = NamingService(settings, repository, qb)
+
+    service.check(job["id"])
+    updated = repository.get(job["id"])
+
+    assert updated["status"] == "completed"
+    assert updated["plan"]["media_name"] == "重器"
+    assert updated["plan"]["root_name"] == "重器 (2026)"
+    assert ("rename_file", "重器.2160p/27.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv", "重器.2160p/重器 - S01E27 - 2160p.HD.mkv") in qb.calls
+    assert ("rename_folder", "重器.2160p", "Season 01") in qb.calls
 
 
 def test_custom_download_uses_final_category_and_hardlinks_without_rename(tmp_path):

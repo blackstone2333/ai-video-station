@@ -68,6 +68,30 @@ def test_episode_file_selection_downloads_only_missing_episodes_and_their_subtit
     assert result["matched_episodes"] == ["S01E02"]
 
 
+def test_episode_file_selection_understands_sixv_numeric_prefix_names():
+    files = [
+        {
+            "index": 0,
+            "name": "重器.2160p/26.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+            "size": 1000,
+            "priority": 1,
+        },
+        {
+            "index": 1,
+            "name": "重器.2160p/27.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+            "size": 1000,
+            "priority": 1,
+        },
+    ]
+
+    result = select_episode_files(files, ["S01E27"])
+
+    assert result["safe"] is True
+    assert result["selected_indices"] == [1]
+    assert result["skipped_indices"] == [0]
+    assert result["matched_episodes"] == ["S01E27"]
+
+
 def test_episode_file_selection_refuses_an_indivisible_bundle():
     result = select_episode_files(
         [{"index": 0, "name": "Show.S01.Complete.mkv", "size": 33000, "priority": 1}],
