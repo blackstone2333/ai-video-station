@@ -4,6 +4,13 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v2.1.2 更新说明
+
+- 多文件 torrent 改为逐文件后处理：单集下载完成后立即执行规范命名和硬链接，不再等待整包全部完成。
+- 增量任务按 qB 文件索引保存检查点，定时检查和失败重试不会重复改名或重复创建硬链接。
+- Season 文件夹、torrent 显示名和最终分类仍在全部选中文件完成后统一收尾，避免移动仍在写入的目录。
+- 已开始增量处理的任务会锁定命名方案，防止中途修改标题导致同一资源分散到不同媒体目录。
+
 ## v2.1.1 更新说明
 
 - 修复国产电视剧全集包中 `01.mkv`、`01.2160p.HD.mkv` 等纯数字前缀文件无法识别集号的问题，同时避免把 `720p`、`1080p` 等分辨率误当成集号。
@@ -67,7 +74,7 @@ v2.1 不执行洗版清理，也不会删除旧下载、下载器任务或媒体
 ## v1.5.3 更新说明
 
 - 下载接收与后处理解耦：qB 接收任务后，AVS 立即登记订阅链接和集数；规范命名改由后台任务执行，后续暂时性错误不会让订阅记录回退为“未下载”。
-- 规范命名只在 torrent 及选中文件全部下载完成后执行，并在标记完成前验证规范路径确实存在，避免下载过程中改名造成 qB 元数据与实体文件分离。
+- 规范命名和硬链接按文件进度增量执行：每个选中文件下载完成后立即处理，未完成文件继续等待；整包完成后再统一整理 Season 文件夹、恢复最终分类并校验全部规范路径。
 - 电影、电视剧、动漫和自定义资源都会在所选下载目录下创建独立的规范资源根目录，电视剧/动漫继续保留 `Season XX` 层级。
 - AVS 复用已存在的 qB 分类，不再自动改写分类保存路径；只有分类不存在时才创建，并始终用本次任务的显式下载目录关闭自动路径管理。
 - qB 返回模糊结果时，AVS 会按 torrent hash 只读确认任务是否已经登记，避免“实际已添加、订阅却记录失败”。
@@ -490,13 +497,13 @@ docker compose up -d --build --remove-orphans
 
 ## CI、发布与回滚
 
-每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.1.1` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
+每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.1.2` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
 
 部署已发布镜像时，请固定一个版本，不要使用浮动标签：
 
 ```bash
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.1 docker compose pull
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.1 docker compose up -d --no-build --remove-orphans
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.2 docker compose pull
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.2 docker compose up -d --no-build --remove-orphans
 ```
 
 回滚就是在完成并校验备份后，将上述版本替换为上一个已验证的 `v*` 标签并重新执行两条命令。若升级涉及运行时数据变化，先停止服务并按上一节恢复对应备份，再启动旧版本。

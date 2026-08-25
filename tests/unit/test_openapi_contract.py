@@ -13,7 +13,7 @@ def test_openapi_covers_actual_agent_routes_and_scopes():
     document = yaml.safe_load(DOCUMENT.read_text(encoding="utf-8"))
 
     assert document["openapi"] == "3.1.0"
-    assert document["info"]["version"] == "2.1.1"
+    assert document["info"]["version"] == "2.1.2"
     expected = {
         "/api/search": {"post"},
         "/api/download": {"post"},
