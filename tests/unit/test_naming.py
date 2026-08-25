@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from ainas.config import Settings
-from ainas.errors import UpstreamError
+from ainas.errors import ConflictError, UpstreamError
 from ainas.medialib import MediaLibraryService
 from ainas.naming import EmbyNamingPlanner, NamingJobRepository, NamingPlan, NamingService, safe_name
 from ainas.path_rules import PathRuleRepository
@@ -168,6 +168,64 @@ def test_repository_is_persistent_and_idempotent(tmp_path):
         repository.get("missing-job")
 
 
+def test_discard_record_abandons_safe_jobs_without_touching_downloader(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb)
+    plan = EmbyNamingPlanner.from_release(movie_release())
+
+    pending = repository.upsert("1" * 40, plan, settings.qb_movie_category)
+    assert service.discard_record(pending["id"])["id"] == pending["id"]
+    assert qb.calls == []
+
+    waiting = repository.upsert("2" * 40, plan, settings.qb_movie_category)
+    repository.update(
+        waiting["id"],
+        {
+            "status": "completed",
+            "hardlink_status": "waiting_download",
+            "rename_checkpoint": {"files": 1, "folders": 0, "torrent": True},
+        },
+    )
+    assert service.discard_record(waiting["id"])["id"] == waiting["id"]
+    assert qb.calls == []
+
+
+def test_discard_record_rejects_active_job_after_rename_started(tmp_path):
+    settings = naming_settings(tmp_path)
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, FakeQB())
+    item = repository.upsert("3" * 40, EmbyNamingPlanner.from_release(movie_release()), settings.qb_movie_category)
+    repository.update(
+        item["id"],
+        {"status": "retrying", "rename_checkpoint": {"files": 1, "folders": 0, "torrent": False}},
+    )
+
+    with pytest.raises(ConflictError, match="rename operations"):
+        service.discard_record(item["id"])
+
+
+def test_missing_downloader_task_eventually_fails_waiting_hardlink(tmp_path):
+    settings = naming_settings(tmp_path, naming_max_attempts=2)
+    qb = FakeQB(torrent=False)
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb, hardlinker=FakeHardlinker())
+    item = repository.upsert("4" * 40, EmbyNamingPlanner.from_release(movie_release()), settings.qb_movie_category)
+    repository.update(item["id"], {"status": "completed", "hardlink_status": "waiting_download"})
+
+    service.check(item["id"])
+    first = repository.get(item["id"])
+    assert first["hardlink_status"] == "waiting_download"
+    assert first["hardlink_attempts"] == 1
+    assert first["hardlink_error"] == "torrent is absent from downloader"
+
+    service.check(item["id"])
+    failed = repository.get(item["id"])
+    assert failed["hardlink_status"] == "failed"
+    assert failed["hardlink_attempts"] == 2
+
+
 class FakeQB:
     def __init__(self, files=None, torrent=True, fail_rename=False):
         self.file_values = files if files is not None else [
@@ -178,13 +236,13 @@ class FakeQB:
         self.calls = []
         self.save_paths = []
 
-    def add_download(self, link, category, rename=None, save_path=None):
-        self.calls.append(("add", category, rename))
+    def add_download(self, link, category, rename=None, save_path=None, paused=False):
+        self.calls.append(("add", category, rename, paused) if paused else ("add", category, rename))
         self.save_paths.append(save_path)
         return {"qb_task_id": HASH, "category": category}
 
-    def add_torrent_file(self, content, filename, category, rename=None, save_path=None):
-        self.calls.append(("add_torrent", category, rename))
+    def add_torrent_file(self, content, filename, category, rename=None, save_path=None, paused=False):
+        self.calls.append(("add_torrent", category, rename, paused) if paused else ("add_torrent", category, rename))
         self.save_paths.append(save_path)
         return {"qb_task_id": HASH, "category": category, "torrent_name": filename}
 
@@ -212,6 +270,9 @@ class FakeQB:
 
     def resume(self, hash_value):
         self.calls.append(("resume", hash_value))
+
+    def set_file_priorities(self, hash_value, selected_indices, skipped_indices):
+        self.calls.append(("priorities", list(selected_indices), list(skipped_indices)))
 
 
 class FakeHardlinker:
@@ -309,6 +370,63 @@ def test_naming_service_stages_renames_and_releases_torrent(tmp_path):
     assert report["completed"] == 1
     assert ("category", "sixv-movie") in qb.calls
     assert any(call[0] == "rename_file" for call in qb.calls)
+
+
+def test_bundle_is_paused_then_only_missing_episode_files_are_selected(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB(
+        files=[
+            {"index": 0, "name": "Season 02/01.mkv", "size": 100, "progress": 0, "priority": 1},
+            {"index": 1, "name": "Season 02/02.mkv", "size": 100, "progress": 0, "priority": 1},
+            {"index": 2, "name": "Season 02/03.mkv", "size": 100, "progress": 0, "priority": 1},
+        ]
+    )
+    qb.torrent_value = {"hash": HASH, "progress": 0}
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb)
+
+    result = service.add_download(tv_release(), settings.qb_tv_category, wanted_episodes=["S02E02"])
+    first = service.check(result["naming_job_id"])
+    job = repository.get(result["naming_job_id"])
+
+    assert ("add", settings.qb_naming_category, "漫长的季节 (2026)", True) in qb.calls
+    assert ("priorities", [1], [0, 2]) in qb.calls
+    assert ("resume", HASH) in qb.calls
+    assert first["completed"] == 0
+    assert job["status"] == "waiting_download"
+    assert job["selection"]["matched_episodes"] == ["S02E02"]
+
+
+def test_bundle_is_not_left_paused_when_no_avs_postprocessing_job_exists(tmp_path):
+    settings = naming_settings(
+        tmp_path,
+        naming_enabled=False,
+        medialib_hardlink_enabled=False,
+    )
+    qb = FakeQB()
+    service = NamingService(settings, NamingJobRepository(settings.naming_jobs_path), qb)
+
+    result = service.add_download(tv_release(), settings.qb_tv_category, wanted_episodes=["S02E02"])
+
+    assert result["naming_job_id"] is None
+    assert ("add", settings.qb_tv_category, None) in qb.calls
+    assert not any(len(call) == 4 and call[0] == "add" and call[3] is True for call in qb.calls)
+
+
+def test_unseparable_bundle_stays_paused_for_confirmation(tmp_path):
+    settings = naming_settings(tmp_path)
+    qb = FakeQB(files=[{"index": 0, "name": "全集.mkv", "size": 100, "progress": 0, "priority": 1}])
+    qb.torrent_value = {"hash": HASH, "progress": 0}
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb)
+
+    result = service.add_download(tv_release(), settings.qb_tv_category, wanted_episodes=["S02E02"])
+    service.check(result["naming_job_id"])
+    job = repository.get(result["naming_job_id"])
+
+    assert job["status"] == "waiting_selection"
+    assert job["selection"]["reason"] == "episode-files-not-separable"
+    assert not any(call[0] in {"priorities", "resume"} for call in qb.calls)
 
 
 def test_naming_uses_downloader_container_path_from_rule(tmp_path):

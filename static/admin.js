@@ -10,6 +10,7 @@ const state = {
   watchlist: [], downloads: [], hiddenDownloads: [], naming: [], hardlinks: [], sites: [], pathRules: [], agents: [], logs: [],
   paths: null, downloaderSettings: null, systemSettings: null, qb: null, loading: false,
   pathsDirty: false, downloaderDirty: false, systemDirty: false, downloadsLoading: false, downloadSyncedAt: null,
+  searchResults: [], namingPage: 1, hardlinksPage: 1, namingMeta: {}, hardlinksMeta: {}, modalReturnFocus: null,
   theme: {...DEFAULT_THEME, ...storedTheme()},
 };
 const ACTIVE_DOWNLOAD_STATES = new Set(["downloading","stalledDL","metaDL","queuedDL","forcedDL","checkingDL"]);
@@ -27,7 +28,13 @@ async function api(path, options = {}) {
   if (response.status === 401) throw new AuthError("API Key 无效或尚未输入");
   if (response.status === 204) return null;
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.detail || `请求失败 (${response.status})`);
+  if (!response.ok) {
+    const detail = body.detail || body.message || `请求失败 (${response.status})`;
+    const errors = body.errors || body.problem?.errors || [];
+    const error = new Error(`${Array.isArray(errors) && errors.length ? `${detail}：${errors.map((item) => item.message || item.msg || item).join("；")}` : detail}${(body.request_id || body.problem?.request_id) ? `（请求 ${body.request_id || body.problem?.request_id}）` : ""}`);
+    error.errors = errors; error.requestId = body.request_id || body.problem?.request_id; error.problem = body.problem || body;
+    throw error;
+  }
   return body;
 }
 
@@ -51,20 +58,20 @@ function stateLabel(value) {
     downloading:"下载中", stalledDL:"等待数据", metaDL:"获取元数据", queuedDL:"排队中", forcedDL:"强制下载", checkingDL:"校验中", pausedDL:"已暂停",
     uploading:"做种中", stalledUP:"做种等待", queuedUP:"做种排队", forcedUP:"强制做种", checkingUP:"校验完成资源", pausedUP:"已完成", completed:"已完成", pending:"待处理",
     missingFiles:"文件缺失", error:"下载器错误",
-    waiting_metadata:"等待元数据", retrying:"重试中", failed:"失败", found:"已找到", monitoring:"追更中", expired:"超期监听",
-    waiting_download:"等待下载完成", done:"硬链接完成", disabled:"硬链接已关闭", site_disabled:"已停用",
+    submitting:"提交中", awaiting_binding:"等待绑定下载器", waiting_metadata:"等待元数据", retrying:"重试中", failed:"失败", found:"已找到", monitoring:"追更中", expired:"超期监听",
+    waiting_download:"等待下载完成", waiting_selection:"全集待确认", missing_in_downloader:"下载器中缺失", done:"硬链接完成", partial:"部分入库", conflict:"入库冲突", disabled:"硬链接已关闭", site_disabled:"已停用",
   };
   return labels[value] || value || "未知";
 }
 
 function chip(value) {
   const ok = ["completed","found","monitoring","downloading","uploading","pausedUP","done"].includes(value);
-  const error = value === "failed";
+  const error = ["failed", "missing_in_downloader", "partial", "conflict"].includes(value);
   return `<span class="status-chip ${error ? "error" : ok ? "ok" : "wait"}">${escapeHTML(stateLabel(value))}</span>`;
 }
 
 function namingStatus(item) {
-  if (["waiting_download", "retrying", "failed"].includes(item.hardlink_status)) return item.hardlink_status;
+  if (["waiting_download", "retrying", "failed", "partial", "conflict"].includes(item.hardlink_status)) return item.hardlink_status;
   return item.hardlink_status === "done" ? "done" : item.status;
 }
 
@@ -72,14 +79,25 @@ function mediaTypeLabel(value) {
   return ({movie:"电影", tv:"电视剧", anime:"动漫", custom:"自定义", auto:"自动"})[value] || value || "未知";
 }
 
+function viewingModeLabel(value) {
+  return ({daily:"日常观看", collection:"收藏", compact:"省空间"})[value] || "日常观看";
+}
+
 let toastTimer;
-function toast(message, error = false) {
+function actionSummary(message, error = false, requestId = "") {
+  const element = $("#action-summary");
+  element.textContent = `${error ? "操作未完成：" : "操作结果："}${message}${requestId ? `（请求 ${requestId}）` : ""}`;
+  element.className = `action-summary show${error ? " error" : ""}`;
+}
+function toast(message, error = false, requestId = "") {
   const element = $("#toast");
   element.textContent = message;
   element.className = `toast show${error ? " error" : ""}`;
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => { element.className = "toast"; }, 3200);
+  actionSummary(message, error, requestId);
 }
+function showError(error) { toast(error?.message || "请求失败", true, error?.requestId || ""); }
 
 function showAuth(message = "") {
   $("#auth-modal").classList.remove("hidden");
@@ -87,11 +105,11 @@ function showAuth(message = "") {
   setTimeout(() => $("#api-key").focus(), 50);
 }
 
-function openModal(selector) { $(selector).classList.remove("hidden"); }
-function closeModal(element) { element.closest(".modal")?.classList.add("hidden"); }
+function openModal(selector, trigger = document.activeElement) { state.modalReturnFocus = trigger; const modal = $(selector); modal.classList.remove("hidden"); setTimeout(() => modal.querySelector("input,select,textarea,button")?.focus(), 0); }
+function closeModal(element) { const modal = element.closest(".modal"); if (!modal) return; modal.classList.add("hidden"); state.modalReturnFocus?.focus?.(); }
 
 function setTab(name) {
-  $$(".tab").forEach((button) => button.classList.toggle("active", button.dataset.tab === name));
+  $$(".tab").forEach((button) => { const active = button.dataset.tab === name; button.classList.toggle("active", active); button.setAttribute("aria-selected", String(active)); button.tabIndex = active ? 0 : -1; });
   $$(".panel").forEach((panel) => panel.classList.toggle("active", panel.dataset.panel === name));
   history.replaceState(null, "", `#${name}`);
   window.scrollTo({top: $(".tabs").offsetTop - 90, behavior: "smooth"});
@@ -205,10 +223,10 @@ function renderWatchlist() {
   const values = state.watchlist.filter((item) => !query || item.keyword.toLowerCase().includes(query));
   $("#watchlist-body").innerHTML = values.length ? values.map((item) => `<tr>
     <td><div class="cell-main">${escapeHTML(item.keyword)}<small>${escapeHTML(item.id.slice(0,8))}</small></div></td>
-    <td>${escapeHTML(mediaTypeLabel(item.type))}</td><td>${chip(item.status)}</td>
+    <td>${escapeHTML(mediaTypeLabel(item.type))}</td><td><select class="filter-input compact-select" data-watch-mode="${escapeHTML(item.id)}" aria-label="${escapeHTML(item.keyword)}的观看模式"><option value="daily" ${item.viewing_mode === "daily" || !item.viewing_mode ? "selected" : ""}>日常观看</option><option value="collection" ${item.viewing_mode === "collection" ? "selected" : ""}>收藏</option><option value="compact" ${item.viewing_mode === "compact" ? "selected" : ""}>省空间</option></select></td><td>${chip(item.status)}</td>
     <td>${item.downloaded_episodes?.length || item.downloaded_links?.length || 0}</td><td>${formatDate(item.last_check)}</td>
     <td><button class="danger-button" data-delete-watch="${escapeHTML(item.id)}" type="button">移除</button></td>
-  </tr>`).join("") : '<tr><td colspan="6"><div class="empty">没有符合条件的监听任务</div></td></tr>';
+  </tr>`).join("") : '<tr><td colspan="7"><div class="empty">没有符合条件的监听任务</div></td></tr>';
 }
 
 async function copyText(value) {
@@ -229,10 +247,16 @@ function renderHardlinks() {
     <td><button class="target-button" data-copy-target="${escapeHTML(item.target || "")}" title="点击复制目录：${escapeHTML(item.target || "")}" type="button">${escapeHTML(item.target || "—")}</button></td>
     <td>${Number(item.linked || 0)} 链接 / ${Number(item.skipped || 0)} 跳过</td><td>${chip(item.status)}</td>
     <td class="error-text" title="${escapeHTML(item.error || "")}">${escapeHTML(item.error || "—")}</td><td>${formatDate(item.completed_at)}</td>
-    <td>${jobActionMarkup(item.id, ["failed","retrying","waiting_download"].includes(item.status), item.status === "failed")}</td>
+    <td>${jobActionMarkup(
+      item.id,
+      ["failed","retrying","waiting_download","partial","conflict"].includes(item.status),
+      ["failed","partial","conflict"].includes(item.status),
+      false,
+    )}</td>
   </tr>`).join("") : '<tr><td colspan="8"><div class="empty">暂无符合条件的硬链接任务</div></td></tr>';
   const recent = state.hardlinks.slice(0,4);
   $("#overview-hardlinks").innerHTML = recent.length ? recent.map((item) => `<button class="activity hardlink-activity" data-go="hardlinks" type="button">${chip(item.status)}<strong title="${escapeHTML(item.name)}">${escapeHTML(item.name || "未命名")}</strong><small>${Number(item.linked || 0)} 个文件 · ${formatDate(item.completed_at)}</small></button>`).join("") : '<div class="empty">尚无硬链接记录</div>';
+  renderPagination("hardlinks", state.hardlinksMeta);
 }
 
 function renderSites() {
@@ -243,6 +267,10 @@ function renderSites() {
     <td>${chip(item.enabled ? "completed" : "site_disabled")}</td>
     <td><div class="inline-actions"><button class="quiet-button" data-toggle-site="${escapeHTML(item.id)}" data-enabled="${item.enabled}" type="button">${item.enabled ? "停用" : "启用"}</button><button class="danger-button" data-delete-site="${escapeHTML(item.id)}" type="button">删除</button></div></td>
   </tr>`).join("") : '<tr><td colspan="5"><div class="empty">尚未配置站点</div></td></tr>';
+  const selector = $("#provider-preview-site");
+  const selected = selector.value;
+  selector.innerHTML = state.sites.length ? state.sites.map((item) => `<option value="${escapeHTML(item.id)}" ${item.id === selected ? "selected" : ""}>${escapeHTML(item.name)}${item.enabled ? "" : "（已停用）"}</option>`).join("") : '<option value="">尚未配置站点</option>';
+  $("#provider-preview-submit").disabled = state.sites.length === 0;
 }
 
 function renderNaming() {
@@ -253,18 +281,75 @@ function renderNaming() {
     <td title="${escapeHTML(item.plan?.link_name || "")}">${escapeHTML(item.plan?.link_name || "—")}</td><td>${chip(namingStatus(item))}</td>
     <td>${item.result?.file_count ?? item.result?.video_count ?? "—"}</td><td>${formatDate(item.updated_at)}</td>
     <td class="error-text" title="${escapeHTML(item.hardlink_error || item.last_error || "")}">${escapeHTML(item.hardlink_error || item.last_error || "—")}</td>
-    <td>${jobActionMarkup(
-      item.id,
-      ["pending","waiting_metadata","waiting_download","retrying","failed"].includes(item.status) || ["waiting_download","retrying","failed"].includes(item.hardlink_status),
-      item.status === "failed" || item.hardlink_status === "failed",
-    )}</td>
+    <td>${(() => {
+      const retryable = ["pending","submitting","awaiting_binding","waiting_metadata","waiting_selection","waiting_download","retrying","failed","missing_in_downloader"].includes(item.status)
+        || ["waiting_download","retrying","failed","partial","conflict"].includes(item.hardlink_status);
+      const deletable = canDiscardJob(item);
+      const correctable = ["failed","missing_in_downloader"].includes(item.status) || item.hardlink_status === "failed";
+      return jobActionMarkup(item.id, retryable, deletable, correctable);
+    })()}</td>
   </tr>`).join("") : '<tr><td colspan="7"><div class="empty">暂无命名任务</div></td></tr>';
   const recent = state.naming.slice(0,4);
   $("#overview-naming").innerHTML = recent.length ? recent.map((item) => `<button class="activity hardlink-activity" data-go="naming" type="button">${chip(namingStatus(item))}<strong title="${escapeHTML(item.plan?.root_name)}">${escapeHTML(item.plan?.root_name || "未命名")}</strong><small>${formatDate(item.updated_at)}</small></button>`).join("") : '<div class="empty">尚无规范命名记录</div>';
+  renderPagination("naming", state.namingMeta);
 }
 
-function jobActionMarkup(id, retryable, deletable) {
-  return `<div class="job-actions"><button class="quiet-button" data-job-detail="${escapeHTML(id)}" type="button">详情</button>${retryable ? `<button class="quiet-button" data-retry-job="${escapeHTML(id)}" type="button">重试</button>` : ""}${deletable ? `<button class="danger-button" data-delete-job="${escapeHTML(id)}" type="button">删除记录</button>` : ""}</div>`;
+function renderPagination(kind, meta = {}) {
+  const total = Number(meta.total ?? meta.total_count ?? meta.count ?? (kind === "naming" ? state.naming.length : state.hardlinks.length));
+  const page = Number(meta.page ?? state[`${kind}Page`] ?? 1); const perPage = Number(meta.per_page ?? meta.page_size ?? 50);
+  const pages = Math.max(1, Math.ceil(total / perPage)); const root = $(`#${kind}-pagination`); if (!root) return;
+  root.innerHTML = `<span>共 ${total} 条 · 第 ${page}/${pages} 页</span><div><button class="quiet-button" data-page-kind="${kind}" data-page="${page - 1}" type="button" ${page <= 1 ? "disabled" : ""}>上一页</button><button class="quiet-button" data-page-kind="${kind}" data-page="${page + 1}" type="button" ${page >= pages ? "disabled" : ""}>下一页</button></div>`;
+}
+
+function renderSearchResults() {
+  const root = $("#search-results");
+  root.innerHTML = state.searchResults.length ? state.searchResults.map((item, index) => {
+    const provider = item.provider || item.source || item.site_name || "未知来源";
+    const watchlisted = Boolean(item.watchlist_exists);
+    const quality = [item.resolution, item.source, item.language, item.size].filter(Boolean).join(" · ");
+    return `<article class="search-result"><div><span class="count-chip">${escapeHTML(provider)}</span><h3>${escapeHTML(item.title || item.name || "未命名资源")}</h3><p>${escapeHTML(quality || item.description || item.subtitle || item.url || "")}</p></div><div class="search-actions"><select data-search-type="${index}" aria-label="媒体类型"><option value="auto">自动</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select><select data-search-rule="${index}" aria-label="目录映射"><option value="">自动路径</option>${pathRuleOptions()}</select><button class="quiet-button" data-search-download="${index}" type="button">下载</button><button class="primary-button" data-search-subscribe="${index}" type="button" ${watchlisted ? "disabled" : ""}>${watchlisted ? "已订阅" : "订阅"}</button></div></article>`;
+  }).join("") : '<div class="empty">没有找到资源。</div>';
+}
+
+function pathRuleOptions(selected = "") { return state.pathRules.filter((rule) => rule.enabled).map((rule) => `<option value="${escapeHTML(rule.id)}" ${rule.id === selected ? "selected" : ""}>${escapeHTML(`${mediaTypeLabel(rule.media_type)} · ${rule.name}`)}</option>`).join(""); }
+function fillPathRuleSelect(id, selected = "") { const select = $(id); select.innerHTML = `<option value="">自动选择路径规则</option>${pathRuleOptions(selected)}`; select.value = selected || ""; }
+async function actOnSearchResult(index, action, button) {
+  const item = state.searchResults[index]; if (!item) return;
+  const type = document.querySelector(`[data-search-type="${index}"]`)?.value || item.type || "auto";
+  const pathRuleId = document.querySelector(`[data-search-rule="${index}"]`)?.value || undefined;
+  button.disabled = true;
+  try {
+    const payload = action === "download"
+      ? {
+          result_id: item.id,
+          download_link: item.download_link,
+          title: item.title || item.media_name || "未命名资源",
+          type,
+          path_rule_id: pathRuleId,
+        }
+      : {
+          keyword: $("#search-keyword").value.trim() || item.media_name || item.title || item.name,
+          type,
+          path_rule_id: pathRuleId,
+          viewing_mode: $("#search-viewing-mode").value,
+        };
+    if (action === "download") await api("/api/download", {method:"POST", body:JSON.stringify(payload)});
+    else await api("/api/watchlist/add", {method:"POST", body:JSON.stringify(payload)});
+    if (action === "subscribe") item.watchlist_exists = true;
+    renderSearchResults(); toast(action === "download" ? "资源已加入下载队列" : "已加入订阅监听"); await loadAll(true);
+  } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
+}
+
+function jobActionMarkup(id, retryable, deletable, correctable = false) {
+  return `<div class="job-actions"><button class="quiet-button" data-job-detail="${escapeHTML(id)}" type="button">详情</button>${correctable ? `<button class="quiet-button" data-correct-job="${escapeHTML(id)}" type="button">修正预览</button><button class="quiet-button" data-relocate-job="${escapeHTML(id)}" type="button">安全迁移</button>` : ""}${retryable ? `<button class="quiet-button" data-retry-job="${escapeHTML(id)}" type="button">重试</button>` : ""}${deletable ? `<button class="danger-button" data-delete-job="${escapeHTML(id)}" type="button">放弃 AVS 记录</button>` : ""}</div>`;
+}
+
+function canDiscardJob(item) {
+  const checkpoint = item.rename_checkpoint || {};
+  const pristine = !Number(checkpoint.files || 0) && !Number(checkpoint.folders || 0) && !checkpoint.torrent;
+  const active = ["submitting","awaiting_binding","pending","waiting_metadata","waiting_selection","waiting_download","retrying"].includes(item.status);
+  const hardlink = item.status === "completed" && ["pending","waiting_download","retrying","failed","partial","conflict"].includes(item.hardlink_status);
+  return ["failed","missing_in_downloader"].includes(item.status) || (active && pristine) || hardlink;
 }
 
 function renderJobDetail(item) {
@@ -313,20 +398,20 @@ async function retryJob(jobId, button) {
 }
 
 async function deleteFailedJob(jobId, button) {
-  if (!confirm("仅删除这条 AVS 失败记录；下载器任务、下载文件和媒体库文件都会保留。确定删除吗？")) return;
+  if (!confirm("只放弃这条 AVS 命名/硬链接记录；即使下载器中仍有任务，qB/Transmission 任务、下载文件和媒体库文件也绝不会被删除。确定继续吗？")) return;
   button.disabled = true;
   try {
     await api(`/api/naming/jobs/${encodeURIComponent(jobId)}`, {method:"DELETE"});
     $("#job-detail-modal").classList.add("hidden");
-    toast("失败记录已删除，下载器和文件未受影响");
+    toast("AVS 记录已放弃，下载器和文件未受影响");
     await loadAll(true);
   } catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 }
 
 function renderAutomation() {
-  const waiting = state.naming.filter((item) => ["pending","waiting_metadata","retrying"].includes(item.status) || ["waiting_download","retrying"].includes(item.hardlink_status)).length;
-  const failed = state.naming.filter((item) => item.status === "failed" || item.hardlink_status === "failed").length;
+  const waiting = state.naming.filter((item) => ["pending","submitting","awaiting_binding","waiting_metadata","waiting_selection","waiting_download","retrying"].includes(item.status) || ["waiting_download","retrying"].includes(item.hardlink_status)).length;
+  const failed = state.naming.filter((item) => ["failed","missing_in_downloader"].includes(item.status) || ["failed","missing_in_downloader","partial","conflict"].includes(item.hardlink_status)).length;
   const online = state.qb?.connected;
   const downloader = state.qb?.client === "transmission" ? "Transmission" : "qBittorrent";
   const hours = state.systemSettings?.watchlist_check_hours || 12;
@@ -347,7 +432,7 @@ function renderPathRules() {
     const body = rules.length ? rules.map((item) => `<article class="rule-item ${item.enabled ? "" : "off"}">
       <div class="rule-item-head"><h4>${escapeHTML(item.name)}</h4><div class="rule-badges">${item.default_download ? '<span class="count-chip">默认下载</span>' : ""}${chip(item.enabled ? "completed" : "site_disabled")}</div></div>
       <div class="rule-path"><span title="NAS：${escapeHTML(item.source_path)}">${escapeHTML(item.source_path)}</span><i>→</i><span title="下载器：${escapeHTML(item.downloader_path)}">${escapeHTML(item.downloader_path || item.source_path)}</span><i>→</i><span title="媒体库：${escapeHTML(item.target_path)}">${escapeHTML(item.target_path)}</span></div>
-      <div class="rule-actions"><span class="count-chip">${item.rename_enabled ? "规范命名" : "保留原名"}</span><button class="quiet-button" data-edit-rule="${item.id}" type="button">编辑</button><button class="danger-button" data-delete-rule="${item.id}" type="button">删除</button></div>
+      <div class="rule-preflight" data-rule-preflight="${escapeHTML(item.id)}">预检未运行（只读，不会修改路径）</div><div class="rule-actions"><span class="count-chip">${item.rename_enabled ? "规范命名" : "保留原名"}</span><button class="quiet-button" data-check-rule="${escapeHTML(item.id)}" type="button">预检</button><button class="quiet-button" data-edit-rule="${escapeHTML(item.id)}" type="button">编辑</button><button class="danger-button" data-delete-rule="${escapeHTML(item.id)}" type="button">删除</button></div>
     </article>`).join("") : '<div class="empty">这个分类还没有目录映射</div>';
     return `<section class="rule-group"><div class="rule-group-head"><div><p class="eyebrow">${code}</p><h3>${label}</h3></div><small>${rules.length} 个源目录</small></div><div class="rule-grid">${body}</div></section>`;
   }).join("");
@@ -361,6 +446,8 @@ function renderPaths() {
     $("#path-hardlink-enabled").checked = Boolean(state.paths.medialib_hardlink_enabled);
   }
   renderPathRules();
+  fillPathRuleSelect("#manual-path-rule", $("#manual-path-rule").value);
+  fillPathRuleSelect("#watchlist-path-rule", $("#watchlist-path-rule").value);
 }
 
 function renderSystemSettings() {
@@ -383,7 +470,7 @@ function renderAgents() {
   button.classList.toggle("online", active.length > 0);
   button.querySelector("span").textContent = active.length ? `${active.length} 个 Agent 已授权` : "连接 Agent";
   $("#agent-count").textContent = `${state.agents.length} 个`;
-  $("#agent-list").innerHTML = state.agents.length ? state.agents.map((item) => `<div class="agent-item ${item.online ? "online" : ""}"><i></i><div><strong>${escapeHTML(item.name)}</strong><small>${item.revoked ? "已撤销" : item.last_seen ? `最近使用 · ${formatDate(item.last_seen)}` : `已授权 · ${formatDate(item.created_at)}`}</small></div>${item.revoked ? "" : `<button class="danger-button" data-revoke-agent="${item.id}" type="button">撤销</button>`}</div>`).join("") : '<div class="empty">尚未授权 Agent</div>';
+  $("#agent-list").innerHTML = state.agents.length ? state.agents.map((item) => { const granted = (item.scopes || []).join("、") || "未报告"; const reported = (item.capabilities || item.reported_capabilities || []).join("、") || "尚未报告"; return `<div class="agent-item ${item.online ? "online" : ""}"><i></i><div><strong>${escapeHTML(item.name)}</strong><small>${item.revoked ? "已撤销" : item.last_seen ? `最近使用 · ${formatDate(item.last_seen)}` : `已授权 · ${formatDate(item.created_at)}`} · 授予：${escapeHTML(granted)} · 报告能力：${escapeHTML(reported)}</small></div>${item.revoked ? "" : `<div class="agent-actions"><button class="quiet-button" data-edit-agent-scopes="${escapeHTML(item.id)}" type="button">编辑权限</button><button class="danger-button" data-revoke-agent="${escapeHTML(item.id)}" type="button">撤销</button></div>`}</div>`; }).join("") : '<div class="empty">尚未授权 Agent</div>';
 }
 
 function renderLogs() {
@@ -415,8 +502,8 @@ async function loadAll(silent = false) {
   state.loading = true; $("#refresh-all").classList.add("loading");
   try {
     const paths = [
-      "/api/downloader/status", "/api/downloader/tasks", "/api/watchlist", "/api/naming/jobs?per_page=100",
-      "/api/hardlinks?status=all&per_page=100", "/api/settings/sites", "/api/settings/paths", "/api/settings/path-rules",
+      "/api/downloader/status", "/api/downloader/tasks", "/api/watchlist", `/api/naming/jobs?page=${state.namingPage}&per_page=50`,
+      `/api/hardlinks?status=all&page=${state.hardlinksPage}&per_page=50`, "/api/settings/sites", "/api/settings/paths", "/api/settings/path-rules",
       "/api/settings/downloader", "/api/settings/system", "/api/agents", "/api/logs?limit=500",
     ];
     const requests = await Promise.allSettled(paths.map((path) => api(path)));
@@ -426,7 +513,7 @@ async function loadAll(silent = false) {
     const downloadsResult = value(1, {tasks:[]});
     state.qb = value(0, {configured:false,connected:false}); state.downloads = downloadsResult.tasks; state.hiddenDownloads = downloadsResult.hidden_tasks || [];
     state.downloadSyncedAt = downloadsResult.synced_at || new Date().toISOString();
-    state.watchlist = value(2, {items:[]}).items; state.naming = value(3, {items:[]}).items; state.hardlinks = value(4, {items:[]}).items;
+    state.watchlist = value(2, {items:[]}).items; const namingResult = value(3, {items:[]}); const hardlinksResult = value(4, {items:[]}); state.naming = namingResult.items || []; state.hardlinks = hardlinksResult.items || []; state.namingMeta = namingResult; state.hardlinksMeta = hardlinksResult;
     state.sites = value(5, {items:[]}).items; state.paths = value(6, {settings:state.paths}).settings; state.pathRules = value(7, {items:[]}).items;
     state.downloaderSettings = value(8, {settings:state.downloaderSettings}).settings; state.systemSettings = value(9, {settings:state.systemSettings}).settings; state.agents = value(10, {items:[]}).items; state.logs = value(11, {items:[]}).items;
     renderAll(); $("#auth-modal").classList.add("hidden");
@@ -462,7 +549,7 @@ async function runAction(button, path, message, body = {}) {
 async function loadLogs() {
   const button = $("#refresh-logs");
   button.disabled = true;
-  try { state.logs = (await api("/api/logs?limit=500")).items; renderLogs(); toast("日志已刷新"); }
+  try { const params = new URLSearchParams({limit:"500"}); if ($("#log-level").value) params.set("level", $("#log-level").value); if ($("#log-query").value.trim()) params.set("query", $("#log-query").value.trim()); if ($("#log-since").value) params.set("since", new Date($("#log-since").value).toISOString()); state.logs = (await api(`/api/logs?${params}`)).items; renderLogs(); toast("日志已刷新"); }
   catch (error) { toast(error.message, true); }
   finally { button.disabled = false; }
 }
@@ -480,14 +567,133 @@ function editPathRule(item = null) {
   openModal("#path-rule-modal");
 }
 
+function planPayload() {
+  return {
+    media_name: $("#plan-media-name").value.trim() || undefined,
+    original_title: $("#plan-original-title").value.trim() || undefined,
+    year: Number($("#plan-year").value) || undefined,
+    media_type: $("#plan-type").value,
+    season: Number($("#plan-season").value) || undefined,
+    episode: $("#plan-episode").value.trim() || undefined,
+    episode_title: $("#plan-episode-title").value.trim() || undefined,
+  };
+}
+function planFieldErrors(error) {
+  const root = $("#naming-plan-errors");
+  const details = Array.isArray(error.errors) ? error.errors.map((item) => `${item.field || item.loc?.join(".") || "计划"}：${item.message || item.msg || item}`).join("；") : error.message;
+  root.textContent = `${details || "请求失败"}${error.requestId ? `（请求 ${error.requestId}）` : ""}`;
+}
+function defaultRelocationPath(mediaType) {
+  const matched = state.pathRules.find((rule) => rule.enabled && rule.media_type === mediaType && rule.default_download);
+  return matched?.downloader_path || "";
+}
+async function openNamingPlan(jobId, relocate = false, trigger = document.activeElement) {
+  try {
+    const item = (await api(`/api/naming/jobs/${encodeURIComponent(jobId)}`)).item;
+    if (["done", "partial", "conflict"].includes(item.hardlink_status)) { toast("成功、部分或冲突入库的任务不能修改计划或迁移", true); return; }
+    const plan = item.plan || {};
+    const modal = $("#naming-plan-modal");
+    modal.dataset.mode = relocate ? "relocate" : "correct";
+    $("#naming-plan-id").value = jobId; $("#naming-plan-hash").value = item.torrent_hash || "";
+    $("#plan-media-name").value = plan.media_name || ""; $("#plan-original-title").value = plan.original_title || ""; $("#plan-year").value = plan.year || ""; $("#plan-type").value = plan.media_type || "movie"; $("#plan-season").value = plan.season ?? ""; $("#plan-episode").value = plan.episode ?? ""; $("#plan-episode-title").value = plan.episode_title || "";
+    $("#naming-plan-fields").querySelectorAll("input, select").forEach((field) => { field.disabled = relocate; });
+    $("#naming-relocate-fields").classList.toggle("hidden", !relocate);
+    $("#relocate-location").required = relocate;
+    $("#relocate-location").value = relocate ? defaultRelocationPath(plan.media_type) : "";
+    $("#naming-plan-title").textContent = relocate ? "安全迁移下载器任务" : "修正规范命名";
+    $("#naming-plan-help").textContent = relocate ? "仅迁移当前下载器任务到明确输入的新保存路径；不会修改命名计划、下载文件以外的内容或已入库文件。" : "修正后先预览，再确认保存计划并重试。成功或部分硬链接的任务不可修改。";
+    $("#preview-naming-plan").textContent = relocate ? "查看当前计划" : "预览路径";
+    $("#save-naming-plan").textContent = relocate ? "确认迁移下载器任务" : "确认计划并重试";
+    $("#naming-preview").textContent = relocate ? "输入新保存路径后确认迁移；可先查看当前计划。" : "尚未预览。";
+    $("#naming-plan-errors").textContent = ""; openModal("#naming-plan-modal", trigger);
+  } catch (error) { showError(error); }
+}
+async function previewNamingPlan() {
+  const id = $("#naming-plan-id").value; const button = $("#preview-naming-plan"); button.disabled = true;
+  try { const result = await api(`/api/naming/jobs/${encodeURIComponent(id)}/preview`, {method:"POST", body:JSON.stringify(planPayload())}); $("#naming-preview").textContent = JSON.stringify(result.preview || result.plan || result, null, 2); $("#naming-plan-errors").textContent = ""; }
+  catch (error) { planFieldErrors(error); showError(error); } finally { button.disabled = false; }
+}
+async function checkPathRule(id, button) {
+  button.disabled = true;
+  try {
+    const response = await api(`/api/settings/path-rules/${encodeURIComponent(id)}/check`, {method:"POST", body:"{}"});
+    const box = document.querySelector(`[data-rule-preflight="${CSS.escape(id)}"]`);
+    if (box) box.textContent = JSON.stringify(response.result || {}, null, 2);
+  } catch (error) { showError(error); } finally { button.disabled = false; }
+}
+
 function manualSourceChanged() {
   const selected = $('input[name="download-source"]:checked').value;
   $$('[data-source-panel]').forEach((element) => element.classList.toggle("hidden", element.dataset.sourcePanel !== selected));
 }
 
+function resetManualPreview() {
+  state.manualPreviewSignature = null;
+  state.manualPreview = null;
+  $("#manual-download-preview").textContent = "先识别资源，确认媒体类型、规范名称和保存目录后再加入下载。";
+  $("#submit-manual-download").textContent = "识别并预览";
+  const explicitType = $("#manual-type").value;
+  $("#manual-subscribe-options").classList.toggle("hidden", !["tv","anime"].includes(explicitType));
+}
+
+function manualSharedPayload() {
+  return {
+    title: $("#manual-title").value.trim() || undefined,
+    type: $("#manual-type").value,
+    path_rule_id: $("#manual-path-rule").value || undefined,
+    original_title: $("#manual-original-title").value.trim() || undefined,
+    edition: $("#manual-edition").value.trim() || undefined,
+    episode_title: $("#manual-episode-title").value.trim() || undefined,
+    subscribe: $("#manual-subscribe").checked,
+    viewing_mode: $("#manual-viewing-mode").value,
+  };
+}
+
+function manualSignature(source, shared, file = null) {
+  const previewFields = {...shared}; delete previewFields.subscribe; delete previewFields.viewing_mode;
+  return JSON.stringify({source, previewFields, link: $("#manual-link").value.trim(), file: file ? [file.name, file.size, file.lastModified] : null});
+}
+
+function renderManualPreview(result) {
+  state.manualPreview = result;
+  const plan = result.naming?.plan || {};
+  $("#manual-download-preview").textContent = result.ready
+    ? `识别类型：${mediaTypeLabel(result.type)}\n规范目录：${plan.root_name || "保留资源原名"}\n下载目录：${result.naming?.save_path || "按目录映射自动选择"}\n原资源名：${result.source_name || "—"}`
+    : `尚未确认媒体类型：${result.source_name || result.title || "未知资源"}\n请选择电影、电视剧、动漫或自定义后重新识别。`;
+  $("#manual-subscribe-options").classList.toggle("hidden", !["tv","anime"].includes(result.type));
+  $("#submit-manual-download").textContent = result.ready ? "确认并加入下载" : "重新识别";
+}
+
+function manualLinkDisplayName(value) {
+  try {
+    const parsed = new URL(String(value || "").trim());
+    if (parsed.protocol === "magnet:") return (parsed.searchParams.get("dn") || "").trim();
+    const basename = decodeURIComponent(parsed.pathname.split("/").filter(Boolean).at(-1) || "");
+    return basename.trim();
+  } catch (_) { return ""; }
+}
+
+function updateManualLinkName() {
+  const name = manualLinkDisplayName($("#manual-link").value);
+  $("#manual-link-detected").textContent = name
+    ? `已识别资源名：${name}`
+    : "未读取到资源名；如果磁力链接没有 dn 参数，请填写中文标题";
+  return name;
+}
+
 function agentPrompt(agent) {
   const origin = location.origin;
   return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\nCLI：python -m ainas.cli\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 首次使用时 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink","logs"]}\n3. 不需要发送心跳；仅在需要查看或操作时调用 API，任意有效请求都会更新最近使用时间\n4. 也可以设置 AVS_URL=${origin} 与 AVS_TOKEN 后使用 CLI；先运行 python -m ainas.cli status\n5. 搜索时省略 add_to_watchlist 或明确传 false；只有用户明确要求订阅时才调用 /api/watchlist/add\n6. 读取 OpenAPI 后再调用业务接口；涉及新增下载、删除或修改设置时，先向我确认目标\n7. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
+}
+
+function openAgentScopes(agentId, trigger = document.activeElement) {
+  const agent = state.agents.find((item) => item.id === agentId);
+  if (!agent || agent.revoked) { toast("找不到可编辑的 Agent", true); return; }
+  $("#agent-scopes-id").value = agent.id;
+  $("#agent-scopes-description").textContent = `更新「${agent.name}」的授权范围会立即生效，令牌保持不变。`;
+  $$("input[name=agent-edit-scope]").forEach((input) => { input.checked = (agent.scopes || []).includes(input.value); });
+  $("#agent-scopes-errors").textContent = "";
+  openModal("#agent-scopes-modal", trigger);
 }
 
 function bindEvents() {
@@ -500,15 +706,31 @@ function bindEvents() {
     const dismissDownloadButton = event.target.closest("[data-dismiss-download]"); if (dismissDownloadButton) dismissDownload(dismissDownloadButton.dataset.dismissDownload, dismissDownloadButton);
     const restoreDownloadButton = event.target.closest("[data-restore-download]"); if (restoreDownloadButton) restoreDownload(restoreDownloadButton.dataset.restoreDownload, restoreDownloadButton);
     const recoverDownloadButton = event.target.closest("[data-recover-download]"); if (recoverDownloadButton) recoverDownload(recoverDownloadButton.dataset.recoverDownload, recoverDownloadButton);
+    const correct = event.target.closest("[data-correct-job]"); if (correct) openNamingPlan(correct.dataset.correctJob, false, correct);
+    const relocate = event.target.closest("[data-relocate-job]"); if (relocate) openNamingPlan(relocate.dataset.relocateJob, true, relocate);
+    const editAgentScopes = event.target.closest("[data-edit-agent-scopes]"); if (editAgentScopes) openAgentScopes(editAgentScopes.dataset.editAgentScopes, editAgentScopes);
+    const page = event.target.closest("[data-page-kind]"); if (page) { state[`${page.dataset.pageKind}Page`] = Number(page.dataset.page); loadAll(true); }
+    const searchDownload = event.target.closest("[data-search-download]"); if (searchDownload) actOnSearchResult(Number(searchDownload.dataset.searchDownload), "download", searchDownload);
+    const searchSubscribe = event.target.closest("[data-search-subscribe]"); if (searchSubscribe) actOnSearchResult(Number(searchSubscribe.dataset.searchSubscribe), "subscribe", searchSubscribe);
   });
   $$(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
-  $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => openModal("#download-modal")));
+  $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => { resetManualPreview(); openModal("#download-modal"); }));
+  $("#add-watchlist").addEventListener("click", () => openModal("#watchlist-modal"));
   $("#refresh-all").addEventListener("click", () => loadAll()); $("#refresh-downloads").addEventListener("click", () => refreshDownloads()); $("#show-hidden-downloads").addEventListener("click", () => openModal("#hidden-downloads-modal")); $("#watch-filter").addEventListener("input", renderWatchlist);
   $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks);
   $("#log-level").addEventListener("change", renderLogs); $("#log-query").addEventListener("input", renderLogs); $("#refresh-logs").addEventListener("click", loadLogs);
+  $("#log-since").addEventListener("change", loadLogs);
   $("#job-detail-logs").addEventListener("click", (event) => showJobLogs(event.currentTarget.dataset.jobId));
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
+  $("#search-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#search-submit"); button.disabled = true; try { const result = await api("/api/search", {method:"POST",body:JSON.stringify({keyword:$("#search-keyword").value.trim(),type:$("#search-type").value,add_to_watchlist:false})}); state.searchResults = (result.items || result.results || []).map((item) => ({...item, watchlist_exists: Boolean(result.watchlist_exists)})); renderSearchResults(); $("#search-provider-note").textContent = `已从 ${new Set(state.searchResults.map((item) => item.provider || item.source || item.site_name).filter(Boolean)).size} 个来源返回 ${state.searchResults.length} 条结果。`; toast("搜索已完成"); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
+  $("#watchlist-body").addEventListener("change", async (event) => {
+    const select = event.target.closest("[data-watch-mode]"); if (!select) return;
+    select.disabled = true;
+    try { await api(`/api/watchlist/${select.dataset.watchMode}`, {method:"PATCH",body:JSON.stringify({viewing_mode:select.value})}); toast(`观看模式已改为${viewingModeLabel(select.value)}`); await loadAll(true); }
+    catch (error) { toast(error.message, true); }
+    finally { select.disabled = false; }
+  });
   $("#watchlist-body").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-delete-watch]"); if (!button || !confirm("确定移除这个监听任务吗？")) return;
     try { await api(`/api/watchlist/${button.dataset.deleteWatch}`, {method:"DELETE"}); toast("监听已移除"); await loadAll(true); } catch (error) { toast(error.message, true); }
@@ -519,22 +741,52 @@ function bindEvents() {
   });
   $("#site-form").addEventListener("submit", async (event) => {
     event.preventDefault();
-    const payload = {name:$("#site-name").value.trim(),adapter:"generic",enabled:true,base_urls:[$("#site-base").value.trim()],search_url:$("#site-search-url").value.trim(),result_selector:$("#site-result-selector").value.trim(),title_selector:$("#site-title-selector").value.trim(),link_selector:$("#site-link-selector").value.trim(),download_selector:$("#site-download-selector").value.trim(),default_type:$("#site-default-type").value,tv_path_patterns:$("#site-tv-patterns").value.split(",").map((item)=>item.trim()).filter(Boolean),anime_path_patterns:$("#site-anime-patterns").value.split(",").map((item)=>item.trim()).filter(Boolean)};
+    const payload = {name:$("#site-name").value.trim(),adapter:"generic",enabled:true,base_urls:[$("#site-base").value.trim()],search_url:$("#site-search-url").value.trim(),result_selector:$("#site-result-selector").value.trim(),title_selector:$("#site-title-selector").value.trim(),link_selector:$("#site-link-selector").value.trim(),download_selector:$("#site-download-selector").value.trim(),default_type:$("#site-default-type").value,tv_path_patterns:$("#site-tv-patterns").value.split(",").map((item)=>item.trim()).filter(Boolean),anime_path_patterns:$("#site-anime-patterns").value.split(",").map((item)=>item.trim()).filter(Boolean),allow_private_hosts:$("#site-allow-private").checked};
     try { await api("/api/settings/sites", {method:"POST",body:JSON.stringify(payload)}); toast("站点已保存"); event.currentTarget.reset(); await loadAll(true); } catch (error) { toast(error.message, true); }
   });
   $("#sites-body").addEventListener("click", async (event) => {
     const toggle = event.target.closest("[data-toggle-site]"); const remove = event.target.closest("[data-delete-site]");
     try { let changed = false; if (toggle) { await api(`/api/settings/sites/${toggle.dataset.toggleSite}`, {method:"PATCH",body:JSON.stringify({enabled:toggle.dataset.enabled!=="true"})}); changed = true; } if (remove && confirm("确定删除这个站点配置吗？")) { await api(`/api/settings/sites/${remove.dataset.deleteSite}`, {method:"DELETE"}); changed = true; } if (changed) { toast("站点配置已更新"); await loadAll(true); } } catch (error) { toast(error.message, true); }
   });
-  $('input[name="download-source"][value="magnet"]').closest(".source-switch").addEventListener("change", manualSourceChanged);
+  $("#provider-preview-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = $("#provider-preview-submit"); button.disabled = true;
+    try {
+      const result = await api("/api/settings/sites/preview", {method:"POST", body:JSON.stringify({site_id: $("#provider-preview-site").value, keyword: $("#provider-preview-keyword").value.trim(), type: $("#provider-preview-type").value})});
+      $("#provider-preview-result").textContent = JSON.stringify(result.providers || result, null, 2);
+      toast(result.ok ? "站点预览测试通过" : "站点预览测试返回异常", !result.ok);
+    } catch (error) { $("#provider-preview-result").textContent = error.message; showError(error); } finally { button.disabled = false; }
+  });
+  $('input[name="download-source"][value="magnet"]').closest(".source-switch").addEventListener("change", () => { manualSourceChanged(); resetManualPreview(); });
+  $("#manual-link").addEventListener("input", () => { updateManualLinkName(); resetManualPreview(); });
+  $("#manual-download-form").addEventListener("input", (event) => { if (!["manual-subscribe","manual-viewing-mode","manual-link"].includes(event.target.id)) resetManualPreview(); });
   $("#manual-download-form").addEventListener("submit", async (event) => {
     event.preventDefault(); const button = $("#submit-manual-download"); const source = $('input[name="download-source"]:checked').value;
-    const shared = {title:$("#manual-title").value.trim() || undefined,type:$("#manual-type").value,original_title:$("#manual-original-title").value.trim() || undefined,edition:$("#manual-edition").value.trim() || undefined,episode_title:$("#manual-episode-title").value.trim() || undefined};
+    const shared = manualSharedPayload(); const file = source === "torrent" ? $("#manual-torrent").files[0] : null;
     button.disabled = true;
     try {
-      if (source === "magnet") { const link = $("#manual-link").value.trim(); if (!link) throw new Error("请输入磁力链接或种子链接"); await api("/api/download/manual", {method:"POST",body:JSON.stringify({...shared,download_link:link})}); }
-      else { const file = $("#manual-torrent").files[0]; if (!file) throw new Error("请选择 .torrent 文件"); const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); await api("/api/download/manual", {method:"POST",body:form}); }
-      toast("资源已识别并加入下载队列"); $("#download-modal").classList.add("hidden"); event.currentTarget.reset(); manualSourceChanged(); await loadAll(true);
+      const link = $("#manual-link").value.trim();
+      if (source === "magnet" && !link) throw new Error("请输入磁力链接或种子链接");
+      if (source === "magnet" && !shared.title && !updateManualLinkName()) { $("#manual-title").focus(); throw new Error("这个链接没有资源名，请先填写标题"); }
+      if (source === "torrent" && !file) throw new Error("请选择 .torrent 文件");
+      const signature = manualSignature(source, shared, file);
+      if (state.manualPreviewSignature !== signature || !state.manualPreview?.ready) {
+        let preview;
+        if (source === "magnet") preview = await api("/api/download/manual/preview", {method:"POST",body:JSON.stringify({...shared,download_link:link})});
+        else { const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); preview = await api("/api/download/manual/preview", {method:"POST",body:form}); }
+        state.manualPreviewSignature = preview.ready ? signature : null; renderManualPreview(preview);
+        toast(preview.ready ? "识别完成，请确认后加入下载" : "请选择媒体类型后重新识别", !preview.ready);
+        return;
+      }
+      if (source === "magnet") await api("/api/download/manual", {method:"POST",body:JSON.stringify({...shared,download_link:link})});
+      else { const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); await api("/api/download/manual", {method:"POST",body:form}); }
+      toast("资源已识别并加入下载队列"); $("#download-modal").classList.add("hidden"); event.currentTarget.reset(); manualSourceChanged(); updateManualLinkName(); await loadAll(true);
+    } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
+  });
+  $("#watchlist-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+    try {
+      await api("/api/watchlist/add", {method:"POST",body:JSON.stringify({keyword:$("#watchlist-keyword").value.trim(),type:$("#watchlist-type").value,viewing_mode:$("#watchlist-viewing-mode").value,path_rule_id:$("#watchlist-path-rule").value || undefined})});
+      toast("订阅已保存"); $("#watchlist-modal").classList.add("hidden"); event.currentTarget.reset(); await loadAll(true);
     } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#path-hardlink-enabled").addEventListener("change", () => { state.pathsDirty = true; });
@@ -545,8 +797,9 @@ function bindEvents() {
   });
   $("#add-path-rule").addEventListener("click", () => editPathRule());
   $("#path-rules-groups").addEventListener("click", async (event) => {
-    const edit = event.target.closest("[data-edit-rule]"); const remove = event.target.closest("[data-delete-rule]");
+    const edit = event.target.closest("[data-edit-rule]"); const remove = event.target.closest("[data-delete-rule]"); const check = event.target.closest("[data-check-rule]");
     if (edit) editPathRule(state.pathRules.find((item) => item.id === edit.dataset.editRule));
+    if (check) checkPathRule(check.dataset.checkRule, check);
     if (remove && confirm("确定删除这条目录映射吗？")) { try { await api(`/api/settings/path-rules/${remove.dataset.deleteRule}`, {method:"DELETE"}); toast("目录映射已删除"); await loadAll(true); } catch (error) { toast(error.message, true); } }
   });
   $("#path-rule-form").addEventListener("submit", async (event) => {
@@ -566,11 +819,38 @@ function bindEvents() {
     button.disabled = true; try { const result = await api("/api/settings/downloader", {method:"PATCH",body:JSON.stringify(payload)}); state.downloaderSettings = result.settings; state.downloaderDirty = false; toast("下载器配置已保存并切换"); await loadAll(true); } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#test-downloader").addEventListener("click", async (event) => { event.currentTarget.disabled = true; try { const result = await api("/api/settings/downloader/test", {method:"POST",body:"{}"}); toast(`${result.client === "transmission" ? "Transmission" : "qBittorrent"} 连接成功：${result.version}`); } catch (error) { toast(error.message, true); } finally { event.currentTarget.disabled = false; } });
-  $("#agent-connect").addEventListener("click", () => openModal("#agent-modal"));
-  $("#create-agent-config").addEventListener("click", async (event) => { event.currentTarget.disabled = true; try { const result = await api("/api/agents/bootstrap", {method:"POST",body:JSON.stringify({name:"My Agent"})}); const prompt = agentPrompt(result.agent); $("#agent-config").value = prompt; $("#agent-config-wrap").classList.remove("hidden"); await copyText(prompt); toast("连接方案已复制，请发给你的 Agent"); await loadAll(true); } catch (error) { toast(error.message, true); } finally { event.currentTarget.disabled = false; } });
+  $("#agent-connect").addEventListener("click", (event) => openModal("#agent-modal", event.currentTarget));
+  $("#create-agent-config").addEventListener("click", async (event) => { const name = $("#agent-name").value.trim(); const scopes = $$("input[name=agent-scope]:checked").map((input) => input.value); if (name.length < 2 || !scopes.length) { toast("请填写有意义的 Agent 名称并至少选择一个范围", true); return; } event.currentTarget.disabled = true; try { const result = await api("/api/agents/bootstrap", {method:"POST",body:JSON.stringify({name,scopes})}); const prompt = agentPrompt(result.agent); $("#agent-config").value = prompt; $("#agent-config-wrap").classList.remove("hidden"); await copyText(prompt); toast("连接方案已复制，请发给你的 Agent"); await loadAll(true); } catch (error) { toast(error.message, true); } finally { event.currentTarget.disabled = false; } });
   $("#copy-agent-config").addEventListener("click", async () => { await copyText($("#agent-config").value); toast("连接方案已复制"); });
-  $("#agent-list").addEventListener("click", async (event) => { const button = event.target.closest("[data-revoke-agent]"); if (!button || !confirm("撤销后该 Agent 将立即无法访问，确定继续吗？")) return; try { await api(`/api/agents/${button.dataset.revokeAgent}`, {method:"DELETE"}); toast("Agent 授权已撤销"); await loadAll(true); } catch (error) { toast(error.message, true); } });
+  $("#agent-list").addEventListener("click", async (event) => { const button = event.target.closest("[data-revoke-agent]"); if (!button || !confirm("撤销后该 Agent 将立即无法访问，确定继续吗？")) return; try { await api(`/api/agents/${button.dataset.revokeAgent}`, {method:"DELETE"}); toast("Agent 授权已撤销"); await loadAll(true); } catch (error) { showError(error); } });
+  $("#agent-scopes-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const form = event.currentTarget; const scopes = $$("input[name=agent-edit-scope]:checked").map((input) => input.value); const errorRoot = $("#agent-scopes-errors");
+    if (!scopes.length) { errorRoot.textContent = "至少保留一个授权范围"; return; }
+    const button = form.querySelector("button[type=submit]"); button.disabled = true;
+    try { await api(`/api/agents/${encodeURIComponent($("#agent-scopes-id").value)}/scopes`, {method:"PATCH", body:JSON.stringify({scopes})}); $("#agent-scopes-modal").classList.add("hidden"); toast("Agent 权限已更新"); await loadAll(true); }
+    catch (error) { errorRoot.textContent = `${error.message}${error.requestId ? `（请求 ${error.requestId}）` : ""}`; showError(error); } finally { button.disabled = false; }
+  });
   $("#auth-form").addEventListener("submit", async (event) => { event.preventDefault(); state.apiKey = $("#api-key").value.trim(); sessionStorage.setItem("aiVideoStationApiKey", state.apiKey); await loadAll(); });
+  $("#preview-naming-plan").addEventListener("click", previewNamingPlan);
+  $("#naming-plan-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const modal = $("#naming-plan-modal"); const id = $("#naming-plan-id").value; const button = $("#save-naming-plan"); button.disabled = true;
+    try {
+      if (modal.dataset.mode === "relocate") {
+        const taskHash = $("#naming-plan-hash").value; const location = $("#relocate-location").value.trim();
+        if (!taskHash || taskHash.startsWith("pending:")) throw new Error("该任务尚未绑定下载器，暂时不能迁移");
+        if (!location.startsWith("/")) throw new Error("请输入下载器可见的绝对保存路径");
+        await api(`/api/downloader/tasks/${encodeURIComponent(taskHash)}/relocate`, {method:"POST", body:JSON.stringify({location})});
+        toast("下载器任务已开始安全迁移");
+      } else {
+        await api(`/api/naming/jobs/${encodeURIComponent(id)}/plan`, {method:"PATCH",body:JSON.stringify(planPayload())});
+        await api(`/api/naming/jobs/${encodeURIComponent(id)}/retry`, {method:"POST",body:"{}"});
+        toast("计划已确认，任务已重试");
+      }
+      modal.classList.add("hidden"); await loadAll(true);
+    } catch (error) { planFieldErrors(error); showError(error); } finally { button.disabled = false; }
+  });
+  document.addEventListener("keydown", (event) => { const modal = $(".modal:not(.hidden)"); if (!modal) return; if (event.key === "Escape" && modal.id !== "auth-modal") { closeModal(modal); return; } if (event.key !== "Tab") return; const items = [...modal.querySelectorAll("button:not([disabled]),input:not([disabled]),select:not([disabled]),textarea:not([disabled])")]; const current = items.indexOf(document.activeElement); if (!items.length || (event.shiftKey && current > 0) || (!event.shiftKey && current >= 0 && current < items.length - 1)) return; event.preventDefault(); (event.shiftKey ? items.at(-1) : items[0]).focus(); });
+  $(".tabs").addEventListener("keydown", (event) => { if (!["ArrowLeft","ArrowRight","Home","End"].includes(event.key)) return; const tabs = $$(".tab"); const current = tabs.indexOf(document.activeElement); if (current < 0) return; event.preventDefault(); const next = event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : (current + (event.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length; tabs[next].focus(); setTab(tabs[next].dataset.tab); });
   $("#logout").addEventListener("click", () => { sessionStorage.removeItem("aiVideoStationApiKey"); sessionStorage.removeItem("sixvApiKey"); state.apiKey = ""; $("#api-key").value = ""; showAuth(); });
 }
 

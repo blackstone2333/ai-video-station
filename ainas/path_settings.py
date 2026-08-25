@@ -13,6 +13,7 @@ from pydantic import ValidationError
 
 from .config import Settings
 from .errors import ValidationAppError
+from .state import StateStore, StateStoreError
 
 
 PATH_FIELDS = (
@@ -38,11 +39,15 @@ EDITABLE_FIELDS = (*CATEGORY_FIELDS, *PATH_FIELDS, "medialib_hardlink_enabled")
 class PathSettingsRepository:
     """Store path overrides and apply them to the shared Settings instance."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, state_store: StateStore | None = None) -> None:
         self.settings = settings
+        self.state_store = state_store
         self.path = settings.path_settings_path
         self._lock = threading.RLock()
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.state_store:
+            try: self.state_store.ensure_document("path_settings", legacy_path=self.path)
+            except StateStoreError as exc: raise ValidationAppError(f"保存的路径设置无法读取：{exc}") from exc
         self.load()
 
     @staticmethod
@@ -123,9 +128,8 @@ class PathSettingsRepository:
 
     def _read(self) -> Dict[str, Any]:
         try:
-            with self.path.open("r", encoding="utf-8") as handle:
-                value = json.load(handle)
-        except (OSError, json.JSONDecodeError) as exc:
+            value = self.state_store.read_document("path_settings") if self.state_store else json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, StateStoreError) as exc:
             raise ValidationAppError(f"保存的路径设置无法读取：{exc}") from exc
         if not isinstance(value, dict):
             raise ValidationAppError("保存的路径设置格式无效")
@@ -137,6 +141,9 @@ class PathSettingsRepository:
             for name in EDITABLE_FIELDS
             if name in value
         }
+        if self.state_store:
+            try: self.state_store.write_document("path_settings", payload); return
+            except StateStoreError as exc: raise ValidationAppError(f"保存的路径设置无法写入：{exc}") from exc
         fd, temp_name = tempfile.mkstemp(prefix="paths-", suffix=".json", dir=str(self.path.parent))
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -154,7 +161,7 @@ class PathSettingsRepository:
 
     def load(self) -> Dict[str, Any]:
         with self._lock:
-            if self.path.exists():
+            if self.state_store or self.path.exists():
                 self._apply(self._read())
             return self.get()
 

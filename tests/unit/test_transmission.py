@@ -158,3 +158,26 @@ def test_transmission_uploads_torrent_files(tmp_path):
     assert result["torrent_name"] == "Movie.mkv"
     body = responses.calls[0].request.body.decode()
     assert "metainfo" in body and "/volume1/video/Incoming/Films" in body
+
+
+@responses.activate
+def test_transmission_can_submit_paused_and_select_episode_files(tmp_path):
+    responses.post(
+        RPC,
+        json={"result": "success", "arguments": {"torrent-added": {"hashString": "a" * 40}}},
+    )
+    responses.post(RPC, json={"result": "success", "arguments": {}})
+    client = TransmissionClient(transmission_settings(tmp_path))
+
+    client.add_download(
+        "magnet:?xt=urn:btih:" + "a" * 40,
+        "TV",
+        paused=True,
+    )
+    client.set_file_priorities("a" * 40, selected_indices=[1, 3], skipped_indices=[0, 2])
+
+    added_body = responses.calls[0].request.body.decode()
+    selection_body = responses.calls[1].request.body.decode()
+    assert '"paused": true' in added_body
+    assert '"files-wanted": [1, 3]' in selection_body
+    assert '"files-unwanted": [0, 2]' in selection_body

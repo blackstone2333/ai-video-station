@@ -31,6 +31,15 @@ class StubQB:
         return {"qb_task_id": "x", "category": category}
 
 
+class StubNaming:
+    def __init__(self):
+        self.added = []
+
+    def add_download(self, release, category, path_rule_id=None, wanted_episodes=None):
+        self.added.append((release, category, path_rule_id, wanted_episodes))
+        return {"qb_task_id": "x", "category": category}
+
+
 def make_release(label, hash_char="a", media_type="tv"):
     return build_release(
         "测试剧" if media_type == "tv" else "测试电影",
@@ -72,6 +81,80 @@ def test_tv_check_downloads_one_best_version_per_episode(settings):
     second = service.check(item["id"])
     assert second["downloaded"] == 0
     assert repository.get(item["id"])["status"] == "monitoring"
+
+
+def test_new_subscription_defaults_to_daily_but_legacy_record_keeps_existing_quality_order(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    daily = repository.add("测试剧", "tv")
+    assert daily["viewing_mode"] == "daily"
+
+    releases = [
+        make_release("S01E01 4K WEB-DL", "a"),
+        make_release("S01E01 1080p BluRay", "b"),
+    ]
+    naming = StubNaming()
+    WatchlistService(settings, repository, StubSearch(releases), StubQB(), naming=naming).check(daily["id"])
+    assert naming.added[0][0].resolution == "1080p"
+
+    legacy = repository.add("旧订阅", "tv")
+    repository.update(legacy["id"], {"viewing_mode": None, "resource_preferences": None})
+    naming = StubNaming()
+    WatchlistService(settings, repository, StubSearch(releases), StubQB(), naming=naming).check(legacy["id"])
+    assert naming.added[0][0].resolution == "2160p"
+
+
+def test_changing_viewing_mode_replaces_the_previous_preset_snapshot(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    item = repository.add("测试剧", "tv")
+    service = WatchlistService(settings, repository, StubSearch([]), StubQB())
+
+    updated = service.update(item["id"], viewing_mode="collection")
+
+    assert updated["viewing_mode"] == "collection"
+    assert updated["resource_preferences"]["mode"] == "collection"
+    assert updated["resource_preferences"]["resolution_order"][:3] == ["4320p", "2160p", "1080p"]
+
+
+def test_complete_season_bundle_requests_only_missing_episodes_and_records_provenance(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    item = repository.add("重器", "tv")
+    repository.update(
+        item["id"],
+        {"downloaded_episodes": [f"S01E{episode:02d}" for episode in range(1, 27)]},
+    )
+    bundle = build_release(
+        "重器 第1季",
+        "全33集 1080p BluRay 国语",
+        "https://sixv.test/mj/2026-01-01/2.html",
+        "magnet:?xt=urn:btih:" + "f" * 40,
+        "tv",
+    )
+    assert bundle is not None
+    naming = StubNaming()
+
+    report = WatchlistService(settings, repository, StubSearch([bundle]), StubQB(), naming=naming).check(item["id"])
+
+    wanted = [f"S01E{episode:02d}" for episode in range(27, 34)]
+    assert report["downloaded"] == 1
+    assert naming.added[0][3] == wanted
+    saved = repository.get(item["id"])
+    assert sorted(saved["episode_sources"])[-7:] == wanted
+    assert {saved["episode_sources"][episode]["release_id"] for episode in wanted} == {bundle.id}
+
+
+def test_anime_subscription_keeps_avs_type_when_sixv_url_looks_like_tv(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    item = repository.add("Rick and Morty", "anime")
+    release = make_release("S01E01 1080p WEB-DL", "e", "anime")
+    naming = StubNaming()
+    service = WatchlistService(settings, repository, StubSearch([release]), StubQB(), naming=naming)
+
+    report = service.check(item["id"])
+
+    assert report["downloaded"] == 1
+    assert naming.added[0][0].media_type == "anime"
+    assert naming.added[0][1] == settings.qb_anime_category
+    assert repository.get(item["id"])["type"] == "anime"
 
 
 def test_movie_failure_is_recorded_for_retry(settings):

@@ -15,6 +15,7 @@ from .agent_access import AgentAccessRepository
 from .errors import AppError, ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationAppError
 from .logging_config import configure_logging, read_log_entries
 from .middleware import install_middleware
+from .permissions import require_scope
 from .models import (
     DownloadRequest,
     DownloaderRelocateRequest,
@@ -22,21 +23,27 @@ from .models import (
     ManualDownloadRequest,
     ManualTorrentRequest,
     NamingCheckRequest,
+    NamingPlanOverrideRequest,
     AgentBootstrapRequest,
     AgentConnectRequest,
+    AgentScopesUpdateRequest,
+    PathRuleDeleteRequest,
     PathRulePatchRequest,
     PathSettingsPatchRequest,
+    ProviderPreviewRequest,
     SearchRequest,
     SitePatchRequest,
     SystemSettingsPatchRequest,
     WatchlistAddRequest,
     WatchlistCheckRequest,
+    WatchlistPatchRequest,
 )
 from .path_rules import PathRuleInput, PathRuleRepository
 from .path_settings import PathSettingsRepository
 from .runtime_settings import DownloaderSettingsRepository, SystemSettingsRepository
 from .services import AppServices, build_services
 from .sites import SiteConfig
+from .state import StateStoreError
 from .watchlist import utc_now_iso
 
 
@@ -176,6 +183,52 @@ def create_app(
         if getattr(g, "auth_kind", None) != "admin":
             raise ForbiddenError("此操作仅允许后台管理员执行")
 
+    agent_endpoint_scopes = {
+        "search": "search",
+        "download": "download",
+        "manual_download": "download",
+        "manual_download_preview": "download",
+        "downloader_task_dismiss": "download",
+        "downloader_task_restore": "download",
+        "downloader_task_recover": "download",
+        "watchlist_add": "watchlist",
+        "watchlist_delete": "watchlist",
+        "watchlist_update": "watchlist",
+        "watchlist_check": "watchlist",
+        "naming_retry": "naming",
+        "naming_job_delete": "naming",
+        "naming_check": "naming",
+        "naming_plan_preview": "naming",
+        "naming_plan_update": "naming",
+        "sites_preview": "search",
+        "sites_add": "settings",
+        "sites_update": "settings",
+        "sites_delete": "settings",
+        "path_settings_update": "settings",
+        "path_rules_add": "settings",
+        "path_rules_update": "settings",
+        "path_rules_delete": "settings",
+        "path_rule_preflight": "settings",
+        "downloader_settings_update": "settings",
+        "downloader_settings_test": "settings",
+        "system_settings_update": "settings",
+    }
+    agent_scope_exempt = {"agent_connect", "agent_heartbeat"}
+
+    @app.before_request
+    def authorize_agent_scope() -> None:
+        if (
+            not request.path.startswith("/api")
+            or request.method == "OPTIONS"
+            or getattr(g, "auth_kind", None) != "agent"
+            or request.endpoint in agent_scope_exempt
+        ):
+            return
+        required = agent_endpoint_scopes.get(request.endpoint)
+        if required is None:
+            required = "read" if request.method in {"GET", "HEAD"} else "settings"
+        require_scope(required)
+
     @app.errorhandler(AppError)
     def handle_app_error(exc: AppError):
         logger.warning(
@@ -213,6 +266,14 @@ def create_app(
     @app.get("/ready")
     def ready():
         checks: Dict[str, Any] = {}
+        if services.state_store:
+            try:
+                checks["state"] = services.state_store.integrity_check()
+            except StateStoreError:
+                logger.exception("state_readiness_failed")
+                checks["state"] = {"status": "error", "detail": "persistent state is unavailable"}
+        else:
+            checks["state"] = {"status": "optional", "detail": "external state store is not configured"}
         try:
             checks["providers"] = {"status": "ok", "domain": services.crawler.probe()}
         except AppError as exc:
@@ -222,7 +283,11 @@ def create_app(
             "status": "ok" if qb_status["connected"] else ("optional" if not qb_status["configured"] else "error"),
             **qb_status,
         }
-        ready_state = checks["providers"]["status"] == "ok" and checks["downloader"]["status"] != "error"
+        ready_state = (
+            checks["state"]["status"] != "error"
+            and checks["providers"]["status"] == "ok"
+            and checks["downloader"]["status"] != "error"
+        )
         return jsonify({"status": "ok" if ready_state else "degraded", "checks": checks}), 200 if ready_state else 503
 
     @app.route("/api/search", methods=["POST", "OPTIONS"])
@@ -235,7 +300,12 @@ def create_app(
         watch_item = services.watchlist.find(body.keyword, watch_type)
         watchlist_added = False
         if body.add_to_watchlist and watch_item is None:
-            watch_item = services.watchlist.add(body.keyword, watch_type)
+            require_scope("watchlist")
+            watch_item = services.watchlist_service.add(
+                body.keyword,
+                watch_type,
+                viewing_mode=body.viewing_mode,
+            )
             watchlist_added = True
         response = {
             "success": True,
@@ -254,11 +324,18 @@ def create_app(
         if request.method == "OPTIONS":
             return "", 204
         body = _parse_json(DownloadRequest)
-        result = services.download.download(body.result_id, body.download_link, body.title, body.media_type)
+        result = services.download.download(
+            body.result_id,
+            body.download_link,
+            body.title,
+            body.media_type,
+            body.path_rule_id,
+        )
         return jsonify({"success": True, "message": "已添加到下载队列", **result})
 
     @app.post("/api/download/manual")
     def manual_download():
+        watchlist_item = None
         if request.is_json:
             body = _parse_json(ManualDownloadRequest)
             result = services.download.manual_link(
@@ -268,7 +345,10 @@ def create_app(
                 body.original_title,
                 body.edition,
                 body.episode_title,
+                body.path_rule_id,
             )
+            subscribe = body.subscribe
+            viewing_mode = body.viewing_mode
         else:
             upload = request.files.get("torrent")
             if not upload or not upload.filename:
@@ -293,8 +373,67 @@ def create_app(
                 form.original_title,
                 form.edition,
                 form.episode_title,
+                form.path_rule_id,
             )
-        return jsonify({"success": True, "message": "已识别并添加到下载队列", **result})
+            subscribe = form.subscribe
+            viewing_mode = form.viewing_mode
+        if subscribe and result.get("type") in {"tv", "anime"}:
+            watchlist_item = services.watchlist_service.add(
+                str(result.get("title") or result.get("source_name") or "").strip(),
+                str(result["type"]),
+                result.get("path_rule_id"),
+                viewing_mode=viewing_mode,
+            )
+        return jsonify(
+            {
+                "success": True,
+                "message": "已识别并添加到下载队列",
+                **result,
+                "watchlist": watchlist_item,
+            }
+        )
+
+    @app.post("/api/download/manual/preview")
+    def manual_download_preview():
+        if request.is_json:
+            body = _parse_json(ManualDownloadRequest)
+            result = services.download.preview_link(
+                body.download_link,
+                body.title,
+                body.media_type,
+                body.original_title,
+                body.edition,
+                body.episode_title,
+                body.path_rule_id,
+            )
+        else:
+            upload = request.files.get("torrent")
+            if not upload or not upload.filename:
+                raise ValidationAppError(
+                    "请选择 BT 种子文件",
+                    [{"field": "torrent", "message": "torrent file is required", "code": "TORRENT_REQUIRED"}],
+                )
+            if not upload.filename.casefold().endswith(".torrent"):
+                raise ValidationAppError(
+                    "仅支持 .torrent 文件",
+                    [{"field": "torrent", "message": "file extension must be .torrent", "code": "INVALID_TORRENT_FILE"}],
+                )
+            content = upload.stream.read(settings.max_torrent_upload_bytes + 1)
+            if len(content) > settings.max_torrent_upload_bytes:
+                raise ValidationAppError("BT 种子文件过大")
+            form = _parse_value(ManualTorrentRequest, request.form.to_dict())
+            result = services.download.preview_torrent(
+                content,
+                upload.filename,
+                form.title,
+                form.media_type,
+                form.original_title,
+                form.edition,
+                form.episode_title,
+                form.path_rule_id,
+            )
+        message = "识别完成，请确认命名和目录" if result.get("ready") else "请选择媒体类型后继续"
+        return jsonify({"success": True, "message": message, **result})
 
     @app.get("/api/downloader/status")
     @app.get("/api/qb/status")
@@ -373,7 +512,13 @@ def create_app(
         if request.method == "OPTIONS":
             return "", 204
         body = _parse_json(WatchlistAddRequest)
-        item = services.watchlist.add(body.keyword, body.media_type)
+        item = services.watchlist_service.add(
+            body.keyword,
+            body.media_type,
+            body.path_rule_id,
+            body.viewing_mode,
+            body.resource_preferences,
+        )
         response = jsonify({"success": True, "item": item})
         response.status_code = 201
         response.headers["Location"] = f"/api/watchlist/{item['id']}"
@@ -388,6 +533,16 @@ def create_app(
     def watchlist_delete(item_id: str):
         services.watchlist.delete(item_id)
         return "", 204
+
+    @app.patch("/api/watchlist/<item_id>")
+    def watchlist_update(item_id: str):
+        body = _parse_json(WatchlistPatchRequest)
+        item = services.watchlist_service.update(
+            item_id,
+            body.viewing_mode,
+            body.resource_preferences,
+        )
+        return jsonify({"success": True, "item": item})
 
     @app.post("/api/watchlist/check")
     def watchlist_check():
@@ -430,6 +585,30 @@ def create_app(
             raise ServiceUnavailableError("automatic naming is not initialized")
         return jsonify({"success": True, "item": services.naming_jobs.get(job_id)})
 
+    @app.post("/api/naming/jobs/<job_id>/preview")
+    def naming_plan_preview(job_id: str):
+        if not services.naming:
+            raise ServiceUnavailableError("automatic naming is not initialized")
+        body = _parse_json(NamingPlanOverrideRequest)
+        preview = services.naming.preview_corrected_plan(
+            job_id,
+            body.model_dump(exclude_unset=True),
+        )
+        return jsonify({"success": True, **preview})
+
+    @app.patch("/api/naming/jobs/<job_id>/plan")
+    def naming_plan_update(job_id: str):
+        if not services.naming:
+            raise ServiceUnavailableError("automatic naming is not initialized")
+        body = _parse_json(NamingPlanOverrideRequest)
+        preview = services.naming.preview_corrected_plan(
+            job_id,
+            body.model_dump(exclude_unset=True),
+        )
+        item = services.naming.apply_corrected_plan(job_id, preview["plan"])
+        logger.info("naming_plan_corrected", extra={"job_id": job_id})
+        return jsonify({"success": True, "item": item, "preview": preview.get("preview")})
+
     @app.post("/api/naming/jobs/<job_id>/retry")
     def naming_retry(job_id: str):
         if not services.naming or not services.naming_jobs:
@@ -441,13 +620,10 @@ def create_app(
 
     @app.delete("/api/naming/jobs/<job_id>")
     def naming_job_delete(job_id: str):
-        if not services.naming_jobs:
+        if not services.naming or not services.naming_jobs:
             raise ServiceUnavailableError("automatic naming is not initialized")
-        item = services.naming_jobs.get(job_id)
-        if item.get("status") != "failed" and item.get("hardlink_status") != "failed":
-            raise ConflictError("only failed AVS records can be deleted")
-        services.naming_jobs.delete(job_id)
-        logger.info("naming_job_record_deleted", extra={"job_id": job_id})
+        services.naming.discard_record(job_id)
+        logger.info("naming_job_record_discarded", extra={"job_id": job_id})
         return "", 204
 
     @app.post("/api/naming/jobs/check")
@@ -525,9 +701,22 @@ def create_app(
         items = services.sites.list()
         return jsonify({"success": True, "items": items, "count": len(items)})
 
+    @app.post("/api/settings/sites/preview")
+    def sites_preview():
+        body = _parse_json(ProviderPreviewRequest)
+        preview = getattr(services.crawler, "preview", None)
+        if not callable(preview):
+            raise ServiceUnavailableError("provider preview is not available")
+        return jsonify(
+            {
+                "success": True,
+                **preview(body.keyword, body.media_type, body.site_id),
+            }
+        )
+
     @app.post("/api/settings/sites")
     def sites_add():
-        require_admin()
+        require_scope("settings")
         if not services.sites:
             raise ServiceUnavailableError("site settings are not initialized")
         body = _parse_json(SiteConfig)
@@ -539,7 +728,7 @@ def create_app(
 
     @app.patch("/api/settings/sites/<site_id>")
     def sites_update(site_id: str):
-        require_admin()
+        require_scope("settings")
         if not services.sites:
             raise ServiceUnavailableError("site settings are not initialized")
         body = _parse_json(SitePatchRequest)
@@ -548,7 +737,7 @@ def create_app(
 
     @app.delete("/api/settings/sites/<site_id>")
     def sites_delete(site_id: str):
-        require_admin()
+        require_scope("settings")
         if not services.sites:
             raise ServiceUnavailableError("site settings are not initialized")
         services.sites.delete(site_id)
@@ -562,7 +751,7 @@ def create_app(
 
     @app.patch("/api/settings/paths")
     def path_settings_update():
-        require_admin()
+        require_scope("settings")
         if not services.path_settings:
             raise ServiceUnavailableError("path settings are not initialized")
         body = _parse_json(PathSettingsPatchRequest)
@@ -579,7 +768,7 @@ def create_app(
 
     @app.post("/api/settings/path-rules")
     def path_rules_add():
-        require_admin()
+        require_scope("settings")
         if not services.path_rules:
             raise ServiceUnavailableError("path rules are not initialized")
         body = _parse_json(PathRuleInput)
@@ -591,20 +780,32 @@ def create_app(
 
     @app.patch("/api/settings/path-rules/<rule_id>")
     def path_rules_update(rule_id: str):
-        require_admin()
+        require_scope("settings")
         if not services.path_rules:
             raise ServiceUnavailableError("path rules are not initialized")
         body = _parse_json(PathRulePatchRequest)
         item = services.path_rules.update(rule_id, body.model_dump(exclude_none=True))
         return jsonify({"success": True, "item": item})
 
-    @app.delete("/api/settings/path-rules/<rule_id>")
-    def path_rules_delete(rule_id: str):
-        require_admin()
+    @app.post("/api/settings/path-rules/<rule_id>/check")
+    def path_rule_preflight(rule_id: str):
+        require_scope("settings")
         if not services.path_rules:
             raise ServiceUnavailableError("path rules are not initialized")
-        services.path_rules.delete(rule_id)
-        return "", 204
+        return jsonify({"success": True, "result": services.path_rules.preflight(rule_id)})
+
+    @app.delete("/api/settings/path-rules/<rule_id>")
+    def path_rules_delete(rule_id: str):
+        require_scope("settings")
+        if not services.path_rules:
+            raise ServiceUnavailableError("path rules are not initialized")
+        if request.is_json:
+            body = _parse_json(PathRuleDeleteRequest)
+            disable_media_path = body.disable_media_path
+        else:
+            disable_media_path = request.args.get("disable_media_path", "false").casefold() in {"1", "true", "yes"}
+        result = services.path_rules.delete(rule_id, disable_media_path=disable_media_path)
+        return jsonify({"success": True, **result})
 
     @app.get("/api/settings/downloader")
     def downloader_settings_get():
@@ -614,7 +815,7 @@ def create_app(
 
     @app.patch("/api/settings/downloader")
     def downloader_settings_update():
-        require_admin()
+        require_scope("settings")
         if not services.downloader_settings:
             raise ServiceUnavailableError("downloader settings are not initialized")
         body = _parse_json(DownloaderSettingsPatchRequest)
@@ -634,7 +835,7 @@ def create_app(
 
     @app.patch("/api/settings/system")
     def system_settings_update():
-        require_admin()
+        require_scope("settings")
         if not services.system_settings:
             raise ServiceUnavailableError("system settings are not initialized")
         body = _parse_json(SystemSettingsPatchRequest)
@@ -664,8 +865,17 @@ def create_app(
         if not services.agents:
             raise ServiceUnavailableError("agent access is not initialized")
         body = _parse_json(AgentBootstrapRequest)
-        item = services.agents.create(body.name)
+        item = services.agents.create(body.name, body.scopes)
         return jsonify({"success": True, "agent": item}), 201
+
+    @app.patch("/api/agents/<agent_id>/scopes")
+    def agent_scopes_update(agent_id: str):
+        require_admin()
+        if not services.agents:
+            raise ServiceUnavailableError("agent access is not initialized")
+        body = _parse_json(AgentScopesUpdateRequest)
+        item = services.agents.update_scopes(agent_id, body.scopes)
+        return jsonify({"success": True, "agent": item})
 
     @app.post("/api/agents/connect")
     def agent_connect():

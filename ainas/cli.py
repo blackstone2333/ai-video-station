@@ -8,8 +8,8 @@ import os
 import sys
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin
-from urllib.request import Request, urlopen
+from urllib.parse import urljoin, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 COMMANDS = {
@@ -24,7 +24,76 @@ COMMANDS = {
 
 
 class CliError(Exception):
-    pass
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status: int | None = None,
+        title: str | None = None,
+        errors: Any = None,
+        request_id: str | None = None,
+        problem_type: str | None = None,
+    ) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.status = status
+        self.title = title
+        self.errors = errors
+        self.request_id = request_id
+        self.problem_type = problem_type
+
+    def to_dict(self) -> dict[str, Any]:
+        value: dict[str, Any] = {"detail": self.detail}
+        if self.status is not None:
+            value["status"] = self.status
+        if self.title:
+            value["title"] = self.title
+        if self.problem_type:
+            value["type"] = self.problem_type
+        if self.errors is not None:
+            value["errors"] = self.errors
+        if self.request_id is not None:
+            value["request_id"] = self.request_id
+        return value
+
+
+def _origin(value: str) -> tuple[str, str | None, int | None]:
+    parsed = urlsplit(value)
+    default_port = 443 if parsed.scheme == "https" else 80 if parsed.scheme == "http" else None
+    return parsed.scheme, parsed.hostname, parsed.port or default_port
+
+
+class _SameOriginRedirectHandler(HTTPRedirectHandler):
+    """Allow AVS redirects only when credentials remain on the same origin."""
+
+    def __init__(self, initial_url: str) -> None:
+        super().__init__()
+        self.allowed_origin = _origin(initial_url)
+
+    def redirect_request(self, req: Request, fp: Any, code: int, msg: str, headers: Any, newurl: str) -> Request | None:
+        target = urljoin(req.full_url, newurl)
+        if _origin(target) != self.allowed_origin:
+            raise CliError("拒绝把 AVS 凭据随重定向发送到其他地址")
+        return super().redirect_request(req, fp, code, msg, headers, target)
+
+
+def _open_same_origin(request: Request, timeout: int) -> Any:
+    return build_opener(_SameOriginRedirectHandler(request.full_url)).open(request, timeout=timeout)
+
+
+def _same_origin_url(base_url: str, path: str) -> str:
+    """Resolve an AVS path without allowing credentials to cross origins."""
+    base = urlsplit(base_url.strip())
+    supplied = urlsplit(path)
+    if base.scheme not in {"http", "https"} or not base.netloc or base.username or base.password:
+        raise CliError("AVS_URL 必须是不含账号密码的绝对 HTTP(S) 地址")
+    if not path.startswith("/") or supplied.scheme or supplied.netloc:
+        raise CliError("API 路径必须是当前 AVS 服务内以 / 开头的相对路径")
+    target = urljoin(base_url.rstrip("/") + "/", path.lstrip("/"))
+    resolved = urlsplit(target)
+    if (resolved.scheme, resolved.hostname, resolved.port) != (base.scheme, base.hostname, base.port):
+        raise CliError("拒绝把 AVS 凭据发送到其他地址")
+    return target
 
 
 def _request(
@@ -34,8 +103,9 @@ def _request(
     path: str,
     data: Any = None,
     *,
-    opener: Callable[..., Any] = urlopen,
+    opener: Callable[..., Any] | None = None,
 ) -> Any:
+    target_url = _same_origin_url(base_url, path)
     if path.startswith("/api/") and not token:
         raise CliError("请通过 AVS_TOKEN 提供后台 API Key 或 Agent 专用令牌")
     headers = {"Accept": "application/json"}
@@ -48,21 +118,31 @@ def _request(
         payload = json.dumps(data, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"
     request = Request(
-        urljoin(base_url.rstrip("/") + "/", path.lstrip("/")),
+        target_url,
         data=payload,
         headers=headers,
         method=method,
     )
     try:
-        with opener(request, timeout=30) as response:
+        with (opener or _open_same_origin)(request, timeout=30) as response:
             raw = response.read()
     except HTTPError as exc:
         raw = exc.read()
         try:
-            detail = json.loads(raw.decode("utf-8")).get("detail")
+            body = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
-            detail = None
-        raise CliError(detail or f"API 请求失败：HTTP {exc.code}") from exc
+            body = None
+        if isinstance(body, dict):
+            detail = body.get("detail")
+            raise CliError(
+                str(detail or f"API 请求失败：HTTP {exc.code}"),
+                status=body.get("status", exc.code),
+                title=body.get("title"),
+                errors=body.get("errors"),
+                request_id=body.get("request_id"),
+                problem_type=body.get("type"),
+            ) from exc
+        raise CliError(f"API 请求失败：HTTP {exc.code}", status=exc.code) from exc
     except URLError as exc:
         raise CliError(f"无法连接 AI Video Station：{exc.reason}") from exc
     if not raw:
@@ -83,6 +163,42 @@ def _parser(environment: Mapping[str, str]) -> argparse.ArgumentParser:
     connect = subparsers.add_parser("connect", help="登记当前 Agent 名称和能力")
     connect.add_argument("--name", default="CLI Agent")
     connect.add_argument("--capabilities", default="search,download,watchlist,naming,hardlink,logs")
+    search = subparsers.add_parser("search", help="搜索已启用站点（默认不创建订阅）")
+    search.add_argument("keyword")
+    search.add_argument("--type", choices=("auto", "movie", "tv", "anime", "custom"), default="auto")
+    search.add_argument("--add-to-watchlist", action="store_true")
+    search.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), default="daily")
+    download = subparsers.add_parser("download", help="添加搜索结果到下载器")
+    download.add_argument("result_id")
+    download.add_argument("download_link")
+    download.add_argument("title")
+    download.add_argument("--type", choices=("auto", "movie", "tv", "anime", "custom"), default="auto")
+    download.add_argument("--path-rule-id")
+    manual = subparsers.add_parser("manual-download", help="添加磁力或下载链接")
+    manual.add_argument("download_link")
+    manual.add_argument("--title")
+    manual.add_argument("--type", choices=("auto", "movie", "tv", "anime", "custom"), default="auto")
+    manual.add_argument("--original-title")
+    manual.add_argument("--edition")
+    manual.add_argument("--episode-title")
+    manual.add_argument("--path-rule-id")
+    manual.add_argument("--preview", action="store_true", help="只识别并预览，不添加下载")
+    manual.add_argument("--subscribe", action="store_true", help="电视剧或动漫下载后同时订阅")
+    manual.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), default="daily")
+    watchlist_add = subparsers.add_parser("watchlist-add", help="添加订阅")
+    watchlist_add.add_argument("keyword")
+    watchlist_add.add_argument("--type", choices=("auto", "movie", "tv", "anime", "custom"), default="auto")
+    watchlist_add.add_argument("--path-rule-id")
+    watchlist_add.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), default="daily")
+    watchlist_update = subparsers.add_parser("watchlist-update", help="修改订阅观看模式")
+    watchlist_update.add_argument("item_id")
+    watchlist_update.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), required=True)
+    watchlist_check = subparsers.add_parser("watchlist-check", help="检查一个或全部订阅")
+    watchlist_check.add_argument("--item-id")
+    naming_retry = subparsers.add_parser("naming-retry", help="重试单个命名任务")
+    naming_retry.add_argument("job_id")
+    naming_check = subparsers.add_parser("naming-check", help="检查一个或全部命名任务")
+    naming_check.add_argument("--job-id")
     request = subparsers.add_parser("request", help="调用任意 OpenAPI 路径")
     request.add_argument("method", choices=("GET", "POST", "PATCH", "DELETE"))
     request.add_argument("path")
@@ -94,7 +210,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     environment: Mapping[str, str] | None = None,
-    opener: Callable[..., Any] = urlopen,
+    opener: Callable[..., Any] | None = None,
     output: Callable[[str], Any] = print,
 ) -> int:
     environment = os.environ if environment is None else environment
@@ -110,6 +226,48 @@ def main(
                 "name": args.name,
                 "capabilities": [item.strip() for item in args.capabilities.split(",") if item.strip()],
             }
+        elif args.command == "search":
+            method, path = "POST", "/api/search"
+            data = {"keyword": args.keyword, "type": args.type, "add_to_watchlist": args.add_to_watchlist}
+            if args.add_to_watchlist:
+                data["viewing_mode"] = args.viewing_mode
+        elif args.command == "download":
+            method, path = "POST", "/api/download"
+            data = {
+                "result_id": args.result_id,
+                "download_link": args.download_link,
+                "title": args.title,
+                "type": args.type,
+            }
+            if args.path_rule_id:
+                data["path_rule_id"] = args.path_rule_id
+        elif args.command == "manual-download":
+            method, path = "POST", "/api/download/manual/preview" if args.preview else "/api/download/manual"
+            data = {"download_link": args.download_link, "type": args.type}
+            for key in ("title", "original_title", "edition", "episode_title", "path_rule_id"):
+                value = getattr(args, key)
+                if value is not None:
+                    data[key] = value
+            if args.subscribe:
+                data["subscribe"] = True
+                data["viewing_mode"] = args.viewing_mode
+        elif args.command == "watchlist-add":
+            method, path = "POST", "/api/watchlist/add"
+            data = {"keyword": args.keyword, "type": args.type, "viewing_mode": args.viewing_mode}
+            if args.path_rule_id:
+                data["path_rule_id"] = args.path_rule_id
+        elif args.command == "watchlist-update":
+            method, path = "PATCH", f"/api/watchlist/{args.item_id}"
+            data = {"viewing_mode": args.viewing_mode}
+        elif args.command == "watchlist-check":
+            method, path = "POST", "/api/watchlist/check"
+            data = {"item_id": args.item_id} if args.item_id else {}
+        elif args.command == "naming-retry":
+            method, path = "POST", f"/api/naming/jobs/{args.job_id}/retry"
+            data = None
+        elif args.command == "naming-check":
+            method, path = "POST", "/api/naming/jobs/check"
+            data = {"job_id": args.job_id} if args.job_id else {}
         else:
             method, path = args.method, args.path
             try:
@@ -118,7 +276,7 @@ def main(
                 raise CliError("--data 必须是有效 JSON") from exc
         result = _request(args.url, token, method, path, data, opener=opener)
     except CliError as exc:
-        print(str(exc), file=sys.stderr)
+        print(json.dumps(exc.to_dict(), ensure_ascii=False), file=sys.stderr)
         return 1
     output(json.dumps(result, ensure_ascii=False, indent=None if args.compact else 2))
     return 0

@@ -3,6 +3,7 @@ from ainas.quality import (
     canonical_media_name,
     decode_thunder_url,
     detect_episode,
+    detect_episode_range,
     detect_season,
     infer_media_type,
     is_cam_release,
@@ -44,6 +45,31 @@ def test_release_metadata_and_priority_sorting():
     assert "size_bytes" not in api_value
 
 
+def test_release_parses_remux_audio_sets_original_language_and_complete_episode_range():
+    value = build_release(
+        "重器 第1季",
+        "全33集 1080p REMUX 西英双语",
+        "https://site.test/mj/1.html",
+        "magnet:?xt=urn:btih:" + "d" * 40,
+        "tv",
+        metadata_original_language="西班牙语",
+    )
+
+    assert value is not None
+    assert value.source == "Remux"
+    assert value.audio_languages == ("es", "en")
+    assert value.original_language == "es"
+    assert value.episodes[0] == "S01E01"
+    assert value.episodes[-1] == "S01E33"
+    assert len(value.episodes) == 33
+
+
+def test_episode_range_requires_episode_context_and_ignores_resolution_ranges():
+    assert detect_episode_range("Show.S01E01-E33.1080p")[-1] == "S01E33"
+    assert detect_episode_range("第 01-33 集 720-1080p")[-1] == "S01E33"
+    assert detect_episode_range("Show S01 480-720p") == ()
+
+
 def test_size_episode_and_thunder_helpers():
     assert parse_size("size 1.5 TB") == ("1.5TB", int(1.5 * 1024**4))
     assert parse_size("700MB")[0] == "700MB"
@@ -65,6 +91,8 @@ def test_size_episode_and_thunder_helpers():
 
 def test_media_type_inference_recognizes_anime_and_episode_series():
     assert infer_media_type("Rick and Morty", "https://site.test/dm/123.html", "auto") == "anime"
+    assert infer_media_type("Rick and Morty S01E01", "https://site.test/mj/123.html", "anime") == "anime"
     assert infer_media_type("凯蒂斯总统 S01E01", "https://site.test/unknown/123.html", "movie") == "tv"
+    assert infer_media_type("奥本海默 1080p", "https://site.test/mj/123.html", "movie") == "movie"
     assert infer_media_type("奥本海默 1080p", "https://site.test/movie/1.html", "movie") == "movie"
     assert infer_media_type("Python 学习资料", "https://site.test/files/1.html", "custom") == "custom"

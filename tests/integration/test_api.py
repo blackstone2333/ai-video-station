@@ -7,10 +7,12 @@ from pathlib import Path
 from ainas.app import create_app
 from ainas.config import Settings
 from ainas.download_records import DismissedDownloadRepository
+from ainas.errors import ConflictError
 from ainas.naming import NamingJobRepository, NamingPlan
 from ainas.quality import build_release
 from ainas.services import AppServices, ResultCache, SearchOutcome
 from ainas.sites import SiteRepository
+from ainas.state import StateStoreError
 from ainas.watchlist import WatchlistRepository
 from tests.unit.test_torrent_meta import TORRENT
 
@@ -75,34 +77,85 @@ class StubDownload:
         self.qb = qb
         self.manual_calls = []
 
-    def download(self, result_id, link, title, media_type):
+    def download(self, result_id, link, title, media_type, path_rule_id=None):
         self.qb.add_download(link, "sixv-movie")
         return {"qb_task_id": "a" * 40, "category": "sixv-movie", "title": title, "type": "movie"}
 
-    def manual_link(self, download_link, title, media_type, original_title=None, edition=None, episode_title=None):
+    def preview_link(self, download_link, title, media_type, original_title=None, edition=None, episode_title=None, path_rule_id=None):
+        self.manual_calls.append(("preview-link", download_link, title, media_type))
+        return {"ready": True, "title": title or "Manual", "type": "tv", "naming": {"plan": {"root_name": "Manual"}}}
+
+    def preview_torrent(self, content, filename, title, media_type, original_title=None, edition=None, episode_title=None, path_rule_id=None):
+        self.manual_calls.append(("preview-torrent", filename, title, media_type))
+        return {"ready": True, "title": title or "Movie.mkv", "type": "movie", "naming": {"plan": {"root_name": "Movie"}}}
+
+    def manual_link(self, download_link, title, media_type, original_title=None, edition=None, episode_title=None, path_rule_id=None):
         self.manual_calls.append(("link", download_link, title, media_type))
         return {"qb_task_id": "b" * 40, "category": "Movie", "title": title or "Manual", "type": media_type}
 
-    def manual_torrent(self, content, filename, title, media_type, original_title=None, edition=None, episode_title=None):
+    def manual_torrent(self, content, filename, title, media_type, original_title=None, edition=None, episode_title=None, path_rule_id=None):
         self.manual_calls.append(("torrent", filename, title, media_type))
         return {"qb_task_id": "c" * 40, "category": "Movie", "title": title or "Movie.mkv", "type": media_type}
 
 
 class StubWatchlistService:
+    def __init__(self, repository):
+        self.repository = repository
+
+    def add(self, keyword, media_type, path_rule_id=None, viewing_mode="daily", resource_preferences=None):
+        return self.repository.add(
+            keyword, media_type, path_rule_id, viewing_mode=viewing_mode,
+            resource_preferences=resource_preferences,
+        )
+
+    def update(self, item_id, viewing_mode=None, resource_preferences=None):
+        item = self.repository.get(item_id)
+        return self.repository.update(
+            item_id,
+            {
+                "viewing_mode": viewing_mode or item.get("viewing_mode", "daily"),
+                "resource_preferences": resource_preferences or item.get("resource_preferences"),
+            },
+        )
+
     def check(self, item_id=None):
         return {"running": False, "checked": 1, "downloaded": 0, "results": []}
 
 
 class StubNamingService:
+    def __init__(self, repository):
+        self.repository = repository
+
     def check(self, job_id=None):
         return {"running": False, "checked": 1, "completed": 1, "results": []}
+
+    def discard_record(self, job_id):
+        item = self.repository.get(job_id)
+        naming_failure = item.get("status") in {"failed", "missing_in_downloader"}
+        hardlink_unfinished = item.get("status") == "completed" and item.get("hardlink_status") in {
+            "pending", "waiting_download", "retrying", "failed", "partial", "conflict"
+        }
+        if not naming_failure and not hardlink_unfinished:
+            raise ConflictError("record cannot be discarded")
+        return self.repository.delete(job_id)
+
+    def preview_corrected_plan(self, job_id, overrides):
+        return {
+            "job_id": job_id,
+            "plan": {"media_type": "movie", "media_name": overrides.get("media_name", "测试电影")},
+            "preview": {"operations": []},
+            "torrent_found": False,
+        }
+
+    def apply_corrected_plan(self, job_id, plan):
+        return {"id": job_id, "status": "retrying", "plan": plan}
 
 
 def build_test_app(tmp_path: Path):
     settings = Settings(
         data_dir=tmp_path,
         scheduler_enabled=False,
-        api_key="test-key",
+        api_key="integration-api-key-1234",
         rate_limit_per_minute=100,
         cors_origins="https://qclaw.test",
     )
@@ -123,9 +176,9 @@ def build_test_app(tmp_path: Path):
         cache=cache,
         search=search,
         download=StubDownload(qb),
-        watchlist_service=StubWatchlistService(),
+        watchlist_service=StubWatchlistService(watchlist),
         naming_jobs=naming_jobs,
-        naming=StubNamingService(),
+        naming=StubNamingService(naming_jobs),
         sites=sites,
         dismissed_downloads=dismissed_downloads,
     )
@@ -156,7 +209,7 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert client.get("/ready").json["status"] == "ok"
     assert client.post("/api/search", json={"keyword": "奥本海默", "type": "movie"}).status_code == 401
 
-    headers = {"X-Api-Key": "test-key", "X-Request-Id": "request-1"}
+    headers = {"X-Api-Key": "integration-api-key-1234", "X-Request-Id": "request-1"}
     response = client.post("/api/search", json={"keyword": "《奥本海默》", "type": "movie"}, headers=headers)
     assert response.status_code == 200
     assert response.json["count"] == 1
@@ -181,10 +234,27 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert tasks["synced_at"]
 
 
+def test_ready_reports_persistent_state_failure_without_internal_details(tmp_path):
+    app, services = build_test_app(tmp_path)
+
+    class BrokenState:
+        def integrity_check(self):
+            raise StateStoreError("sensitive database path")
+
+    services.state_store = BrokenState()
+    response = app.test_client().get("/ready")
+
+    assert response.status_code == 503
+    assert response.json["checks"]["state"] == {
+        "status": "error",
+        "detail": "persistent state is unavailable",
+    }
+
+
 def test_download_records_can_be_hidden_restored_and_recovered(tmp_path):
     app, services = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
 
     hidden = client.post("/api/downloader/tasks/abc/dismiss", headers=headers)
     assert hidden.status_code == 201
@@ -217,7 +287,7 @@ def test_download_records_can_be_hidden_restored_and_recovered(tmp_path):
 def test_validation_search_is_read_only_and_watchlist_crud(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"Authorization": "Bearer test-key", "Origin": "https://qclaw.test"}
+    headers = {"Authorization": "Bearer integration-api-key-1234", "Origin": "https://qclaw.test"}
     bad = client.post("/api/search", json={"keyword": "  ", "type": "wrong"}, headers=headers)
     assert bad.status_code == 422
     assert bad.content_type == "application/problem+json"
@@ -259,13 +329,17 @@ def test_validation_search_is_read_only_and_watchlist_crud(tmp_path):
     assert listing.json["count"] == 2
     checked = client.post("/api/watchlist/check", json={"item_id": item_id}, headers=headers)
     assert checked.json["checked"] == 1
+    changed = client.patch(
+        f"/api/watchlist/{item_id}", json={"viewing_mode": "collection"}, headers=headers
+    )
+    assert changed.json["item"]["viewing_mode"] == "collection"
     assert client.delete(f"/api/watchlist/{item_id}", headers=headers).status_code == 204
 
 
 def test_malformed_requests_and_not_found_use_problem_details(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
     wrong_type = client.post("/api/search", data="x", content_type="text/plain", headers=headers)
     assert wrong_type.status_code == 422
     malformed = client.post("/api/search", data="{", content_type="application/json", headers=headers)
@@ -278,7 +352,7 @@ def test_malformed_requests_and_not_found_use_problem_details(tmp_path):
 def test_naming_job_api_lists_gets_and_checks_jobs(tmp_path):
     app, services = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
     plan = NamingPlan("movie", "大黄蜂", "大黄蜂 (2018)", 2018, None, None, "DHF.mp4")
     item = services.naming_jobs.upsert("a" * 40, plan, "sixv-movie")
 
@@ -306,7 +380,7 @@ def test_naming_job_api_lists_gets_and_checks_jobs(tmp_path):
 def test_naming_job_delete_rejects_non_failed_records(tmp_path):
     app, services = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
     plan = NamingPlan("movie", "大黄蜂", "大黄蜂 (2018)", 2018, None, None, "DHF.mp4")
     item = services.naming_jobs.upsert("a" * 40, plan, "sixv-movie")
 
@@ -316,10 +390,45 @@ def test_naming_job_delete_rejects_non_failed_records(tmp_path):
     assert services.naming_jobs.get(item["id"])["status"] == "pending"
 
 
+def test_naming_job_delete_accepts_missing_partial_and_conflict_records(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "integration-api-key-1234"}
+    plan = NamingPlan("movie", "大黄蜂", "大黄蜂 (2018)", 2018, None, None, "DHF.mp4")
+
+    terminal_states = (
+        {"status": "missing_in_downloader"},
+        {"status": "completed", "hardlink_status": "partial"},
+        {"status": "completed", "hardlink_status": "conflict"},
+    )
+    for index, changes in enumerate(terminal_states):
+        item = services.naming_jobs.upsert(str(index + 1) * 40, plan, "sixv-movie")
+        services.naming_jobs.update(item["id"], changes)
+
+        response = client.delete(f"/api/naming/jobs/{item['id']}", headers=headers)
+
+        assert response.status_code == 204
+        assert client.get(f"/api/naming/jobs/{item['id']}", headers=headers).status_code == 404
+
+
+def test_naming_job_delete_can_abandon_waiting_hardlink_record(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    headers = {"X-Api-Key": "integration-api-key-1234"}
+    plan = NamingPlan("movie", "手动下载", "手动下载", None, None, None, None)
+    item = services.naming_jobs.upsert("c" * 40, plan, "Movie")
+    services.naming_jobs.update(item["id"], {"status": "completed", "hardlink_status": "waiting_download"})
+
+    response = client.delete(f"/api/naming/jobs/{item['id']}", headers=headers)
+
+    assert response.status_code == 204
+    assert client.get(f"/api/naming/jobs/{item['id']}", headers=headers).status_code == 404
+
+
 def test_hardlink_history_and_site_settings_api(tmp_path):
     app, services = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
     plan = NamingPlan("anime", "Rick and Morty", "Rick and Morty", None, 1, "S01E01", "01.mkv")
     job = services.naming_jobs.upsert("b" * 40, plan, "Anime")
     services.naming_jobs.update(
@@ -347,7 +456,13 @@ def test_hardlink_history_and_site_settings_api(tmp_path):
     )
     assert created.status_code == 201
     site_id = created.json["item"]["id"]
-    assert client.patch(f"/api/settings/sites/{site_id}", json={"enabled": False}, headers=headers).json["item"]["enabled"] is False
+    updated_site = client.patch(
+        f"/api/settings/sites/{site_id}",
+        json={"enabled": False, "allow_private_hosts": True},
+        headers=headers,
+    ).json["item"]
+    assert updated_site["enabled"] is False
+    assert updated_site["allow_private_hosts"] is True
     assert client.get("/api/settings/sites", headers=headers).json["count"] == 2
     assert client.delete(f"/api/settings/sites/{site_id}", headers=headers).status_code == 204
 
@@ -355,7 +470,7 @@ def test_hardlink_history_and_site_settings_api(tmp_path):
 def test_logs_api_filters_and_redacts_tokens(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
     logging.getLogger("tests.diagnostics").error("hardlink failed for avs_agent_super-secret")
 
     response = client.get("/api/logs?level=error&query=hardlink&limit=10", headers=headers)
@@ -369,7 +484,7 @@ def test_logs_api_filters_and_redacts_tokens(tmp_path):
 def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
 
     assert client.get("/api/settings/paths").status_code == 401
     current = client.get("/api/settings/paths", headers=headers)
@@ -431,12 +546,26 @@ def test_path_settings_api_get_patch_auth_and_validation(tmp_path):
 def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
     app, services = build_test_app(tmp_path)
     client = app.test_client()
-    headers = {"X-Api-Key": "test-key"}
+    headers = {"X-Api-Key": "integration-api-key-1234"}
 
     magnet = "magnet:?xt=urn:btih:" + "b" * 40 + "&dn=Show.S01E01.mkv"
+    preview = client.post(
+        "/api/download/manual/preview",
+        json={"download_link": magnet, "title": "剧集", "type": "auto"},
+        headers=headers,
+    )
+    assert preview.status_code == 200
+    assert preview.json["ready"] is True
     manual = client.post(
         "/api/download/manual",
-        json={"download_link": magnet, "title": "剧集", "type": "tv", "episode_title": "第一集"},
+        json={
+            "download_link": magnet,
+            "title": "剧集",
+            "type": "tv",
+            "episode_title": "第一集",
+            "subscribe": True,
+            "viewing_mode": "daily",
+        },
         headers=headers,
     )
     assert manual.status_code == 200
@@ -449,7 +578,8 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
     )
     assert uploaded.status_code == 200
     assert uploaded.json["qb_task_id"] == "c" * 40
-    assert [call[0] for call in services.download.manual_calls] == ["link", "torrent"]
+    assert manual.json["watchlist"]["keyword"] == "剧集"
+    assert [call[0] for call in services.download.manual_calls] == ["preview-link", "link", "torrent"]
 
     rules = client.get("/api/settings/path-rules", headers=headers)
     assert rules.json["count"] == 4
@@ -476,7 +606,9 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
         headers=headers,
     )
     assert changed.json["item"]["rename_enabled"] is False
-    assert client.delete(f"/api/settings/path-rules/{rule_id}", headers=headers).status_code == 204
+    deleted = client.delete(f"/api/settings/path-rules/{rule_id}", headers=headers)
+    assert deleted.status_code == 200
+    assert deleted.json["deleted_id"] == rule_id
 
     assert client.get("/api/settings/system", headers=headers).json["settings"]["watchlist_check_hours"] == 12
     period = client.patch(
@@ -497,7 +629,7 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
 def test_agent_bootstrap_connect_on_demand_permissions_and_revoke(tmp_path):
     app, _ = build_test_app(tmp_path)
     client = app.test_client()
-    admin = {"X-Api-Key": "test-key"}
+    admin = {"X-Api-Key": "integration-api-key-1234"}
     created = client.post("/api/agents/bootstrap", json={"name": "Codex"}, headers=admin)
     assert created.status_code == 201
     agent = created.json["agent"]
@@ -522,3 +654,63 @@ def test_agent_bootstrap_connect_on_demand_permissions_and_revoke(tmp_path):
     assert forbidden.status_code == 403
     assert client.delete(f"/api/agents/{agent['id']}", headers=admin).status_code == 204
     assert client.get("/api/downloader/status", headers=bearer).status_code == 401
+
+
+def test_agent_scopes_allow_only_granted_actions_and_search_never_subscribes_implicitly(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    admin = {"X-Api-Key": "integration-api-key-1234"}
+    created = client.post(
+        "/api/agents/bootstrap",
+        json={"name": "search-only", "scopes": ["search"]},
+        headers=admin,
+    )
+    agent = created.json["agent"]
+    bearer = {"Authorization": f"Bearer {agent['token']}"}
+
+    searched = client.post("/api/search", json={"keyword": "奥本海默", "type": "movie"}, headers=bearer)
+    assert searched.status_code == 200
+    assert searched.json["watchlist_added"] is False
+    assert services.watchlist.list() == []
+    assert client.post(
+        "/api/search",
+        json={"keyword": "奥本海默", "type": "movie", "add_to_watchlist": True},
+        headers=bearer,
+    ).status_code == 403
+    assert client.post(
+        "/api/download",
+        json={
+            "result_id": searched.json["results"][0]["id"],
+            "download_link": searched.json["results"][0]["download_link"],
+            "title": "奥本海默",
+            "type": "movie",
+        },
+        headers=bearer,
+    ).status_code == 403
+    assert client.get("/api/watchlist", headers=bearer).status_code == 403
+
+
+def test_naming_correction_preview_and_apply_endpoints_require_naming_scope(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    admin = {"X-Api-Key": "integration-api-key-1234"}
+    plan = NamingPlan("movie", "原名", "原名", 2024, None, None, "source.mkv")
+    job = services.naming_jobs.upsert("f" * 40, plan, "sixv-movie")
+    created = client.post(
+        "/api/agents/bootstrap", json={"name": "namer", "scopes": ["naming"]}, headers=admin
+    )
+    bearer = {"Authorization": f"Bearer {created.json['agent']['token']}"}
+
+    preview = client.post(
+        f"/api/naming/jobs/{job['id']}/preview", json={"media_name": "修正名"}, headers=bearer
+    )
+    assert preview.status_code == 200
+    assert preview.json["plan"]["media_name"] == "修正名"
+    applied = client.patch(
+        f"/api/naming/jobs/{job['id']}/plan", json={"media_name": "修正名"}, headers=bearer
+    )
+    assert applied.status_code == 200
+    assert applied.json["item"]["status"] == "retrying"
+    assert client.post(
+        f"/api/naming/jobs/{job['id']}/preview", json={"media_name": "无权限"}, headers=admin
+    ).status_code == 200

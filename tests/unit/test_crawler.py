@@ -21,10 +21,23 @@ SEARCH_HTML = """
 DETAIL_HTML = """
 <html><body>
 <p>◎年　　代　2023</p>
+<p>◎语　　言　英语</p>
 <a href="magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&amp;dn=movie">12.5GB 国英双语 1080p BluRay x265</a>
 <a href="magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb">1080p HDTS 抢先版</a>
 <a href="https://www.6v123.net/">地址发布页</a>
 <script>var x='magnet:\\x3fxt=urn:btih:cccccccccccccccccccccccccccccccccccccccc';</script>
+</body></html>
+"""
+
+MISFILED_ANIME_SEARCH_HTML = """
+<html><meta charset="gb2312"><div class="listBox"><ul>
+  <li><div class="listInfo"><h3><a href="/mj/2026-08-15/60001.html" title="Rick and Morty">Rick and Morty</a></h3></div></li>
+</ul></div></html>
+"""
+
+MISFILED_ANIME_DETAIL_HTML = """
+<html><body>
+<a href="magnet:?xt=urn:btih:dddddddddddddddddddddddddddddddddddddddd">S01E01 1080p WEB-DL</a>
 </body></html>
 """
 
@@ -41,6 +54,7 @@ def test_parse_search_and_detail_pages():
     assert len(releases) == 2
     assert releases[0].size == "12.5GB"
     assert releases[0].year == 2023
+    assert releases[0].original_language == "en"
     assert all("bbbb" not in item.download_link for item in releases)
 
 
@@ -73,6 +87,27 @@ def test_search_posts_gbk_and_filters_media_type(settings):
     results = client.search("奥本海默", "movie")
     assert len(results) == 2
     assert all(item.media_type == "movie" for item in results)
+
+
+@responses.activate
+def test_name_match_can_find_anime_misfiled_in_sixv_tv_category(settings):
+    responses.get("https://sixv.test/", body="ok", status=200)
+    responses.post(
+        "https://sixv.test/e/search/index.php",
+        body=MISFILED_ANIME_SEARCH_HTML.encode("gb18030"),
+        status=200,
+        content_type="text/html",
+    )
+    responses.get(
+        "https://sixv.test/mj/2026-08-15/60001.html",
+        body=MISFILED_ANIME_DETAIL_HTML.encode("gb18030"),
+        status=200,
+    )
+
+    results = SixVClient(settings).search("Rick and Morty", "anime")
+
+    assert len(results) == 1
+    assert results[0].media_type == "anime"
 
 
 @responses.activate

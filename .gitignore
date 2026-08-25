@@ -6,5 +6,8 @@ __pycache__/
 .coverage
 htmlcov/
 .goldilocks/
-data/*.corrupt-*.json
-data/*.log*
+# Runtime state can contain API tokens, downloader credentials, and activity logs.
+# Keep only the empty directory marker so a fresh clone has a documented data mount.
+data/*
+!data/.gitkeep
+backups/

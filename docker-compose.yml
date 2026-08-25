@@ -1,13 +1,16 @@
 services:
   ai-video-station:
     build: .
+    image: "${IMAGE:-ai-video-station:local}"
     container_name: ai-video-station
     restart: unless-stopped
     user: "${PUID:-1000}:${PGID:-1000}"
     env_file:
       - .env
     ports:
-      - "${PORT:-16666}:16666"
+      # Bind loopback by default. Set BIND_ADDRESS to a specific LAN address
+      # only when the NAS firewall limits access to the trusted LAN.
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-16666}:16666"
     volumes:
       - ./data:/data
       - "${MEDIALIB_BASE_PATH:-/volume1/video}:/medialib:rw"

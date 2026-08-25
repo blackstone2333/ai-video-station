@@ -5,5 +5,6 @@ __pycache__
 .pytest_cache
 .coverage
 tests
-data/*.corrupt-*.json
-data/*.log*
+data/
+backups/
+.github/

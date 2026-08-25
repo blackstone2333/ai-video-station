@@ -1,7 +1,8 @@
 import pytest
+from types import SimpleNamespace
 
 from ainas.errors import ValidationAppError
-from ainas.quality import build_release
+from ainas.quality import build_release, link_display_name
 from ainas.services import DownloadService, ResultCache, SearchService
 
 
@@ -26,6 +27,27 @@ class StubQB:
     def add_download(self, link, category):
         self.values.append((link, category))
         return {"qb_task_id": "e" * 40, "category": category}
+
+    def add_torrent_file(self, content, filename, category):
+        self.values.append((filename, category))
+        return {"qb_task_id": "e" * 40, "category": category}
+
+
+class CapturingNaming:
+    def __init__(self):
+        self.release = None
+
+    def add_torrent_file(self, release, category, content, filename, info_hash, path_rule_id=None):
+        self.release = release
+        return {"qb_task_id": info_hash, "category": category}
+
+    def preview_plan(self, release, category, path_rule_id=None):
+        self.release = release
+        return {
+            "plan": {"media_type": release.media_type, "root_name": release.media_name},
+            "save_path": f"/Downloads/{category}/{release.media_name}",
+            "path_rule_id": path_rule_id,
+        }
 
 
 def test_search_service_resolves_auto_type_and_cache_expires():
@@ -81,3 +103,75 @@ def test_download_service_routes_custom_content(settings):
     )
     assert result["type"] == "custom"
     assert qb.values[0][1] == settings.qb_custom_category
+
+
+def test_manual_magnet_requires_a_real_link_name_or_explicit_title(settings):
+    qb = StubQB()
+    service = DownloadService(settings, qb, ResultCache())
+    nameless = "magnet:?xt=urn:btih:" + "a" * 40
+
+    with pytest.raises(ValidationAppError, match="不包含可识别的资源名称") as error:
+        service.manual_link(nameless, None, "auto")
+    assert error.value.errors[0]["code"] == "TITLE_REQUIRED_FOR_NAMELESS_LINK"
+    assert qb.values == []
+
+    with pytest.raises(ValidationAppError):
+        service.manual_link(nameless, "手动下载", "movie")
+    assert qb.values == []
+
+
+def test_manual_magnet_uses_dn_and_explicit_title_without_placeholder(settings):
+    qb = StubQB()
+    service = DownloadService(settings, qb, ResultCache())
+    named = "magnet:?xt=urn:btih:" + "b" * 40 + "&dn=Show.S01E02.1080p.mkv"
+
+    detected = service.manual_link(named, None, "auto")
+    overridden = service.manual_link(
+        "magnet:?xt=urn:btih:" + "c" * 40,
+        "我的电影",
+        "movie",
+    )
+
+    assert detected["source_name"] == "Show.S01E02.1080p.mkv"
+    assert detected["type"] == "tv"
+    assert overridden["title"] == "我的电影"
+    assert overridden["source_name"] == "我的电影"
+
+
+def test_manual_torrent_preserves_special_characters_in_metadata_name(settings, monkeypatch):
+    metadata = SimpleNamespace(name="Movie & More 中文.mkv", info_hash="d" * 40)
+    monkeypatch.setattr("ainas.services.parse_torrent_metadata", lambda _: metadata)
+    naming = CapturingNaming()
+    service = DownloadService(settings, StubQB(), ResultCache(), naming=naming)
+
+    result = service.manual_torrent(b"torrent", "movie.torrent", None, "movie")
+
+    assert result["source_name"] == metadata.name
+    assert naming.release.link_name == metadata.name
+    assert naming.release.download_link == (
+        "magnet:?xt=urn:btih:" + "d" * 40 + "&dn=Movie%20%26%20More%20%E4%B8%AD%E6%96%87.mkv"
+    )
+    assert link_display_name(naming.release.download_link, "") == metadata.name
+
+
+def test_manual_preview_has_no_side_effect_and_ambiguous_auto_requires_type(settings):
+    qb = StubQB()
+    naming = CapturingNaming()
+    service = DownloadService(settings, qb, ResultCache(), naming=naming)
+    episodic = "magnet:?xt=urn:btih:" + "e" * 40 + "&dn=Show.S01E02.1080p.WEB-DL.mkv"
+
+    preview = service.preview_link(episodic, "示例剧", "auto")
+
+    assert preview["ready"] is True
+    assert preview["type"] == "tv"
+    assert preview["naming"]["plan"]["media_type"] == "tv"
+    assert qb.values == []
+
+    ambiguous = "magnet:?xt=urn:btih:" + "f" * 40 + "&dn=Unlabelled.Release.mkv"
+    unresolved = service.preview_link(ambiguous, None, "auto")
+    assert unresolved["ready"] is False
+    assert unresolved["requires_media_type"] is True
+    with pytest.raises(ValidationAppError) as error:
+        service.manual_link(ambiguous, None, "auto")
+    assert error.value.errors[0]["code"] == "TYPE_REQUIRED"
+    assert qb.values == []
