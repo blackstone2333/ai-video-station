@@ -79,12 +79,18 @@ def test_size_episode_and_thunder_helpers():
     assert detect_episode("Show EP03") == "E03"
     assert detect_episode("全集") is None
     assert detect_episode("01.mp4") == "E01"
+    assert detect_episode(
+        "01.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
+        allow_numeric_prefix=True,
+    ) == "E01"
+    assert detect_episode("720p.HD.mkv", allow_numeric_prefix=True) is None
     assert detect_episode("Show.S01E01-E02.mkv") == "S01E01-E02"
     assert detect_season("电视剧[第三季]") == 3
     assert detect_season("Show Season 12") == 12
     assert canonical_media_name("漫长的季节[第二季]") == "漫长的季节"
     assert canonical_media_name("2023高分剧情《奥本海默》1080p.BD") == "奥本海默"
     assert canonical_media_name("<font color='red'>大黄蜂</font>") == "大黄蜂"
+    assert canonical_media_name("重器[全集]") == "重器"
     assert decode_thunder_url("magnet:?xt=x") == "magnet:?xt=x"
     assert decode_thunder_url("thunder://QUFlZDJrOi8vZmlsZVpa") == "ed2k://file"
 

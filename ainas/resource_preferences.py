@@ -122,7 +122,7 @@ def select_episode_files(files: Iterable[Mapping[str, Any]], wanted_episodes: Se
         all_indices.append(index)
         name = str(item.get("name") or "")
         suffix = PurePosixPath(name).suffix.casefold()
-        episode = _normalize_episode(detect_episode(name), seasons)
+        episode = _normalize_episode(detect_episode(name, allow_numeric_prefix=True), seasons)
         if suffix in VIDEO_EXTENSIONS:
             if episode:
                 video_episodes[index] = episode

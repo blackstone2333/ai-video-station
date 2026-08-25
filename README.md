@@ -4,6 +4,12 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v2.1.1 更新说明
+
+- 修复国产电视剧全集包中 `01.mkv`、`01.2160p.HD.mkv` 等纯数字前缀文件无法识别集号的问题，同时避免把 `720p`、`1080p` 等分辨率误当成集号。
+- 全集标题会去掉 `[全集]` 等发布标记并按 `片名 (年份)/Season 01/片名 - S01E01 - 画质.ext` 规范整理；无法可靠识别集号的电视剧或动漫会停止入库并显示可诊断错误，避免污染 Emby 媒体库。
+- 未开始改名的旧任务和硬链接重试都会重新执行安全检查；可识别的全集包缺集选择支持纯数字前缀文件名。
+
 ## v2.1.0 更新说明
 
 - 订阅增加“日常观看、收藏、省空间”三种观看模式。默认日常观看按 `1080p > 4K > 720p` 排序，同分辨率优先 `Remux/BluRay > WEB-DL > HDTV`，音轨优先“多语言 > 原始语言 > 中文 > 英语 > 其他”；偏好只负责排序，有可用资源时仍会自动兜底。
@@ -484,13 +490,13 @@ docker compose up -d --build --remove-orphans
 
 ## CI、发布与回滚
 
-每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.1.0` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
+每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.1.1` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
 
 部署已发布镜像时，请固定一个版本，不要使用浮动标签：
 
 ```bash
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.0 docker compose pull
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.0 docker compose up -d --no-build --remove-orphans
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.1 docker compose pull
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.1 docker compose up -d --no-build --remove-orphans
 ```
 
 回滚就是在完成并校验备份后，将上述版本替换为上一个已验证的 `v*` 标签并重新执行两条命令。若升级涉及运行时数据变化，先停止服务并按上一节恢复对应备份，再启动旧版本。
