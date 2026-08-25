@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: AI Video Station API
-  version: 2.0.2
+  version: 2.1.0
   description: >-
     Media search, downloads, watchlists, naming jobs, path rules and Agent access.
     Unless an operation says otherwise, an Agent token needs the documented x-agent-scope.
@@ -43,6 +43,31 @@ components:
     MediaType:
       type: string
       enum: [movie, tv, anime, custom, auto]
+    ViewingMode:
+      type: string
+      enum: [daily, collection, compact]
+      description: >-
+        daily prefers 1080p, collection prefers the highest available resolution,
+        and compact prefers 720p. All modes are soft preferences and retain fallbacks.
+    ResourcePreferences:
+      type: object
+      additionalProperties: false
+      description: Stored preference snapshot used to rank acceptable non-cam releases.
+      properties:
+        mode: {$ref: '#/components/schemas/ViewingMode'}
+        resolution_order:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [4320p, 2160p, 1080p, 720p, 480p, unknown]}
+        source_order:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [Remux, BluRay, WEB-DL, HDTV, HD, unknown]}
+        audio_order:
+          type: array
+          uniqueItems: true
+          items: {type: string, enum: [multi, original, zh, en, other, unknown]}
+        size_preference: {type: string, enum: [smaller, larger]}
     AgentScope:
       type: string
       enum: [read, search, download, watchlist, naming, settings]
@@ -59,6 +84,10 @@ components:
           description: >-
             Defaults to false, so search is read-only. If true, a watchlist scope is also
             required. The aliases addto_watchlist and addToWatchlist are accepted.
+        viewing_mode:
+          allOf: [{$ref: '#/components/schemas/ViewingMode'}]
+          default: daily
+          description: Applied only when add_to_watchlist is true.
     Release:
       type: object
       required: [id, title, download_link, type]
@@ -84,6 +113,10 @@ components:
         edition: {type: [string, 'null']}
         video_format: {type: [string, 'null']}
         episode_title: {type: [string, 'null']}
+        provider: {type: [string, 'null']}
+        audio_languages: {type: array, items: {type: string}}
+        original_language: {type: [string, 'null']}
+        episodes: {type: array, items: {type: string}}
     DownloadRequest:
       type: object
       required: [result_id, download_link, title]
@@ -106,6 +139,13 @@ components:
         edition: {type: [string, 'null'], maxLength: 100}
         episode_title: {type: [string, 'null'], maxLength: 300}
         path_rule_id: {type: [string, 'null'], minLength: 8, maxLength: 64}
+        subscribe:
+          type: boolean
+          default: false
+          description: Add episodic media to the watchlist after the download is accepted.
+        viewing_mode:
+          allOf: [{$ref: '#/components/schemas/ViewingMode'}]
+          default: daily
     ManualTorrentRequest:
       type: object
       required: [torrent]
@@ -118,6 +158,13 @@ components:
         edition: {type: [string, 'null'], maxLength: 100}
         episode_title: {type: [string, 'null'], maxLength: 300}
         path_rule_id: {type: [string, 'null'], minLength: 8, maxLength: 64}
+        subscribe:
+          type: boolean
+          default: false
+          description: Add episodic media to the watchlist after the download is accepted.
+        viewing_mode:
+          allOf: [{$ref: '#/components/schemas/ViewingMode'}]
+          default: daily
     WatchlistAddRequest:
       type: object
       required: [keyword]
@@ -126,6 +173,26 @@ components:
         keyword: {type: string, minLength: 1, maxLength: 100}
         type: {$ref: '#/components/schemas/MediaType'}
         path_rule_id: {type: [string, 'null'], minLength: 8, maxLength: 64}
+        viewing_mode:
+          allOf: [{$ref: '#/components/schemas/ViewingMode'}]
+          default: daily
+        resource_preferences:
+          oneOf:
+            - {$ref: '#/components/schemas/ResourcePreferences'}
+            - {type: 'null'}
+    WatchlistPatchRequest:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        viewing_mode:
+          oneOf:
+            - {$ref: '#/components/schemas/ViewingMode'}
+            - {type: 'null'}
+        resource_preferences:
+          oneOf:
+            - {$ref: '#/components/schemas/ResourcePreferences'}
+            - {type: 'null'}
     WatchlistCheckRequest:
       type: object
       additionalProperties: false
@@ -133,7 +200,7 @@ components:
         item_id: {type: [string, 'null'], minLength: 8, maxLength: 64}
     NamingStatus:
       type: string
-      enum: [submitting, awaiting_binding, pending, waiting_metadata, waiting_download, retrying, completed, failed, missing_in_downloader]
+      enum: [submitting, awaiting_binding, pending, waiting_metadata, waiting_selection, waiting_download, retrying, completed, failed, missing_in_downloader]
     HardlinkStatus:
       type: [string, 'null']
       enum: [pending, waiting_download, retrying, done, partial, conflict, failed, disabled, null]
@@ -393,6 +460,17 @@ paths:
           application/json: {schema: {$ref: '#/components/schemas/ManualDownloadRequest'}}
           multipart/form-data: {schema: {$ref: '#/components/schemas/ManualTorrentRequest'}}
       responses: {'200': {description: Added to downloader queue}, '422': {$ref: '#/components/responses/Validation'}, default: {$ref: '#/components/responses/Problem'}}
+  /api/download/manual/preview:
+    post:
+      summary: Preview manual media recognition, route and naming without downloading
+      x-agent-scope: download
+      security: [{ApiKey: []}, {AgentToken: []}]
+      requestBody:
+        required: true
+        content:
+          application/json: {schema: {$ref: '#/components/schemas/ManualDownloadRequest'}}
+          multipart/form-data: {schema: {$ref: '#/components/schemas/ManualTorrentRequest'}}
+      responses: {'200': {description: Recognition and naming preview}, '422': {$ref: '#/components/responses/Validation'}, default: {$ref: '#/components/responses/Problem'}}
   /api/downloader/status:
     get:
       summary: Downloader connection status
@@ -464,6 +542,12 @@ paths:
       responses: {'201': {description: Created or existing item, with Location header}, '422': {$ref: '#/components/responses/Validation'}, default: {$ref: '#/components/responses/Problem'}}
   /api/watchlist/{item_id}:
     parameters: [{$ref: '#/components/parameters/ItemId'}]
+    patch:
+      summary: Update a watchlist item's viewing preferences
+      x-agent-scope: watchlist
+      security: [{ApiKey: []}, {AgentToken: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/WatchlistPatchRequest'}}}}
+      responses: {'200': {description: Updated item}, '404': {$ref: '#/components/responses/NotFound'}, '422': {$ref: '#/components/responses/Validation'}, default: {$ref: '#/components/responses/Problem'}}
     delete:
       summary: Delete a watchlist item
       x-agent-scope: watchlist

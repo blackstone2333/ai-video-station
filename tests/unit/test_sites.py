@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import socket
 import threading
 import time
 
@@ -10,6 +11,19 @@ from ainas.config import Settings
 from ainas.errors import UpstreamError, ValidationAppError
 from ainas.quality import build_release
 from ainas.sites import GenericHTMLProvider, ProviderRegistry, SiteRepository
+
+
+@pytest.fixture(autouse=True)
+def stable_provider_dns(monkeypatch):
+    """Keep provider policy tests independent from local wildcard/test DNS."""
+    original = socket.getaddrinfo
+
+    def resolve(host, *args, **kwargs):
+        if host == "media.test":
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("8.8.8.8", 0))]
+        return original(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
 
 
 def generic_site(**overrides):

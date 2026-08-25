@@ -167,6 +167,7 @@ def _parser(environment: Mapping[str, str]) -> argparse.ArgumentParser:
     search.add_argument("keyword")
     search.add_argument("--type", choices=("auto", "movie", "tv", "anime", "custom"), default="auto")
     search.add_argument("--add-to-watchlist", action="store_true")
+    search.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), default="daily")
     download = subparsers.add_parser("download", help="添加搜索结果到下载器")
     download.add_argument("result_id")
     download.add_argument("download_link")
@@ -181,10 +182,17 @@ def _parser(environment: Mapping[str, str]) -> argparse.ArgumentParser:
     manual.add_argument("--edition")
     manual.add_argument("--episode-title")
     manual.add_argument("--path-rule-id")
+    manual.add_argument("--preview", action="store_true", help="只识别并预览，不添加下载")
+    manual.add_argument("--subscribe", action="store_true", help="电视剧或动漫下载后同时订阅")
+    manual.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), default="daily")
     watchlist_add = subparsers.add_parser("watchlist-add", help="添加订阅")
     watchlist_add.add_argument("keyword")
     watchlist_add.add_argument("--type", choices=("auto", "movie", "tv", "anime", "custom"), default="auto")
     watchlist_add.add_argument("--path-rule-id")
+    watchlist_add.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), default="daily")
+    watchlist_update = subparsers.add_parser("watchlist-update", help="修改订阅观看模式")
+    watchlist_update.add_argument("item_id")
+    watchlist_update.add_argument("--viewing-mode", choices=("daily", "collection", "compact"), required=True)
     watchlist_check = subparsers.add_parser("watchlist-check", help="检查一个或全部订阅")
     watchlist_check.add_argument("--item-id")
     naming_retry = subparsers.add_parser("naming-retry", help="重试单个命名任务")
@@ -221,6 +229,8 @@ def main(
         elif args.command == "search":
             method, path = "POST", "/api/search"
             data = {"keyword": args.keyword, "type": args.type, "add_to_watchlist": args.add_to_watchlist}
+            if args.add_to_watchlist:
+                data["viewing_mode"] = args.viewing_mode
         elif args.command == "download":
             method, path = "POST", "/api/download"
             data = {
@@ -232,17 +242,23 @@ def main(
             if args.path_rule_id:
                 data["path_rule_id"] = args.path_rule_id
         elif args.command == "manual-download":
-            method, path = "POST", "/api/download/manual"
+            method, path = "POST", "/api/download/manual/preview" if args.preview else "/api/download/manual"
             data = {"download_link": args.download_link, "type": args.type}
             for key in ("title", "original_title", "edition", "episode_title", "path_rule_id"):
                 value = getattr(args, key)
                 if value is not None:
                     data[key] = value
+            if args.subscribe:
+                data["subscribe"] = True
+                data["viewing_mode"] = args.viewing_mode
         elif args.command == "watchlist-add":
             method, path = "POST", "/api/watchlist/add"
-            data = {"keyword": args.keyword, "type": args.type}
+            data = {"keyword": args.keyword, "type": args.type, "viewing_mode": args.viewing_mode}
             if args.path_rule_id:
                 data["path_rule_id"] = args.path_rule_id
+        elif args.command == "watchlist-update":
+            method, path = "PATCH", f"/api/watchlist/{args.item_id}"
+            data = {"viewing_mode": args.viewing_mode}
         elif args.command == "watchlist-check":
             method, path = "POST", "/api/watchlist/check"
             data = {"item_id": args.item_id} if args.item_id else {}

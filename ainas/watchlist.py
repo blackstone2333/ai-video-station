@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 from .errors import NotFoundError
 from .errors import AppError
 from .state import StateStore, StateStoreError
+from .resource_preferences import profile_for
 
 
 def utc_now_iso() -> str:
@@ -102,6 +103,8 @@ class WatchlistRepository:
         media_type: str,
         path_rule_id: Optional[str] = None,
         path_rule_snapshot: Optional[Dict[str, Any]] = None,
+        viewing_mode: str = "daily",
+        resource_preferences: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         normalized = keyword.strip().casefold()
         with self._lock:
@@ -122,11 +125,14 @@ class WatchlistRepository:
                 "check_count": 0,
                 "downloaded_episodes": [],
                 "downloaded_links": [],
+                "episode_sources": {},
                 "status": "monitoring" if media_type in {"tv", "anime"} else "pending",
                 "found_at": None,
                 "last_error": None,
                 "path_rule_id": path_rule_id,
                 "path_rule_snapshot": deepcopy(path_rule_snapshot) if path_rule_snapshot else None,
+                "viewing_mode": viewing_mode,
+                "resource_preferences": deepcopy(resource_preferences) if resource_preferences else profile_for(viewing_mode).to_dict(),
             }
             data["items"].append(item)
             self._write(data)

@@ -86,12 +86,13 @@ class TransmissionClient:
         category: str,
         rename: Optional[str] = None,
         save_path: Optional[Any] = None,
+        paused: bool = False,
     ) -> Dict[str, Any]:
         link = QBittorrentClient.validate_download_link(download_link)
         arguments: Dict[str, Any] = {
             "filename": link,
             "download-dir": str(save_path or self.settings.download_path_for_category(category)),
-            "paused": False,
+            "paused": paused,
             "labels": [category],
         }
         result = self._rpc("torrent-add", arguments)
@@ -107,6 +108,7 @@ class TransmissionClient:
         category: str,
         rename: Optional[str] = None,
         save_path: Optional[Any] = None,
+        paused: bool = False,
     ) -> Dict[str, Any]:
         metadata = parse_torrent_metadata(content)
         result = self._rpc(
@@ -114,7 +116,7 @@ class TransmissionClient:
             {
                 "metainfo": base64.b64encode(content).decode("ascii"),
                 "download-dir": str(save_path or self.settings.download_path_for_category(category)),
-                "paused": False,
+                "paused": paused,
                 "labels": [category],
             },
         )
@@ -169,6 +171,20 @@ class TransmissionClient:
                 }
             )
         return result
+
+    def set_file_priorities(
+        self,
+        hash_value: str,
+        selected_indices: List[int],
+        skipped_indices: List[int],
+    ) -> None:
+        arguments: Dict[str, Any] = {"ids": [hash_value]}
+        if selected_indices:
+            arguments["files-wanted"] = selected_indices
+        if skipped_indices:
+            arguments["files-unwanted"] = skipped_indices
+        if len(arguments) > 1:
+            self._rpc("torrent-set", arguments)
 
     def _rename_path(self, hash_value: str, old_path: str, new_path: str) -> None:
         old = PurePosixPath(old_path)

@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 from .client import AVSClient, AVSSettings
-from .tools import MCPToolBindings, MediaType, TOOL_SPECS, tool_result
+from .tools import MCPToolBindings, MediaType, TOOL_SPECS, ViewingMode, tool_result
 
 
 def _sdk_annotations(spec: Any) -> Any:
@@ -65,6 +65,42 @@ def create_server(client: AVSClient | None = None) -> Any:
         return await tool_result(tools.add_download, result_id, download_link, title, media_type, path_rule_id)
 
     @server.tool(
+        name="avs_preview_manual_download",
+        description=specs["avs_preview_manual_download"].description,
+        annotations=_sdk_annotations(specs["avs_preview_manual_download"]),
+    )
+    async def avs_preview_manual_download(
+        download_link: str,
+        title: str | None = None,
+        media_type: MediaType = "auto",
+        path_rule_id: str | None = None,
+    ) -> dict[str, Any]:
+        return await tool_result(tools.preview_manual_download, download_link, title, media_type, path_rule_id)
+
+    @server.tool(
+        name="avs_add_manual_download",
+        description=specs["avs_add_manual_download"].description,
+        annotations=_sdk_annotations(specs["avs_add_manual_download"]),
+    )
+    async def avs_add_manual_download(
+        download_link: str,
+        title: str | None = None,
+        media_type: MediaType = "auto",
+        path_rule_id: str | None = None,
+        subscribe: bool = False,
+        viewing_mode: ViewingMode = "daily",
+    ) -> dict[str, Any]:
+        return await tool_result(
+            tools.add_manual_download,
+            download_link,
+            title,
+            media_type,
+            path_rule_id,
+            subscribe,
+            viewing_mode,
+        )
+
+    @server.tool(
         name="avs_list_downloads",
         description=specs["avs_list_downloads"].description,
         annotations=_sdk_annotations(specs["avs_list_downloads"]),
@@ -110,9 +146,20 @@ def create_server(client: AVSClient | None = None) -> Any:
         annotations=_sdk_annotations(specs["avs_add_watchlist"]),
     )
     async def avs_add_watchlist(
-        keyword: str, media_type: MediaType = "auto", path_rule_id: str | None = None
+        keyword: str,
+        media_type: MediaType = "auto",
+        path_rule_id: str | None = None,
+        viewing_mode: ViewingMode = "daily",
     ) -> dict[str, Any]:
-        return await tool_result(tools.add_watchlist, keyword, media_type, path_rule_id)
+        return await tool_result(tools.add_watchlist, keyword, media_type, path_rule_id, viewing_mode)
+
+    @server.tool(
+        name="avs_update_watchlist",
+        description=specs["avs_update_watchlist"].description,
+        annotations=_sdk_annotations(specs["avs_update_watchlist"]),
+    )
+    async def avs_update_watchlist(item_id: str, viewing_mode: ViewingMode) -> dict[str, Any]:
+        return await tool_result(tools.update_watchlist, item_id, viewing_mode)
 
     @server.tool(
         name="avs_check_watchlist",

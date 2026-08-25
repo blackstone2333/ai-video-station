@@ -100,6 +100,7 @@ def test_main_high_frequency_commands_construct_typed_payloads():
     assert main(url + ["download", "result-123", "magnet:?xt=urn:btih:abc", "示例", "--path-rule-id", "rule-123"], environment=environment, opener=opener) == 0
     assert main(url + ["manual-download", "magnet:?xt=urn:btih:def", "--original-title", "Example"], environment=environment, opener=opener) == 0
     assert main(url + ["watchlist-add", "星际迷航", "--type", "tv", "--path-rule-id", "rule-123"], environment=environment, opener=opener) == 0
+    assert main(url + ["watchlist-update", "item-123", "--viewing-mode", "collection"], environment=environment, opener=opener) == 0
     assert main(url + ["watchlist-check", "--item-id", "item-123"], environment=environment, opener=opener) == 0
     assert main(url + ["naming-retry", "job-123"], environment=environment, opener=opener) == 0
     assert main(url + ["naming-check", "--job-id", "job-123"], environment=environment, opener=opener) == 0
@@ -107,7 +108,8 @@ def test_main_high_frequency_commands_construct_typed_payloads():
     assert calls == [
         ("POST", "http://nas.test:16666/api/download", {"result_id": "result-123", "download_link": "magnet:?xt=urn:btih:abc", "title": "示例", "type": "auto", "path_rule_id": "rule-123"}),
         ("POST", "http://nas.test:16666/api/download/manual", {"download_link": "magnet:?xt=urn:btih:def", "type": "auto", "original_title": "Example"}),
-        ("POST", "http://nas.test:16666/api/watchlist/add", {"keyword": "星际迷航", "type": "tv", "path_rule_id": "rule-123"}),
+        ("POST", "http://nas.test:16666/api/watchlist/add", {"keyword": "星际迷航", "type": "tv", "viewing_mode": "daily", "path_rule_id": "rule-123"}),
+        ("PATCH", "http://nas.test:16666/api/watchlist/item-123", {"viewing_mode": "collection"}),
         ("POST", "http://nas.test:16666/api/watchlist/check", {"item_id": "item-123"}),
         ("POST", "http://nas.test:16666/api/naming/jobs/job-123/retry", None),
         ("POST", "http://nas.test:16666/api/naming/jobs/check", {"job_id": "job-123"}),

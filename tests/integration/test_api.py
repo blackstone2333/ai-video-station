@@ -81,6 +81,14 @@ class StubDownload:
         self.qb.add_download(link, "sixv-movie")
         return {"qb_task_id": "a" * 40, "category": "sixv-movie", "title": title, "type": "movie"}
 
+    def preview_link(self, download_link, title, media_type, original_title=None, edition=None, episode_title=None, path_rule_id=None):
+        self.manual_calls.append(("preview-link", download_link, title, media_type))
+        return {"ready": True, "title": title or "Manual", "type": "tv", "naming": {"plan": {"root_name": "Manual"}}}
+
+    def preview_torrent(self, content, filename, title, media_type, original_title=None, edition=None, episode_title=None, path_rule_id=None):
+        self.manual_calls.append(("preview-torrent", filename, title, media_type))
+        return {"ready": True, "title": title or "Movie.mkv", "type": "movie", "naming": {"plan": {"root_name": "Movie"}}}
+
     def manual_link(self, download_link, title, media_type, original_title=None, edition=None, episode_title=None, path_rule_id=None):
         self.manual_calls.append(("link", download_link, title, media_type))
         return {"qb_task_id": "b" * 40, "category": "Movie", "title": title or "Manual", "type": media_type}
@@ -94,8 +102,21 @@ class StubWatchlistService:
     def __init__(self, repository):
         self.repository = repository
 
-    def add(self, keyword, media_type, path_rule_id=None):
-        return self.repository.add(keyword, media_type, path_rule_id)
+    def add(self, keyword, media_type, path_rule_id=None, viewing_mode="daily", resource_preferences=None):
+        return self.repository.add(
+            keyword, media_type, path_rule_id, viewing_mode=viewing_mode,
+            resource_preferences=resource_preferences,
+        )
+
+    def update(self, item_id, viewing_mode=None, resource_preferences=None):
+        item = self.repository.get(item_id)
+        return self.repository.update(
+            item_id,
+            {
+                "viewing_mode": viewing_mode or item.get("viewing_mode", "daily"),
+                "resource_preferences": resource_preferences or item.get("resource_preferences"),
+            },
+        )
 
     def check(self, item_id=None):
         return {"running": False, "checked": 1, "downloaded": 0, "results": []}
@@ -308,6 +329,10 @@ def test_validation_search_is_read_only_and_watchlist_crud(tmp_path):
     assert listing.json["count"] == 2
     checked = client.post("/api/watchlist/check", json={"item_id": item_id}, headers=headers)
     assert checked.json["checked"] == 1
+    changed = client.patch(
+        f"/api/watchlist/{item_id}", json={"viewing_mode": "collection"}, headers=headers
+    )
+    assert changed.json["item"]["viewing_mode"] == "collection"
     assert client.delete(f"/api/watchlist/{item_id}", headers=headers).status_code == 204
 
 
@@ -524,9 +549,23 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
     headers = {"X-Api-Key": "integration-api-key-1234"}
 
     magnet = "magnet:?xt=urn:btih:" + "b" * 40 + "&dn=Show.S01E01.mkv"
+    preview = client.post(
+        "/api/download/manual/preview",
+        json={"download_link": magnet, "title": "剧集", "type": "auto"},
+        headers=headers,
+    )
+    assert preview.status_code == 200
+    assert preview.json["ready"] is True
     manual = client.post(
         "/api/download/manual",
-        json={"download_link": magnet, "title": "剧集", "type": "tv", "episode_title": "第一集"},
+        json={
+            "download_link": magnet,
+            "title": "剧集",
+            "type": "tv",
+            "episode_title": "第一集",
+            "subscribe": True,
+            "viewing_mode": "daily",
+        },
         headers=headers,
     )
     assert manual.status_code == 200
@@ -539,7 +578,8 @@ def test_manual_download_path_rules_and_runtime_settings_api(tmp_path):
     )
     assert uploaded.status_code == 200
     assert uploaded.json["qb_task_id"] == "c" * 40
-    assert [call[0] for call in services.download.manual_calls] == ["link", "torrent"]
+    assert manual.json["watchlist"]["keyword"] == "剧集"
+    assert [call[0] for call in services.download.manual_calls] == ["preview-link", "link", "torrent"]
 
     rules = client.get("/api/settings/path-rules", headers=headers)
     assert rules.json["count"] == 4

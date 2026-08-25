@@ -62,7 +62,7 @@
 
     <section id="panel-search" class="panel" data-panel="search" role="tabpanel" aria-labelledby="tab-search">
       <article class="card">
-        <header class="card-head action-head"><div><p>RESOURCE DISCOVERY</p><h2>资源搜索</h2></div><form id="search-form" class="head-actions"><input id="search-keyword" class="filter-input" type="search" required placeholder="片名、剧名或关键词"><select id="search-type" class="filter-input"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select><button id="search-submit" class="primary-button" type="submit">搜索资源</button></form></header>
+        <header class="card-head action-head"><div><p>RESOURCE DISCOVERY</p><h2>资源搜索</h2></div><form id="search-form" class="head-actions"><input id="search-keyword" class="filter-input" type="search" required placeholder="片名、剧名或关键词"><select id="search-type" class="filter-input"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select><select id="search-viewing-mode" class="filter-input" title="新订阅的资源偏好"><option value="daily">日常观看 · 1080p 优先</option><option value="collection">收藏 · 最高质量优先</option><option value="compact">省空间 · 720p 优先</option></select><button id="search-submit" class="primary-button" type="submit">搜索资源</button></form></header>
         <div id="search-provider-note" class="search-provider-note">将使用已启用的站点搜索。</div><div id="search-results" class="search-results"><div class="empty">输入关键词，跨已启用站点查找资源。</div></div>
       </article>
     </section>
@@ -92,9 +92,9 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>SUBSCRIPTIONS</p><h2>订阅与追更</h2></div>
-          <div class="head-actions"><input id="watch-filter" class="filter-input" type="search" placeholder="筛选片名"><button id="check-watchlist" class="primary-button" type="button">立即检查</button></div>
+          <div class="head-actions"><input id="watch-filter" class="filter-input" type="search" placeholder="筛选片名"><button id="add-watchlist" class="quiet-button" type="button">＋ 新增订阅</button><button id="check-watchlist" class="primary-button" type="button">立即检查</button></div>
         </header>
-        <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>状态</th><th>已下载</th><th>上次检查</th><th></th></tr></thead><tbody id="watchlist-body"></tbody></table></div>
+        <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>观看模式</th><th>状态</th><th>已下载</th><th>上次检查</th><th></th></tr></thead><tbody id="watchlist-body"></tbody></table></div>
       </article>
     </section>
 
@@ -109,7 +109,7 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>EMBY NORMALIZER</p><h2>规范命名任务</h2></div>
-          <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="submitting">提交中</option><option value="awaiting_binding">等待绑定下载器</option><option value="waiting_metadata">等待元数据</option><option value="waiting_download">等待下载</option><option value="missing_in_downloader">下载器中缺失</option><option value="completed">命名完成</option><option value="done">硬链接完成</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
+          <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="submitting">提交中</option><option value="awaiting_binding">等待绑定下载器</option><option value="waiting_metadata">等待元数据</option><option value="waiting_selection">全集待确认</option><option value="waiting_download">等待下载</option><option value="missing_in_downloader">下载器中缺失</option><option value="completed">命名完成</option><option value="done">硬链接完成</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
         </header>
         <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="naming-body"></tbody></table></div>
         <div id="naming-pagination" class="pagination"></div>
@@ -260,7 +260,19 @@
       <div data-source-panel="torrent" class="hidden"><label>BT 种子<input id="manual-torrent" type="file" accept=".torrent,application/x-bittorrent"></label></div>
       <div class="field-pair"><label>媒体类型<select id="manual-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>目录映射<select id="manual-path-rule"><option value="">自动选择路径规则</option></select></label><label>中文标题（链接无资源名时必填）<input id="manual-title" maxlength="500" placeholder="优先使用这里填写的标题"></label></div>
       <details><summary>补充命名信息（可选）</summary><div class="field-pair detail-fields"><label>原始标题<input id="manual-original-title" maxlength="300"></label><label>版本<input id="manual-edition" maxlength="100" placeholder="IMAX / Director's Cut"></label><label>集标题<input id="manual-episode-title" maxlength="300"></label></div></details>
-      <button id="submit-manual-download" class="primary-button wide" type="submit">识别并加入下载</button>
+      <div id="manual-subscribe-options" class="field-pair hidden"><label class="toggle-row compact"><span><b>同时订阅后续更新</b><small>仅电视剧和动漫可用</small></span><input id="manual-subscribe" type="checkbox"></label><label>观看模式<select id="manual-viewing-mode"><option value="daily">日常观看 · 1080p 优先</option><option value="collection">收藏 · 最高质量优先</option><option value="compact">省空间 · 720p 优先</option></select></label></div>
+      <pre id="manual-download-preview" class="provider-preview-result" aria-live="polite">先识别资源，确认媒体类型、规范名称和保存目录后再加入下载。</pre>
+      <button id="submit-manual-download" class="primary-button wide" type="submit">识别并预览</button>
+    </form>
+  </div>
+
+  <div id="watchlist-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="watchlist-title">
+    <form id="watchlist-form" class="modal-card">
+      <header><div><span class="auth-kicker">MANUAL SUBSCRIPTION</span><h2 id="watchlist-title">新增订阅</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <label>片名或剧名<input id="watchlist-keyword" required maxlength="100" placeholder="例如：重器"></label>
+      <div class="field-pair"><label>媒体类型<select id="watchlist-type"><option value="auto">自动识别</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label><label>观看模式<select id="watchlist-viewing-mode"><option value="daily">日常观看 · 1080p 优先</option><option value="collection">收藏 · 最高质量优先</option><option value="compact">省空间 · 720p 优先</option></select></label><label>目录映射<select id="watchlist-path-rule"><option value="">自动选择路径规则</option></select></label></div>
+      <small>偏好只用于安全资源之间的排序；即使首选版本没有出现，也不会错过其他可用版本。枪版仍会被硬拦截。</small>
+      <button class="primary-button wide" type="submit">保存订阅</button>
     </form>
   </div>
 

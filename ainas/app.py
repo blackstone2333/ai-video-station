@@ -36,6 +36,7 @@ from .models import (
     SystemSettingsPatchRequest,
     WatchlistAddRequest,
     WatchlistCheckRequest,
+    WatchlistPatchRequest,
 )
 from .path_rules import PathRuleInput, PathRuleRepository
 from .path_settings import PathSettingsRepository
@@ -186,11 +187,13 @@ def create_app(
         "search": "search",
         "download": "download",
         "manual_download": "download",
+        "manual_download_preview": "download",
         "downloader_task_dismiss": "download",
         "downloader_task_restore": "download",
         "downloader_task_recover": "download",
         "watchlist_add": "watchlist",
         "watchlist_delete": "watchlist",
+        "watchlist_update": "watchlist",
         "watchlist_check": "watchlist",
         "naming_retry": "naming",
         "naming_job_delete": "naming",
@@ -298,7 +301,11 @@ def create_app(
         watchlist_added = False
         if body.add_to_watchlist and watch_item is None:
             require_scope("watchlist")
-            watch_item = services.watchlist_service.add(body.keyword, watch_type)
+            watch_item = services.watchlist_service.add(
+                body.keyword,
+                watch_type,
+                viewing_mode=body.viewing_mode,
+            )
             watchlist_added = True
         response = {
             "success": True,
@@ -328,6 +335,7 @@ def create_app(
 
     @app.post("/api/download/manual")
     def manual_download():
+        watchlist_item = None
         if request.is_json:
             body = _parse_json(ManualDownloadRequest)
             result = services.download.manual_link(
@@ -339,6 +347,8 @@ def create_app(
                 body.episode_title,
                 body.path_rule_id,
             )
+            subscribe = body.subscribe
+            viewing_mode = body.viewing_mode
         else:
             upload = request.files.get("torrent")
             if not upload or not upload.filename:
@@ -365,7 +375,65 @@ def create_app(
                 form.episode_title,
                 form.path_rule_id,
             )
-        return jsonify({"success": True, "message": "已识别并添加到下载队列", **result})
+            subscribe = form.subscribe
+            viewing_mode = form.viewing_mode
+        if subscribe and result.get("type") in {"tv", "anime"}:
+            watchlist_item = services.watchlist_service.add(
+                str(result.get("title") or result.get("source_name") or "").strip(),
+                str(result["type"]),
+                result.get("path_rule_id"),
+                viewing_mode=viewing_mode,
+            )
+        return jsonify(
+            {
+                "success": True,
+                "message": "已识别并添加到下载队列",
+                **result,
+                "watchlist": watchlist_item,
+            }
+        )
+
+    @app.post("/api/download/manual/preview")
+    def manual_download_preview():
+        if request.is_json:
+            body = _parse_json(ManualDownloadRequest)
+            result = services.download.preview_link(
+                body.download_link,
+                body.title,
+                body.media_type,
+                body.original_title,
+                body.edition,
+                body.episode_title,
+                body.path_rule_id,
+            )
+        else:
+            upload = request.files.get("torrent")
+            if not upload or not upload.filename:
+                raise ValidationAppError(
+                    "请选择 BT 种子文件",
+                    [{"field": "torrent", "message": "torrent file is required", "code": "TORRENT_REQUIRED"}],
+                )
+            if not upload.filename.casefold().endswith(".torrent"):
+                raise ValidationAppError(
+                    "仅支持 .torrent 文件",
+                    [{"field": "torrent", "message": "file extension must be .torrent", "code": "INVALID_TORRENT_FILE"}],
+                )
+            content = upload.stream.read(settings.max_torrent_upload_bytes + 1)
+            if len(content) > settings.max_torrent_upload_bytes:
+                raise ValidationAppError("BT 种子文件过大")
+            form = _parse_value(ManualTorrentRequest, request.form.to_dict())
+            result = services.download.preview_torrent(
+                content,
+                upload.filename,
+                form.title,
+                form.media_type,
+                form.original_title,
+                form.edition,
+                form.episode_title,
+                form.path_rule_id,
+            )
+        message = "识别完成，请确认命名和目录" if result.get("ready") else "请选择媒体类型后继续"
+        return jsonify({"success": True, "message": message, **result})
 
     @app.get("/api/downloader/status")
     @app.get("/api/qb/status")
@@ -444,7 +512,13 @@ def create_app(
         if request.method == "OPTIONS":
             return "", 204
         body = _parse_json(WatchlistAddRequest)
-        item = services.watchlist_service.add(body.keyword, body.media_type, body.path_rule_id)
+        item = services.watchlist_service.add(
+            body.keyword,
+            body.media_type,
+            body.path_rule_id,
+            body.viewing_mode,
+            body.resource_preferences,
+        )
         response = jsonify({"success": True, "item": item})
         response.status_code = 201
         response.headers["Location"] = f"/api/watchlist/{item['id']}"
@@ -459,6 +533,16 @@ def create_app(
     def watchlist_delete(item_id: str):
         services.watchlist.delete(item_id)
         return "", 204
+
+    @app.patch("/api/watchlist/<item_id>")
+    def watchlist_update(item_id: str):
+        body = _parse_json(WatchlistPatchRequest)
+        item = services.watchlist_service.update(
+            item_id,
+            body.viewing_mode,
+            body.resource_preferences,
+        )
+        return jsonify({"success": True, "item": item})
 
     @app.post("/api/watchlist/check")
     def watchlist_check():

@@ -28,6 +28,7 @@ from .quality import (
     build_release,
     release_id,
 )
+from .resource_preferences import profile_for, rank_releases
 from .torrent_meta import parse_torrent_metadata
 from .watchlist import WatchlistRepository, utc_now_iso
 from .sites import ProviderRegistry, SiteRepository
@@ -177,8 +178,22 @@ class DownloadService:
 
     @staticmethod
     def _manual_type(title: str, source_name: str, media_type: str) -> str:
-        resolved = infer_media_type(f"{title} {source_name}", source_name, media_type)
-        return "custom" if resolved == "auto" else resolved
+        return infer_media_type(f"{title} {source_name}", source_name, media_type)
+
+    @staticmethod
+    def _require_manual_type(resolved_type: str) -> str:
+        if resolved_type == "auto":
+            raise ValidationAppError(
+                "无法可靠识别媒体类型，请选择电影、电视剧、动漫或自定义后再下载",
+                [
+                    {
+                        "field": "type",
+                        "message": "请选择明确的媒体类型",
+                        "code": "TYPE_REQUIRED",
+                    }
+                ],
+            )
+        return resolved_type
 
     @staticmethod
     def _with_manual_metadata(
@@ -221,7 +236,9 @@ class DownloadService:
             )
         selected_title = provided_title or source_name
         source_name = source_name or selected_title
-        resolved_type = self._manual_type(selected_title, source_name, media_type)
+        resolved_type = self._require_manual_type(
+            self._manual_type(selected_title, source_name, media_type)
+        )
         result_id = release_id("manual", download_link)
         release = build_release(selected_title, source_name, "", download_link, resolved_type)
         if release is None:
@@ -236,6 +253,64 @@ class DownloadService:
         )
         return {**result, "title": selected_title, "type": resolved_type, "source_name": source_name, "path_rule_id": route["id"] if route else None}
 
+    def preview_link(
+        self,
+        download_link: str,
+        title: Optional[str],
+        media_type: str,
+        original_title: Optional[str] = None,
+        edition: Optional[str] = None,
+        episode_title: Optional[str] = None,
+        path_rule_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        provided_title = (title or "").strip()
+        if provided_title.casefold() in {"手动下载", "manual download"}:
+            provided_title = ""
+        source_name = link_display_name(download_link, "").strip()
+        if not provided_title and not source_name:
+            raise ValidationAppError(
+                "磁力链接不包含可识别的资源名称，请填写标题后再继续",
+                [{"field": "title", "message": "链接缺少 dn 资源名时必须填写标题", "code": "TITLE_REQUIRED_FOR_NAMELESS_LINK"}],
+            )
+        selected_title = provided_title or source_name
+        source_name = source_name or selected_title
+        resolved_type = self._manual_type(selected_title, source_name, media_type)
+        if resolved_type == "auto":
+            return {
+                "ready": False,
+                "requires_media_type": True,
+                "title": selected_title,
+                "type": "auto",
+                "source_name": source_name,
+                "naming": None,
+            }
+        release = build_release(selected_title, source_name, "", download_link, resolved_type)
+        if release is None:
+            release = self._fallback_release(
+                release_id("manual", download_link), download_link, selected_title, resolved_type
+            )
+        release = self._with_manual_metadata(release, original_title, edition, episode_title)
+        category = self._category_for(resolved_type)
+        route = self._route_for(resolved_type, path_rule_id)
+        naming = (
+            self.naming.preview_plan(
+                release,
+                category,
+                path_rule_id=route["id"] if route else None,
+            )
+            if self.naming
+            else None
+        )
+        return {
+            "ready": True,
+            "requires_media_type": False,
+            "title": selected_title,
+            "type": resolved_type,
+            "source_name": source_name,
+            "path_rule_id": route["id"] if route else None,
+            "naming": naming,
+        }
+
     def manual_torrent(
         self,
         content: bytes,
@@ -249,7 +324,9 @@ class DownloadService:
     ) -> Dict[str, Any]:
         metadata = parse_torrent_metadata(content)
         selected_title = (title or metadata.name).strip()
-        resolved_type = self._manual_type(selected_title, metadata.name, media_type)
+        resolved_type = self._require_manual_type(
+            self._manual_type(selected_title, metadata.name, media_type)
+        )
         magnet = f"magnet:?xt=urn:btih:{metadata.info_hash}&dn={quote(metadata.name, safe='')}"
         release = build_release(selected_title, metadata.name, "", magnet, resolved_type)
         if release is None:
@@ -269,6 +346,55 @@ class DownloadService:
         else:
             result = self.qb.add_torrent_file(content, filename, category, save_path=route["downloader_path"]) if route else self.qb.add_torrent_file(content, filename, category)
         return {**result, "title": selected_title, "type": resolved_type, "source_name": metadata.name, "path_rule_id": route["id"] if route else None}
+
+    def preview_torrent(
+        self,
+        content: bytes,
+        filename: str,
+        title: Optional[str],
+        media_type: str,
+        original_title: Optional[str] = None,
+        edition: Optional[str] = None,
+        episode_title: Optional[str] = None,
+        path_rule_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        metadata = parse_torrent_metadata(content)
+        selected_title = (title or metadata.name).strip()
+        resolved_type = self._manual_type(selected_title, metadata.name, media_type)
+        if resolved_type == "auto":
+            return {
+                "ready": False,
+                "requires_media_type": True,
+                "title": selected_title,
+                "type": "auto",
+                "source_name": metadata.name,
+                "naming": None,
+            }
+        magnet = f"magnet:?xt=urn:btih:{metadata.info_hash}&dn={quote(metadata.name, safe='')}"
+        release = build_release(selected_title, metadata.name, "", magnet, resolved_type)
+        if release is None:
+            release = self._fallback_release(metadata.info_hash[:16], magnet, selected_title, resolved_type)
+        release = self._with_manual_metadata(release, original_title, edition, episode_title)
+        category = self._category_for(resolved_type)
+        route = self._route_for(resolved_type, path_rule_id)
+        naming = (
+            self.naming.preview_plan(
+                release,
+                category,
+                path_rule_id=route["id"] if route else None,
+            )
+            if self.naming
+            else None
+        )
+        return {
+            "ready": True,
+            "requires_media_type": False,
+            "title": selected_title,
+            "type": resolved_type,
+            "source_name": metadata.name,
+            "path_rule_id": route["id"] if route else None,
+            "naming": naming,
+        }
 
 
 class WatchlistService:
@@ -292,7 +418,14 @@ class WatchlistService:
     def _category_for(self, media_type: str) -> str:
         return policy_for(media_type).category_for(self.settings)
 
-    def add(self, keyword: str, media_type: str, path_rule_id: Optional[str] = None) -> Dict[str, Any]:
+    def add(
+        self,
+        keyword: str,
+        media_type: str,
+        path_rule_id: Optional[str] = None,
+        viewing_mode: str = "daily",
+        resource_preferences: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
         """Create an idempotent subscription and pin a selected route."""
         route = None
         if self.path_rules and path_rule_id:
@@ -306,7 +439,15 @@ class WatchlistService:
                 )
         elif self.path_rules and media_type != "auto":
             route = self.path_rules.resolve(media_type)
-        return self.repository.add(keyword, media_type, route["id"] if route else None, route)
+        preferences = profile_for(viewing_mode, resource_preferences).to_dict()
+        return self.repository.add(
+            keyword,
+            media_type,
+            route["id"] if route else None,
+            route,
+            viewing_mode,
+            preferences,
+        )
 
     def _is_expired(self, item: Dict[str, Any]) -> bool:
         try:
@@ -317,19 +458,53 @@ class WatchlistService:
             added = added.replace(tzinfo=timezone.utc)
         return datetime.now(timezone.utc) - added >= timedelta(days=self.settings.watchlist_expire_days)
 
+    def update(
+        self,
+        item_id: str,
+        viewing_mode: Optional[str] = None,
+        resource_preferences: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        item = self.repository.get(item_id)
+        mode = viewing_mode or item.get("viewing_mode") or "daily"
+        if resource_preferences is not None:
+            snapshot = resource_preferences
+        elif viewing_mode is not None:
+            # Selecting a preset is an explicit reset to that preset. Keeping
+            # the old snapshot here would make the UI label change while the
+            # previous resolution/source order silently remained active.
+            snapshot = None
+        else:
+            snapshot = item.get("resource_preferences")
+        return self.repository.update(
+            item_id,
+            {
+                "viewing_mode": mode,
+                "resource_preferences": profile_for(mode, snapshot).to_dict(),
+            },
+        )
+
     @staticmethod
-    def _select_tv_releases(releases: List[Release], downloaded_episodes: set[str]) -> List[Release]:
-        selected: List[Release] = []
+    def _select_tv_releases(
+        releases: List[Release], downloaded_episodes: set[str]
+    ) -> List[tuple[Release, Optional[List[str]]]]:
+        selected: List[tuple[Release, Optional[List[str]]]] = []
         episode_seen = set()
         bundle_selected = False
         for release in releases:
+            if release.episodes:
+                missing = [episode for episode in release.episodes if episode not in downloaded_episodes and episode not in episode_seen]
+                if missing and not bundle_selected:
+                    selected.append((release, missing))
+                    episode_seen.update(missing)
+                    bundle_selected = True
+                continue
             if release.episode:
                 if release.episode in downloaded_episodes or release.episode in episode_seen:
                     continue
                 episode_seen.add(release.episode)
-                selected.append(release)
+                selected.append((release, None))
             elif not bundle_selected:
-                selected.append(release)
+                selected.append((release, None))
                 bundle_selected = True
         return selected
 
@@ -360,6 +535,13 @@ class WatchlistService:
 
             downloaded_links = set(item.get("downloaded_links", []))
             downloaded_episodes = set(item.get("downloaded_episodes", []))
+            episode_sources = dict(item.get("episode_sources") or {})
+            viewing_mode = item.get("viewing_mode")
+            ranked_releases = (
+                rank_releases(releases, profile_for(viewing_mode, item.get("resource_preferences")))
+                if viewing_mode
+                else releases
+            )
             # A subscription pins its initial route.  Older records are upgraded
             # on first successful resolution so changing defaults is predictable.
             route = self.path_rules.resolve(resolved_type, item.get("path_rule_id")) if self.path_rules else None
@@ -367,28 +549,34 @@ class WatchlistService:
                 base_changes["path_rule_id"] = route["id"]
                 base_changes["path_rule_snapshot"] = route
             if policy_for(resolved_type).episodic:
-                candidates = self._select_tv_releases(releases, downloaded_episodes)
+                candidates = self._select_tv_releases(ranked_releases, downloaded_episodes)
             else:
-                candidates = releases[:1]
+                candidates = [(ranked_releases[0], None)]
             category = self._category_for(resolved_type)
 
             added = 0
-            for release in candidates:
+            for release, wanted_episodes in candidates:
                 if release.id in downloaded_links:
                     continue
                 try:
                     if self.naming:
-                        self.naming.add_download(release, category, path_rule_id=route["id"] if route else None)
+                        submission = self.naming.add_download(
+                            release,
+                            category,
+                            path_rule_id=route["id"] if route else None,
+                            wanted_episodes=wanted_episodes,
+                        )
                     else:
                         if route:
-                            self.qb.add_download(release.download_link, category, save_path=route["downloader_path"])
+                            submission = self.qb.add_download(release.download_link, category, save_path=route["downloader_path"])
                         else:
-                            self.qb.add_download(release.download_link, category)
+                            submission = self.qb.add_download(release.download_link, category)
                 except AppError as exc:
                     failed_changes = {
                         **base_changes,
                         "downloaded_links": sorted(downloaded_links),
-                        "downloaded_episodes": sorted(downloaded_episodes),
+                            "downloaded_episodes": sorted(downloaded_episodes),
+                            "episode_sources": episode_sources,
                         "status": (
                             "monitoring"
                             if policy_for(resolved_type).episodic
@@ -409,8 +597,16 @@ class WatchlistService:
                         "error": exc.detail,
                     }
                 downloaded_links.add(release.id)
-                if release.episode:
-                    downloaded_episodes.add(release.episode)
+                effective_episodes = wanted_episodes or ([release.episode] if release.episode else [])
+                for episode in effective_episodes:
+                    downloaded_episodes.add(episode)
+                    episode_sources[episode] = {
+                        "release_id": release.id,
+                        "task_id": submission.get("qb_task_id"),
+                        "naming_job_id": submission.get("naming_job_id"),
+                        "resolution": release.resolution,
+                        "source": release.source,
+                    }
                 added += 1
                 self.repository.update(
                     item["id"],
@@ -418,6 +614,7 @@ class WatchlistService:
                         **base_changes,
                         "downloaded_links": sorted(downloaded_links),
                         "downloaded_episodes": sorted(downloaded_episodes),
+                        "episode_sources": episode_sources,
                         "status": "monitoring" if policy_for(resolved_type).episodic else "found",
                         "found_at": item.get("found_at") or now,
                     },
@@ -427,6 +624,7 @@ class WatchlistService:
                 {
                     "downloaded_links": sorted(downloaded_links),
                     "downloaded_episodes": sorted(downloaded_episodes),
+                    "episode_sources": episode_sources,
                     "status": "monitoring" if policy_for(resolved_type).episodic else "found",
                     "found_at": item.get("found_at") or now,
                 }

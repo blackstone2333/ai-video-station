@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 MediaType = Literal["movie", "tv", "anime", "custom", "auto"]
+ViewingMode = Literal["daily", "collection", "compact"]
 
 
 class StrictModel(BaseModel):
@@ -20,6 +21,7 @@ class SearchRequest(StrictModel):
         default=False,
         validation_alias=AliasChoices("add_to_watchlist", "addto_watchlist", "addToWatchlist"),
     )
+    viewing_mode: ViewingMode = "daily"
 
     @field_validator("keyword")
     @classmethod
@@ -51,6 +53,8 @@ class ManualDownloadRequest(StrictModel):
     edition: Optional[str] = Field(default=None, max_length=100)
     episode_title: Optional[str] = Field(default=None, max_length=300)
     path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
+    subscribe: bool = False
+    viewing_mode: ViewingMode = "daily"
 
 
 class ManualTorrentRequest(StrictModel):
@@ -60,12 +64,16 @@ class ManualTorrentRequest(StrictModel):
     edition: Optional[str] = Field(default=None, max_length=100)
     episode_title: Optional[str] = Field(default=None, max_length=300)
     path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
+    subscribe: bool = False
+    viewing_mode: ViewingMode = "daily"
 
 
 class WatchlistAddRequest(StrictModel):
     keyword: str = Field(min_length=1, max_length=100)
     media_type: MediaType = Field(default="auto", alias="type")
     path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
+    viewing_mode: ViewingMode = "daily"
+    resource_preferences: Optional[Dict[str, Any]] = None
 
     @field_validator("keyword")
     @classmethod
@@ -78,6 +86,17 @@ class WatchlistAddRequest(StrictModel):
 
 class WatchlistCheckRequest(StrictModel):
     item_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
+
+
+class WatchlistPatchRequest(StrictModel):
+    viewing_mode: Optional[ViewingMode] = None
+    resource_preferences: Optional[Dict[str, Any]] = None
+
+    @model_validator(mode="after")
+    def require_change(self) -> "WatchlistPatchRequest":
+        if not self.model_fields_set:
+            raise ValueError("at least one watchlist setting is required")
+        return self
 
 
 class NamingCheckRequest(StrictModel):
@@ -172,6 +191,7 @@ class NamingJobFilterRequest(PaginationParams):
             "pending",
             "waiting_metadata",
             "waiting_download",
+            "waiting_selection",
             "retrying",
             "missing_in_downloader",
             "completed",

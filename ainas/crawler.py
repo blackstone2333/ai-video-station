@@ -27,6 +27,16 @@ DOWNLOAD_RE = re.compile(
     r"(?i)(magnet:\?[^\s\"'<>]+|ed2k://[^\s\"'<>]+|thunder://[A-Za-z0-9+/=_-]+|https?://[^\s\"'<>]+\.torrent(?:\?[^\s\"'<>]*)?)"
 )
 KNOWN_SITE_RE = re.compile(r"(^|\.)(?:6v|xb6v|66s6)[a-z0-9.-]*$", re.IGNORECASE)
+LANGUAGE_CODES = (
+    (re.compile(r"英语|英文|\bEnglish\b", re.IGNORECASE), "en"),
+    (re.compile(r"普通话|国语|汉语|中文|\bChinese\b", re.IGNORECASE), "zh"),
+    (re.compile(r"粤语|广东话|\bCantonese\b", re.IGNORECASE), "yue"),
+    (re.compile(r"日语|日文|\bJapanese\b", re.IGNORECASE), "ja"),
+    (re.compile(r"韩语|韩文|\bKorean\b", re.IGNORECASE), "ko"),
+    (re.compile(r"西班牙语|\bSpanish\b", re.IGNORECASE), "es"),
+    (re.compile(r"法语|法文|\bFrench\b", re.IGNORECASE), "fr"),
+    (re.compile(r"德语|德文|\bGerman\b", re.IGNORECASE), "de"),
+)
 
 
 @dataclass(frozen=True)
@@ -202,6 +212,16 @@ class SixVClient:
         page_text = soup.get_text("\n", strip=True)
         year_match = re.search(r"(?:◎\s*年\s*代|年\s*份|上映年份)\s*[:：]?\s*((?:19|20)\d{2})", page_text)
         metadata_year = int(year_match.group(1)) if year_match else None
+        language_match = re.search(
+            r"(?:◎\s*语\s*言|语\s*言)\s*[:：]?\s*([^\n]{1,40})",
+            page_text,
+            re.IGNORECASE,
+        )
+        language_text = language_match.group(1) if language_match else ""
+        metadata_original_language = next(
+            (code for pattern, code in LANGUAGE_CODES if pattern.search(language_text)),
+            None,
+        )
         candidates: List[Tuple[str, str]] = []
         for anchor in soup.find_all("a", href=True):
             link = SixVClient._clean_download_link(anchor.get("href", ""))
@@ -235,7 +255,15 @@ class SixVClient:
             seen.add(link)
             if label != link:
                 seen_labels.add(label_key)
-            release = build_release(page_title, label, page_url, link, media_type, metadata_year)
+            release = build_release(
+                page_title,
+                label,
+                page_url,
+                link,
+                media_type,
+                metadata_year,
+                metadata_original_language,
+            )
             if release:
                 releases.append(release)
         return sort_releases(releases)

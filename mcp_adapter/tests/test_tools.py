@@ -57,10 +57,14 @@ async def test_mutation_payloads_do_not_include_unset_path_rules() -> None:
     bindings = MCPToolBindings(client)
     await bindings.add_download("result1234", "magnet:?xt=urn:btih:test", "Example")
     await bindings.add_watchlist("Example", "movie")
+    await bindings.update_watchlist("item-123", "collection")
+    await bindings.preview_manual_download("magnet:?xt=urn:btih:preview", "Example", "movie")
     await bindings.check_watchlist()
     assert received == [
         ("/api/download", {"result_id": "result1234", "download_link": "magnet:?xt=urn:btih:test", "title": "Example", "type": "auto"}),
-        ("/api/watchlist/add", {"keyword": "Example", "type": "movie"}),
+        ("/api/watchlist/add", {"keyword": "Example", "type": "movie", "viewing_mode": "daily"}),
+        ("/api/watchlist/item-123", {"viewing_mode": "collection"}),
+        ("/api/download/manual/preview", {"download_link": "magnet:?xt=urn:btih:preview", "type": "movie", "title": "Example"}),
         ("/api/watchlist/check", {}),
     ]
     await client.aclose()
@@ -82,6 +86,7 @@ def test_allow_list_and_annotations_cover_the_declared_safe_surface() -> None:
     assert names == {
         "avs_search_media", "avs_add_download", "avs_list_downloads", "avs_list_naming_jobs",
         "avs_retry_naming_job", "avs_list_hardlinks", "avs_list_watchlist", "avs_add_watchlist", "avs_check_watchlist",
+        "avs_preview_manual_download", "avs_add_manual_download", "avs_update_watchlist",
     }
     annotations = {item.name: item.annotations for item in TOOL_SPECS}
     assert annotations["avs_search_media"].read_only is True

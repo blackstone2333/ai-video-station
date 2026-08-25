@@ -41,6 +41,14 @@ class CapturingNaming:
         self.release = release
         return {"qb_task_id": info_hash, "category": category}
 
+    def preview_plan(self, release, category, path_rule_id=None):
+        self.release = release
+        return {
+            "plan": {"media_type": release.media_type, "root_name": release.media_name},
+            "save_path": f"/Downloads/{category}/{release.media_name}",
+            "path_rule_id": path_rule_id,
+        }
+
 
 def test_search_service_resolves_auto_type_and_cache_expires():
     cache = ResultCache(ttl_seconds=60)
@@ -144,3 +152,26 @@ def test_manual_torrent_preserves_special_characters_in_metadata_name(settings, 
         "magnet:?xt=urn:btih:" + "d" * 40 + "&dn=Movie%20%26%20More%20%E4%B8%AD%E6%96%87.mkv"
     )
     assert link_display_name(naming.release.download_link, "") == metadata.name
+
+
+def test_manual_preview_has_no_side_effect_and_ambiguous_auto_requires_type(settings):
+    qb = StubQB()
+    naming = CapturingNaming()
+    service = DownloadService(settings, qb, ResultCache(), naming=naming)
+    episodic = "magnet:?xt=urn:btih:" + "e" * 40 + "&dn=Show.S01E02.1080p.WEB-DL.mkv"
+
+    preview = service.preview_link(episodic, "示例剧", "auto")
+
+    assert preview["ready"] is True
+    assert preview["type"] == "tv"
+    assert preview["naming"]["plan"]["media_type"] == "tv"
+    assert qb.values == []
+
+    ambiguous = "magnet:?xt=urn:btih:" + "f" * 40 + "&dn=Unlabelled.Release.mkv"
+    unresolved = service.preview_link(ambiguous, None, "auto")
+    assert unresolved["ready"] is False
+    assert unresolved["requires_media_type"] is True
+    with pytest.raises(ValidationAppError) as error:
+        service.manual_link(ambiguous, None, "auto")
+    assert error.value.errors[0]["code"] == "TYPE_REQUIRED"
+    assert qb.values == []

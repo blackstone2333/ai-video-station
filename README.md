@@ -4,6 +4,16 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v2.1.0 更新说明
+
+- 订阅增加“日常观看、收藏、省空间”三种观看模式。默认日常观看按 `1080p > 4K > 720p` 排序，同分辨率优先 `Remux/BluRay > WEB-DL > HDTV`，音轨优先“多语言 > 原始语言 > 中文 > 英语 > 其他”；偏好只负责排序，有可用资源时仍会自动兜底。
+- 枪版、TS、TC、CAM 等低质量来源继续硬性排除，不会因为分辨率标成 1080p 而进入下载。
+- 电视剧和动漫遇到全集包时，会先暂停新建任务并读取文件清单；能够逐集识别时只下载尚缺的集数及对应字幕，不能安全拆分时保持暂停并显示“全集待确认”，不会覆盖已有集数。
+- 手动磁力和 BT 种子改为“先识别预览、再确认下载”，明确显示媒体类型、下载目录和规范命名方案；电影、电视剧、动漫确认后完整进入命名与硬链接流程，电视剧/动漫可同时订阅后续更新。
+- 后台可直接新增订阅、为搜索或订阅选择观看模式，并随时修改已有订阅；CLI 与 MCP 同步支持手动预览、手动下载和订阅偏好更新。
+
+v2.1 不执行洗版清理，也不会删除旧下载、下载器任务或媒体库文件。无法安全拆分的全集包需要后续人工确认。
+
 ## v2.0.2 更新说明
 
 - 6V 搜索与订阅改为名称匹配优先：同名内容即使被发布到错误栏目，也不会再被站点分类提前过滤。
@@ -78,7 +88,9 @@ docker compose up -d --build --remove-orphans
 ## 核心能力
 
 - 多站点搜索：内置 6v，可通过 CSS 选择器添加普通 HTML 站点
-- 手动下载：导入磁力链接、HTTP `.torrent` 链接或上传 BT 种子
+- 手动下载：先预览识别磁力链接、HTTP `.torrent` 链接或上传的 BT 种子，再确认进入自动命名和硬链接流程
+- 资源偏好：按日常观看、收藏、省空间三种模式排序版本；枪版始终禁止
+- 全集缺集：能按文件识别集数时只下载缺失集，不能安全拆分时保持暂停待确认
 - 自动分类：电影、电视剧、动漫、自定义四类；结合栏目、季集标记和关键词判断
 - 规范命名：从资源页/链接名称还原片名，避免 `DHF`、`大H蜂`、`01.mkv` 被 Emby 误识别
 - 多目录映射：每类可配置多个下载源目录，每个源目录独立对应一个硬链接目标目录
@@ -88,7 +100,7 @@ docker compose up -d --build --remove-orphans
 - Agent 连接：顶部一键生成独立、可撤销、只显示一次的 Agent 令牌
 - Agent 操作面：REST/OpenAPI 与 `python -m ainas.cli` 命令行，按需连接，无需心跳
 
-手动磁力会优先读取链接中的 `dn` 资源名；如果链接本身不含名称，后台会要求先填写标题，不再用“手动下载”等占位词创建任务。放弃未完成的 AVS 命名/硬链接记录只会停止 AVS 后处理，不会删除下载器任务或任何文件。
+手动磁力会优先读取链接中的 `dn` 资源名；如果链接本身不含名称，后台会要求先填写标题。自动识别不明确时必须选择电影、电视剧、动漫或自定义，不会静默归入错误媒体库。放弃未完成的 AVS 命名/硬链接记录只会停止 AVS 后处理，不会删除下载器任务或任何文件。
 
 ## 命名规范
 
@@ -359,7 +371,7 @@ NAS 根挂载：宿主机路径 → /medialib
 
 通用模板适用于无登录、无复杂 JavaScript 验证、无强反爬的网站。需要登录、签名、Cloudflare 挑战或特殊编码的网站，应实现独立 provider 适配器。
 
-识别优先考虑站点栏目路径和动漫关键词，其次是 `SxxExx`、`第 xx 集`、`Season xx` 等季集证据，最后使用 API 明确传入的类型。手动下载无法可靠判断时会进入“自定义”，避免误入电影库。
+识别以名称和内容特征为主：动漫关键词、`SxxExx`、`第 xx 集`、`Season xx` 等证据优先，用户明确选择的类型和站点栏目用于补充判断。手动下载无法可靠判断时会要求明确选择类型，不会静默进入“自定义”。
 
 ## 常用 API
 
@@ -369,6 +381,7 @@ NAS 根挂载：宿主机路径 → /medialib
 |---|---|
 | `POST /api/search` | 跨已启用站点搜索 |
 | `POST /api/download` | 下载搜索结果 |
+| `POST /api/download/manual/preview` | 无副作用预览手动磁力/种子的识别与命名方案 |
 | `POST /api/download/manual` | 导入磁力/种子链接或上传 BT 文件 |
 | `GET /api/downloader/status` | 当前下载器状态 |
 | `GET /api/downloader/tasks` | 下载任务列表 |
@@ -377,6 +390,8 @@ NAS 根挂载：宿主机路径 → /medialib
 | `POST /api/downloader/tasks/{hash}/recover` | 重新校验并恢复指定下载任务 |
 | `POST /api/downloader/tasks/{hash}/relocate` | 将指定任务迁移到下载器容器目录 |
 | `GET /api/watchlist` | 订阅监听列表 |
+| `POST /api/watchlist/add` | 新增订阅并选择观看模式 |
+| `PATCH /api/watchlist/{item_id}` | 修改订阅观看模式或资源偏好 |
 | `POST /api/watchlist/check` | 立即检查订阅 |
 | `GET /api/naming/jobs` | 命名任务列表 |
 | `POST /api/naming/jobs/check` | 重试命名或硬链接 |
@@ -408,7 +423,10 @@ python -m ainas.cli naming
 python -m ainas.cli hardlinks
 python -m ainas.cli logs
 python -m ainas.cli search 'Rick and Morty' --type anime
-python -m ainas.cli watchlist-add 'Rick and Morty' --type anime
+python -m ainas.cli manual-download 'magnet:?...' --type tv --preview
+python -m ainas.cli manual-download 'magnet:?...' --type tv --subscribe --viewing-mode daily
+python -m ainas.cli watchlist-add 'Rick and Morty' --type anime --viewing-mode daily
+python -m ainas.cli watchlist-update <订阅ID> --viewing-mode collection
 python -m ainas.cli naming-retry <任务ID>
 ```
 
@@ -422,7 +440,7 @@ python -m ainas.cli request POST /api/naming/jobs/check --data '{"job_id":"任�
 
 ## Agent MCP 适配器
 
-[`mcp_adapter/`](mcp_adapter/) 是一个独立安装的 stdio MCP 服务，只调用 AVS REST，不直接读取状态库、媒体文件或下载器，也不新增网络端口。它提供搜索、添加下载、查看下载/命名/硬链接、重试命名和订阅等 9 个白名单工具。
+[`mcp_adapter/`](mcp_adapter/) 是一个独立安装的 stdio MCP 服务，只调用 AVS REST，不直接读取状态库、媒体文件或下载器，也不新增网络端口。它提供搜索、手动预览与下载、查看下载/命名/硬链接、重试命名和订阅等 12 个白名单工具。
 
 ```bash
 cd mcp_adapter
@@ -466,13 +484,13 @@ docker compose up -d --build --remove-orphans
 
 ## CI、发布与回滚
 
-每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.0.0` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
+每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.1.0` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
 
 部署已发布镜像时，请固定一个版本，不要使用浮动标签：
 
 ```bash
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.2 docker compose pull
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.0.2 docker compose up -d --no-build --remove-orphans
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.0 docker compose pull
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.0 docker compose up -d --no-build --remove-orphans
 ```
 
 回滚就是在完成并校验备份后，将上述版本替换为上一个已验证的 `v*` 标签并重新执行两条命令。若升级涉及运行时数据变化，先停止服务并按上一节恢复对应备份，再启动旧版本。

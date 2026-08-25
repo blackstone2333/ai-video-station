@@ -57,17 +57,20 @@ For Claude Desktop, use its operating-system secret/environment mechanism rather
 | --- | --- | --- | --- |
 | `avs_search_media` | `POST /api/search` with `add_to_watchlist: false` | search | read-only, idempotent, open-world |
 | `avs_add_download` | `POST /api/download` | download | non-destructive, non-idempotent, open-world |
+| `avs_preview_manual_download` | `POST /api/download/manual/preview` | download | read-only, idempotent, open-world |
+| `avs_add_manual_download` | `POST /api/download/manual` | download | non-destructive, non-idempotent, open-world |
 | `avs_list_downloads` | `GET /api/downloader/tasks` | read | read-only, idempotent |
 | `avs_list_naming_jobs` | `GET /api/naming/jobs` | read | read-only, idempotent |
 | `avs_retry_naming_job` | `POST /api/naming/jobs/{id}/retry` | naming | non-destructive, non-idempotent |
 | `avs_list_hardlinks` | `GET /api/hardlinks` | read | read-only, idempotent |
 | `avs_list_watchlist` | `GET /api/watchlist` | read | read-only, idempotent |
 | `avs_add_watchlist` | `POST /api/watchlist/add` | watchlist | non-destructive, idempotent |
+| `avs_update_watchlist` | `PATCH /api/watchlist/{id}` | watchlist | non-destructive, idempotent |
 | `avs_check_watchlist` | `POST /api/watchlist/check` | watchlist | non-destructive, non-idempotent, open-world |
 
 `list_naming_jobs` and `list_hardlinks` accept `page` / `per_page` (1–100) and their corresponding status filter. A REST problem response is returned as structured tool data containing `status`, `title`, `detail`, `request_id`, and `errors`, so callers can give an actionable error or quote the request ID to an AVS administrator.
 
-Not exposed: settings, site configuration, path rules, deletion endpoints, manual downloads, qBittorrent relocation/recovery, naming-plan edits, or arbitrary REST paths.
+Not exposed: settings, site configuration, path rules, deletion endpoints, torrent-file uploads, qBittorrent relocation/recovery, naming-plan edits, or arbitrary REST paths.
 
 ## Verification
 

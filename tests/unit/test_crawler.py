@@ -21,6 +21,7 @@ SEARCH_HTML = """
 DETAIL_HTML = """
 <html><body>
 <p>◎年　　代　2023</p>
+<p>◎语　　言　英语</p>
 <a href="magnet:?xt=urn:btih:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&amp;dn=movie">12.5GB 国英双语 1080p BluRay x265</a>
 <a href="magnet:?xt=urn:btih:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb">1080p HDTS 抢先版</a>
 <a href="https://www.6v123.net/">地址发布页</a>
@@ -53,6 +54,7 @@ def test_parse_search_and_detail_pages():
     assert len(releases) == 2
     assert releases[0].size == "12.5GB"
     assert releases[0].year == 2023
+    assert releases[0].original_language == "en"
     assert all("bbbb" not in item.download_link for item in releases)
 
 

@@ -9,6 +9,7 @@ from .client import AVSClient, AVSClientError
 
 
 MediaType = Literal["auto", "movie", "tv", "anime", "custom"]
+ViewingMode = Literal["daily", "collection", "compact"]
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
 
@@ -32,12 +33,15 @@ class ToolSpec:
 TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("avs_search_media", "Search enabled AVS media sources. This never adds a watchlist item.", ToolAnnotations(True, False, True, True)),
     ToolSpec("avs_add_download", "Add one selected AVS search result to its configured download queue.", ToolAnnotations(False, False, False, True)),
+    ToolSpec("avs_preview_manual_download", "Identify and preview a manual magnet link without adding a downloader task.", ToolAnnotations(True, False, True, True)),
+    ToolSpec("avs_add_manual_download", "Add a previewed manual magnet link to AVS, with optional episodic subscription.", ToolAnnotations(False, False, False, True)),
     ToolSpec("avs_list_downloads", "List current AVS downloader tasks.", ToolAnnotations(True, False, True, True)),
     ToolSpec("avs_list_naming_jobs", "List AVS naming jobs with optional status and pagination.", ToolAnnotations(True, False, True, True)),
     ToolSpec("avs_retry_naming_job", "Retry an existing AVS naming and hardlink job.", ToolAnnotations(False, False, False, True)),
     ToolSpec("avs_list_hardlinks", "List AVS hardlink records with optional status and pagination.", ToolAnnotations(True, False, True, True)),
     ToolSpec("avs_list_watchlist", "List AVS watchlist items.", ToolAnnotations(True, False, True, True)),
     ToolSpec("avs_add_watchlist", "Add an AVS watchlist item; AVS returns an existing matching item when present.", ToolAnnotations(False, False, True, True)),
+    ToolSpec("avs_update_watchlist", "Update an AVS watchlist viewing mode.", ToolAnnotations(False, False, True, True)),
     ToolSpec("avs_check_watchlist", "Run an AVS watchlist check, optionally for one item.", ToolAnnotations(False, False, False, True)),
 )
 
@@ -86,6 +90,39 @@ class MCPToolBindings:
     async def list_downloads(self) -> dict[str, Any]:
         return await self.client.request("GET", "/api/downloader/tasks")
 
+    async def preview_manual_download(
+        self,
+        download_link: str,
+        title: str | None = None,
+        media_type: MediaType = "auto",
+        path_rule_id: str | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"download_link": download_link, "type": media_type}
+        if title is not None:
+            body["title"] = title
+        if path_rule_id is not None:
+            body["path_rule_id"] = path_rule_id
+        return await self.client.request("POST", "/api/download/manual/preview", json=body)
+
+    async def add_manual_download(
+        self,
+        download_link: str,
+        title: str | None = None,
+        media_type: MediaType = "auto",
+        path_rule_id: str | None = None,
+        subscribe: bool = False,
+        viewing_mode: ViewingMode = "daily",
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"download_link": download_link, "type": media_type}
+        if title is not None:
+            body["title"] = title
+        if path_rule_id is not None:
+            body["path_rule_id"] = path_rule_id
+        if subscribe:
+            body["subscribe"] = True
+            body["viewing_mode"] = viewing_mode
+        return await self.client.request("POST", "/api/download/manual", json=body)
+
     async def list_naming_jobs(self, page: int = 1, per_page: int = 20, status: str | None = None) -> dict[str, Any]:
         params: dict[str, Any] = _page_params(page, per_page)
         if status:
@@ -105,12 +142,25 @@ class MCPToolBindings:
         return await self.client.request("GET", "/api/watchlist")
 
     async def add_watchlist(
-        self, keyword: str, media_type: MediaType = "auto", path_rule_id: str | None = None
+        self,
+        keyword: str,
+        media_type: MediaType = "auto",
+        path_rule_id: str | None = None,
+        viewing_mode: ViewingMode = "daily",
     ) -> dict[str, Any]:
-        body: dict[str, Any] = {"keyword": keyword, "type": media_type}
+        body: dict[str, Any] = {"keyword": keyword, "type": media_type, "viewing_mode": viewing_mode}
         if path_rule_id is not None:
             body["path_rule_id"] = path_rule_id
         return await self.client.request("POST", "/api/watchlist/add", json=body)
+
+    async def update_watchlist(
+        self, item_id: str, viewing_mode: ViewingMode
+    ) -> dict[str, Any]:
+        if not item_id.strip():
+            raise ValueError("item_id must not be blank")
+        return await self.client.request(
+            "PATCH", f"/api/watchlist/{item_id}", json={"viewing_mode": viewing_mode}
+        )
 
     async def check_watchlist(self, item_id: str | None = None) -> dict[str, Any]:
         body: dict[str, Any] = {}

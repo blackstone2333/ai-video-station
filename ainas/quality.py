@@ -56,6 +56,9 @@ class Release:
     edition: Optional[str] = None
     video_format: Optional[str] = None
     episode_title: Optional[str] = None
+    audio_languages: Tuple[str, ...] = ()
+    original_language: Optional[str] = None
+    episodes: Tuple[str, ...] = ()
 
     def to_api(self) -> Dict[str, Any]:
         value = asdict(self)
@@ -213,28 +216,111 @@ def _resolution(text: str) -> Optional[str]:
 
 
 def _source(text: str) -> Optional[str]:
+    if re.search(r"(?i)\bremux\b|原盘", text):
+        return "Remux"
     if re.search(
-        r"(?i)blu[ ._\-]?ray|b[dr]rip|remux|蓝光|(?:^|[._\- ])BD(?=$|[._\- ]|[^A-Za-z0-9])",
+        r"(?i)blu[ ._\-]?ray|b[dr]rip|蓝光|(?:^|[._\- ])BD(?=$|[._\- ]|[^A-Za-z0-9])",
         text,
     ):
         return "BluRay"
     if re.search(r"(?i)web[ ._\-]?dl|web[ ._\-]?rip", text):
         return "WEB-DL"
+    if re.search(r"(?i)hdtv", text):
+        return "HDTV"
     if re.search(r"(?i)(?:^|[._\- ])HD(?:TV)?(?=$|[._\- ]|[^A-Za-z0-9])|高清", text):
         return "HD"
     return None
 
 
-def _language(text: str) -> Optional[str]:
-    if re.search(r"国英双语|双语|国语.*英语|英语.*国语", text, re.IGNORECASE):
-        return "国英双语"
-    if re.search(r"英语|English", text, re.IGNORECASE):
-        return "英语"
-    if re.search(r"国语|普通话|中文", text, re.IGNORECASE):
-        return "国语"
-    if re.search(r"粤语", text, re.IGNORECASE):
-        return "粤语"
+LANGUAGE_NAMES = {
+    "zh": (r"国语|普通话|汉语|中文", "国语"),
+    "yue": (r"粤语|广东话", "粤语"),
+    "en": (r"英语|英文|English", "英语"),
+    "ja": (r"日语|日文|Japanese", "日语"),
+    "ko": (r"韩语|韩文|Korean", "韩语"),
+    "es": (r"西班牙语|西语|Spanish", "西班牙语"),
+    "fr": (r"法语|French", "法语"),
+    "de": (r"德语|German", "德语"),
+    "ru": (r"俄语|Russian", "俄语"),
+    "th": (r"泰语|Thai", "泰语"),
+}
+SHORT_LANGUAGE_NAMES = {
+    "中": "zh", "国": "zh", "粤": "yue", "英": "en", "日": "ja",
+    "韩": "ko", "西": "es", "法": "fr", "德": "de", "俄": "ru", "泰": "th",
+}
+
+
+def normalize_language(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    normalized = value.strip().casefold()
+    if normalized in LANGUAGE_NAMES:
+        return normalized
+    for code, (pattern, _) in LANGUAGE_NAMES.items():
+        if re.search(pattern, value, re.IGNORECASE):
+            return code
     return None
+
+
+def _audio_languages(text: str) -> Tuple[str, ...]:
+    cleaned = re.sub(
+        r"(?i)(?:简体|繁体|中文|英文|中英|简英|繁英|双语)?\s*(?:字幕|双字|中字|硬字|软字)",
+        " ",
+        text,
+    )
+    found: List[str] = []
+    compound = re.search(r"([中国粤英日韩西法德俄泰]{2,6})(?:多语|三语|双语)", cleaned)
+    if compound:
+        found.extend(SHORT_LANGUAGE_NAMES[token] for token in compound.group(1) if token in SHORT_LANGUAGE_NAMES)
+    for code, (pattern, _) in LANGUAGE_NAMES.items():
+        if re.search(pattern, cleaned, re.IGNORECASE):
+            found.append(code)
+    return tuple(dict.fromkeys(found))
+
+
+def _language(text: str, audio_languages: Tuple[str, ...]) -> Optional[str]:
+    if set(audio_languages) == {"zh", "en"}:
+        return "国英双语"
+    if len(audio_languages) >= 2 or re.search(r"多国语言|多语|三语|双语", text, re.IGNORECASE):
+        return "多语言"
+    if audio_languages:
+        return LANGUAGE_NAMES[audio_languages[0]][1]
+    return None
+
+
+def detect_episode_range(text: str, season: Optional[int] = None) -> Tuple[str, ...]:
+    normalized = unquote(text)
+    start = end = None
+    season_value = season
+    season_range = re.search(
+        r"(?i)\bS0*(\d{1,2})[ ._\-]*E0*(\d{1,3})\s*[-~至]\s*E?0*(\d{1,3})\b",
+        normalized,
+    )
+    if season_range:
+        season_value = int(season_range.group(1))
+        start, end = int(season_range.group(2)), int(season_range.group(3))
+    else:
+        episode_range = re.search(
+            r"(?i)\bE0*(\d{1,3})\s*[-~至]\s*E?0*(\d{1,3})\b",
+            normalized,
+        )
+        if episode_range:
+            start, end = int(episode_range.group(1)), int(episode_range.group(2))
+        else:
+            localized_range = re.search(
+                r"(?:第|全|更新至)?\s*0*(\d{1,3})\s*[-~至]\s*0*(\d{1,3})\s*[集话期]",
+                normalized,
+            )
+            if localized_range:
+                start, end = int(localized_range.group(1)), int(localized_range.group(2))
+            else:
+                complete = re.search(r"(?:全集|全)\s*0*(\d{1,3})\s*[集话期]", normalized)
+                if complete:
+                    start, end = 1, int(complete.group(1))
+    if start is None or end is None or end < start or end - start > 999:
+        return ()
+    season_value = season_value or detect_season(normalized) or 1
+    return tuple(f"S{season_value:02d}E{episode:02d}" for episode in range(start, end + 1))
 
 
 def _hdr(text: str) -> Optional[str]:
@@ -310,6 +396,7 @@ def build_release(
     download_link: str,
     media_type: str,
     metadata_year: Optional[int] = None,
+    metadata_original_language: Optional[str] = None,
 ) -> Optional[Release]:
     decoded_link = unquote(html.unescape(download_link))
     readable = " ".join(item for item in (page_title.strip(), label.strip(), decoded_link) if item)
@@ -324,10 +411,15 @@ def build_release(
     season = detect_season(readable) if resolved_media_type in EPISODIC_MEDIA_TYPES else None
     if episode and episode.startswith("S"):
         season = int(episode[1:3])
+    episodes = detect_episode_range(readable, season) if resolved_media_type in EPISODIC_MEDIA_TYPES else ()
+    if len(episodes) > 1:
+        episode = None
+        season = int(episodes[0][1:3])
     resolution = _resolution(readable)
     source = _source(readable)
     hdr = _hdr(readable)
     encoding = _encoding(readable)
+    audio_languages = _audio_languages(readable)
     media_name = canonical_media_name(page_title)
     return Release(
         id=release_id(page_url, download_link),
@@ -337,7 +429,7 @@ def build_release(
         size=size,
         resolution=resolution,
         source=source,
-        language=_language(readable),
+        language=_language(readable, audio_languages),
         hdr=hdr,
         encoding=encoding,
         media_type=resolved_media_type,
@@ -351,6 +443,9 @@ def build_release(
         part=_part(readable),
         edition=_edition(readable),
         video_format=_video_format(resolution, source, hdr, encoding),
+        audio_languages=audio_languages,
+        original_language=normalize_language(metadata_original_language),
+        episodes=episodes,
     )
 
 
@@ -358,7 +453,7 @@ def sort_releases(releases: Iterable[Release]) -> List[Release]:
     resolution_rank = {"4320p": 5, "2160p": 4, "1080p": 3, "720p": 2, "480p": 1}
     language_rank = {"国英双语": 4, "国语": 3, "英语": 2, "粤语": 1}
     hdr_rank = {"Dolby Vision": 4, "HDR10+": 3, "HDR10": 2, "HDR": 1}
-    source_rank = {"BluRay": 3, "WEB-DL": 2, "HD": 1}
+    source_rank = {"Remux": 4, "BluRay": 3, "WEB-DL": 2, "HDTV": 1, "HD": 1}
     return sorted(
         releases,
         key=lambda item: (

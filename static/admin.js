@@ -59,7 +59,7 @@ function stateLabel(value) {
     uploading:"做种中", stalledUP:"做种等待", queuedUP:"做种排队", forcedUP:"强制做种", checkingUP:"校验完成资源", pausedUP:"已完成", completed:"已完成", pending:"待处理",
     missingFiles:"文件缺失", error:"下载器错误",
     submitting:"提交中", awaiting_binding:"等待绑定下载器", waiting_metadata:"等待元数据", retrying:"重试中", failed:"失败", found:"已找到", monitoring:"追更中", expired:"超期监听",
-    waiting_download:"等待下载完成", missing_in_downloader:"下载器中缺失", done:"硬链接完成", partial:"部分入库", conflict:"入库冲突", disabled:"硬链接已关闭", site_disabled:"已停用",
+    waiting_download:"等待下载完成", waiting_selection:"全集待确认", missing_in_downloader:"下载器中缺失", done:"硬链接完成", partial:"部分入库", conflict:"入库冲突", disabled:"硬链接已关闭", site_disabled:"已停用",
   };
   return labels[value] || value || "未知";
 }
@@ -77,6 +77,10 @@ function namingStatus(item) {
 
 function mediaTypeLabel(value) {
   return ({movie:"电影", tv:"电视剧", anime:"动漫", custom:"自定义", auto:"自动"})[value] || value || "未知";
+}
+
+function viewingModeLabel(value) {
+  return ({daily:"日常观看", collection:"收藏", compact:"省空间"})[value] || "日常观看";
 }
 
 let toastTimer;
@@ -219,10 +223,10 @@ function renderWatchlist() {
   const values = state.watchlist.filter((item) => !query || item.keyword.toLowerCase().includes(query));
   $("#watchlist-body").innerHTML = values.length ? values.map((item) => `<tr>
     <td><div class="cell-main">${escapeHTML(item.keyword)}<small>${escapeHTML(item.id.slice(0,8))}</small></div></td>
-    <td>${escapeHTML(mediaTypeLabel(item.type))}</td><td>${chip(item.status)}</td>
+    <td>${escapeHTML(mediaTypeLabel(item.type))}</td><td><select class="filter-input compact-select" data-watch-mode="${escapeHTML(item.id)}" aria-label="${escapeHTML(item.keyword)}的观看模式"><option value="daily" ${item.viewing_mode === "daily" || !item.viewing_mode ? "selected" : ""}>日常观看</option><option value="collection" ${item.viewing_mode === "collection" ? "selected" : ""}>收藏</option><option value="compact" ${item.viewing_mode === "compact" ? "selected" : ""}>省空间</option></select></td><td>${chip(item.status)}</td>
     <td>${item.downloaded_episodes?.length || item.downloaded_links?.length || 0}</td><td>${formatDate(item.last_check)}</td>
     <td><button class="danger-button" data-delete-watch="${escapeHTML(item.id)}" type="button">移除</button></td>
-  </tr>`).join("") : '<tr><td colspan="6"><div class="empty">没有符合条件的监听任务</div></td></tr>';
+  </tr>`).join("") : '<tr><td colspan="7"><div class="empty">没有符合条件的监听任务</div></td></tr>';
 }
 
 async function copyText(value) {
@@ -278,7 +282,7 @@ function renderNaming() {
     <td>${item.result?.file_count ?? item.result?.video_count ?? "—"}</td><td>${formatDate(item.updated_at)}</td>
     <td class="error-text" title="${escapeHTML(item.hardlink_error || item.last_error || "")}">${escapeHTML(item.hardlink_error || item.last_error || "—")}</td>
     <td>${(() => {
-      const retryable = ["pending","submitting","awaiting_binding","waiting_metadata","waiting_download","retrying","failed","missing_in_downloader"].includes(item.status)
+      const retryable = ["pending","submitting","awaiting_binding","waiting_metadata","waiting_selection","waiting_download","retrying","failed","missing_in_downloader"].includes(item.status)
         || ["waiting_download","retrying","failed","partial","conflict"].includes(item.hardlink_status);
       const deletable = canDiscardJob(item);
       const correctable = ["failed","missing_in_downloader"].includes(item.status) || item.hardlink_status === "failed";
@@ -302,7 +306,8 @@ function renderSearchResults() {
   root.innerHTML = state.searchResults.length ? state.searchResults.map((item, index) => {
     const provider = item.provider || item.source || item.site_name || "未知来源";
     const watchlisted = Boolean(item.watchlist_exists);
-    return `<article class="search-result"><div><span class="count-chip">${escapeHTML(provider)}</span><h3>${escapeHTML(item.title || item.name || "未命名资源")}</h3><p>${escapeHTML(item.description || item.subtitle || item.url || "")}</p></div><div class="search-actions"><select data-search-type="${index}" aria-label="媒体类型"><option value="auto">自动</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select><select data-search-rule="${index}" aria-label="目录映射"><option value="">自动路径</option>${pathRuleOptions()}</select><button class="quiet-button" data-search-download="${index}" type="button">下载</button><button class="primary-button" data-search-subscribe="${index}" type="button" ${watchlisted ? "disabled" : ""}>${watchlisted ? "已订阅" : "订阅"}</button></div></article>`;
+    const quality = [item.resolution, item.source, item.language, item.size].filter(Boolean).join(" · ");
+    return `<article class="search-result"><div><span class="count-chip">${escapeHTML(provider)}</span><h3>${escapeHTML(item.title || item.name || "未命名资源")}</h3><p>${escapeHTML(quality || item.description || item.subtitle || item.url || "")}</p></div><div class="search-actions"><select data-search-type="${index}" aria-label="媒体类型"><option value="auto">自动</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select><select data-search-rule="${index}" aria-label="目录映射"><option value="">自动路径</option>${pathRuleOptions()}</select><button class="quiet-button" data-search-download="${index}" type="button">下载</button><button class="primary-button" data-search-subscribe="${index}" type="button" ${watchlisted ? "disabled" : ""}>${watchlisted ? "已订阅" : "订阅"}</button></div></article>`;
   }).join("") : '<div class="empty">没有找到资源。</div>';
 }
 
@@ -326,6 +331,7 @@ async function actOnSearchResult(index, action, button) {
           keyword: $("#search-keyword").value.trim() || item.media_name || item.title || item.name,
           type,
           path_rule_id: pathRuleId,
+          viewing_mode: $("#search-viewing-mode").value,
         };
     if (action === "download") await api("/api/download", {method:"POST", body:JSON.stringify(payload)});
     else await api("/api/watchlist/add", {method:"POST", body:JSON.stringify(payload)});
@@ -341,7 +347,7 @@ function jobActionMarkup(id, retryable, deletable, correctable = false) {
 function canDiscardJob(item) {
   const checkpoint = item.rename_checkpoint || {};
   const pristine = !Number(checkpoint.files || 0) && !Number(checkpoint.folders || 0) && !checkpoint.torrent;
-  const active = ["submitting","awaiting_binding","pending","waiting_metadata","waiting_download","retrying"].includes(item.status);
+  const active = ["submitting","awaiting_binding","pending","waiting_metadata","waiting_selection","waiting_download","retrying"].includes(item.status);
   const hardlink = item.status === "completed" && ["pending","waiting_download","retrying","failed","partial","conflict"].includes(item.hardlink_status);
   return ["failed","missing_in_downloader"].includes(item.status) || (active && pristine) || hardlink;
 }
@@ -404,7 +410,7 @@ async function deleteFailedJob(jobId, button) {
 }
 
 function renderAutomation() {
-  const waiting = state.naming.filter((item) => ["pending","submitting","awaiting_binding","waiting_metadata","waiting_download","retrying"].includes(item.status) || ["waiting_download","retrying"].includes(item.hardlink_status)).length;
+  const waiting = state.naming.filter((item) => ["pending","submitting","awaiting_binding","waiting_metadata","waiting_selection","waiting_download","retrying"].includes(item.status) || ["waiting_download","retrying"].includes(item.hardlink_status)).length;
   const failed = state.naming.filter((item) => ["failed","missing_in_downloader"].includes(item.status) || ["failed","missing_in_downloader","partial","conflict"].includes(item.hardlink_status)).length;
   const online = state.qb?.connected;
   const downloader = state.qb?.client === "transmission" ? "Transmission" : "qBittorrent";
@@ -441,6 +447,7 @@ function renderPaths() {
   }
   renderPathRules();
   fillPathRuleSelect("#manual-path-rule", $("#manual-path-rule").value);
+  fillPathRuleSelect("#watchlist-path-rule", $("#watchlist-path-rule").value);
 }
 
 function renderSystemSettings() {
@@ -620,6 +627,43 @@ function manualSourceChanged() {
   $$('[data-source-panel]').forEach((element) => element.classList.toggle("hidden", element.dataset.sourcePanel !== selected));
 }
 
+function resetManualPreview() {
+  state.manualPreviewSignature = null;
+  state.manualPreview = null;
+  $("#manual-download-preview").textContent = "先识别资源，确认媒体类型、规范名称和保存目录后再加入下载。";
+  $("#submit-manual-download").textContent = "识别并预览";
+  const explicitType = $("#manual-type").value;
+  $("#manual-subscribe-options").classList.toggle("hidden", !["tv","anime"].includes(explicitType));
+}
+
+function manualSharedPayload() {
+  return {
+    title: $("#manual-title").value.trim() || undefined,
+    type: $("#manual-type").value,
+    path_rule_id: $("#manual-path-rule").value || undefined,
+    original_title: $("#manual-original-title").value.trim() || undefined,
+    edition: $("#manual-edition").value.trim() || undefined,
+    episode_title: $("#manual-episode-title").value.trim() || undefined,
+    subscribe: $("#manual-subscribe").checked,
+    viewing_mode: $("#manual-viewing-mode").value,
+  };
+}
+
+function manualSignature(source, shared, file = null) {
+  const previewFields = {...shared}; delete previewFields.subscribe; delete previewFields.viewing_mode;
+  return JSON.stringify({source, previewFields, link: $("#manual-link").value.trim(), file: file ? [file.name, file.size, file.lastModified] : null});
+}
+
+function renderManualPreview(result) {
+  state.manualPreview = result;
+  const plan = result.naming?.plan || {};
+  $("#manual-download-preview").textContent = result.ready
+    ? `识别类型：${mediaTypeLabel(result.type)}\n规范目录：${plan.root_name || "保留资源原名"}\n下载目录：${result.naming?.save_path || "按目录映射自动选择"}\n原资源名：${result.source_name || "—"}`
+    : `尚未确认媒体类型：${result.source_name || result.title || "未知资源"}\n请选择电影、电视剧、动漫或自定义后重新识别。`;
+  $("#manual-subscribe-options").classList.toggle("hidden", !["tv","anime"].includes(result.type));
+  $("#submit-manual-download").textContent = result.ready ? "确认并加入下载" : "重新识别";
+}
+
 function manualLinkDisplayName(value) {
   try {
     const parsed = new URL(String(value || "").trim());
@@ -670,7 +714,8 @@ function bindEvents() {
     const searchSubscribe = event.target.closest("[data-search-subscribe]"); if (searchSubscribe) actOnSearchResult(Number(searchSubscribe.dataset.searchSubscribe), "subscribe", searchSubscribe);
   });
   $$(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
-  $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => openModal("#download-modal")));
+  $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => { resetManualPreview(); openModal("#download-modal"); }));
+  $("#add-watchlist").addEventListener("click", () => openModal("#watchlist-modal"));
   $("#refresh-all").addEventListener("click", () => loadAll()); $("#refresh-downloads").addEventListener("click", () => refreshDownloads()); $("#show-hidden-downloads").addEventListener("click", () => openModal("#hidden-downloads-modal")); $("#watch-filter").addEventListener("input", renderWatchlist);
   $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks);
   $("#log-level").addEventListener("change", renderLogs); $("#log-query").addEventListener("input", renderLogs); $("#refresh-logs").addEventListener("click", loadLogs);
@@ -679,6 +724,13 @@ function bindEvents() {
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
   $("#search-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#search-submit"); button.disabled = true; try { const result = await api("/api/search", {method:"POST",body:JSON.stringify({keyword:$("#search-keyword").value.trim(),type:$("#search-type").value,add_to_watchlist:false})}); state.searchResults = (result.items || result.results || []).map((item) => ({...item, watchlist_exists: Boolean(result.watchlist_exists)})); renderSearchResults(); $("#search-provider-note").textContent = `已从 ${new Set(state.searchResults.map((item) => item.provider || item.source || item.site_name).filter(Boolean)).size} 个来源返回 ${state.searchResults.length} 条结果。`; toast("搜索已完成"); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
+  $("#watchlist-body").addEventListener("change", async (event) => {
+    const select = event.target.closest("[data-watch-mode]"); if (!select) return;
+    select.disabled = true;
+    try { await api(`/api/watchlist/${select.dataset.watchMode}`, {method:"PATCH",body:JSON.stringify({viewing_mode:select.value})}); toast(`观看模式已改为${viewingModeLabel(select.value)}`); await loadAll(true); }
+    catch (error) { toast(error.message, true); }
+    finally { select.disabled = false; }
+  });
   $("#watchlist-body").addEventListener("click", async (event) => {
     const button = event.target.closest("[data-delete-watch]"); if (!button || !confirm("确定移除这个监听任务吗？")) return;
     try { await api(`/api/watchlist/${button.dataset.deleteWatch}`, {method:"DELETE"}); toast("监听已移除"); await loadAll(true); } catch (error) { toast(error.message, true); }
@@ -704,16 +756,37 @@ function bindEvents() {
       toast(result.ok ? "站点预览测试通过" : "站点预览测试返回异常", !result.ok);
     } catch (error) { $("#provider-preview-result").textContent = error.message; showError(error); } finally { button.disabled = false; }
   });
-  $('input[name="download-source"][value="magnet"]').closest(".source-switch").addEventListener("change", manualSourceChanged);
-  $("#manual-link").addEventListener("input", updateManualLinkName);
+  $('input[name="download-source"][value="magnet"]').closest(".source-switch").addEventListener("change", () => { manualSourceChanged(); resetManualPreview(); });
+  $("#manual-link").addEventListener("input", () => { updateManualLinkName(); resetManualPreview(); });
+  $("#manual-download-form").addEventListener("input", (event) => { if (!["manual-subscribe","manual-viewing-mode","manual-link"].includes(event.target.id)) resetManualPreview(); });
   $("#manual-download-form").addEventListener("submit", async (event) => {
     event.preventDefault(); const button = $("#submit-manual-download"); const source = $('input[name="download-source"]:checked').value;
-    const shared = {title:$("#manual-title").value.trim() || undefined,type:$("#manual-type").value,path_rule_id:$("#manual-path-rule").value || undefined,original_title:$("#manual-original-title").value.trim() || undefined,edition:$("#manual-edition").value.trim() || undefined,episode_title:$("#manual-episode-title").value.trim() || undefined};
+    const shared = manualSharedPayload(); const file = source === "torrent" ? $("#manual-torrent").files[0] : null;
     button.disabled = true;
     try {
-      if (source === "magnet") { const link = $("#manual-link").value.trim(); if (!link) throw new Error("请输入磁力链接或种子链接"); if (!shared.title && !updateManualLinkName()) { $("#manual-title").focus(); throw new Error("这个链接没有资源名，请先填写标题"); } await api("/api/download/manual", {method:"POST",body:JSON.stringify({...shared,download_link:link})}); }
-      else { const file = $("#manual-torrent").files[0]; if (!file) throw new Error("请选择 .torrent 文件"); const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); await api("/api/download/manual", {method:"POST",body:form}); }
+      const link = $("#manual-link").value.trim();
+      if (source === "magnet" && !link) throw new Error("请输入磁力链接或种子链接");
+      if (source === "magnet" && !shared.title && !updateManualLinkName()) { $("#manual-title").focus(); throw new Error("这个链接没有资源名，请先填写标题"); }
+      if (source === "torrent" && !file) throw new Error("请选择 .torrent 文件");
+      const signature = manualSignature(source, shared, file);
+      if (state.manualPreviewSignature !== signature || !state.manualPreview?.ready) {
+        let preview;
+        if (source === "magnet") preview = await api("/api/download/manual/preview", {method:"POST",body:JSON.stringify({...shared,download_link:link})});
+        else { const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); preview = await api("/api/download/manual/preview", {method:"POST",body:form}); }
+        state.manualPreviewSignature = preview.ready ? signature : null; renderManualPreview(preview);
+        toast(preview.ready ? "识别完成，请确认后加入下载" : "请选择媒体类型后重新识别", !preview.ready);
+        return;
+      }
+      if (source === "magnet") await api("/api/download/manual", {method:"POST",body:JSON.stringify({...shared,download_link:link})});
+      else { const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); await api("/api/download/manual", {method:"POST",body:form}); }
       toast("资源已识别并加入下载队列"); $("#download-modal").classList.add("hidden"); event.currentTarget.reset(); manualSourceChanged(); updateManualLinkName(); await loadAll(true);
+    } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
+  });
+  $("#watchlist-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+    try {
+      await api("/api/watchlist/add", {method:"POST",body:JSON.stringify({keyword:$("#watchlist-keyword").value.trim(),type:$("#watchlist-type").value,viewing_mode:$("#watchlist-viewing-mode").value,path_rule_id:$("#watchlist-path-rule").value || undefined})});
+      toast("订阅已保存"); $("#watchlist-modal").classList.add("hidden"); event.currentTarget.reset(); await loadAll(true);
     } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#path-hardlink-enabled").addEventListener("change", () => { state.pathsDirty = true; });

@@ -192,6 +192,7 @@ class QBittorrentClient:
         category: str,
         rename: Optional[str] = None,
         save_path: Optional[Any] = None,
+        paused: bool = False,
     ) -> Dict[str, Any]:
         link = self.validate_download_link(download_link)
         self.login()
@@ -200,7 +201,7 @@ class QBittorrentClient:
             "urls": link,
             "category": category,
             "savepath": str(save_path or self.settings.download_path_for_category(category)),
-            "paused": "false",
+            "paused": "true" if paused else "false",
             "autoTMM": "false",
         }
         if rename:
@@ -223,6 +224,7 @@ class QBittorrentClient:
         category: str,
         rename: Optional[str] = None,
         save_path: Optional[Any] = None,
+        paused: bool = False,
     ) -> Dict[str, Any]:
         metadata = parse_torrent_metadata(content)
         self.login()
@@ -230,7 +232,7 @@ class QBittorrentClient:
         payload = {
             "category": category,
             "savepath": str(save_path or self.settings.download_path_for_category(category)),
-            "paused": "false",
+            "paused": "true" if paused else "false",
             "autoTMM": "false",
         }
         if rename:
@@ -265,6 +267,25 @@ class QBittorrentClient:
             }
             for item in response.json()
         ]
+
+    def set_file_priorities(
+        self,
+        hash_value: str,
+        selected_indices: List[int],
+        skipped_indices: List[int],
+    ) -> None:
+        for indices, priority in ((skipped_indices, 0), (selected_indices, 1)):
+            if not indices:
+                continue
+            self._request(
+                "POST",
+                "/api/v2/torrents/filePrio",
+                data={
+                    "hash": hash_value,
+                    "id": "|".join(str(index) for index in indices),
+                    "priority": str(priority),
+                },
+            )
 
     def rename_file(self, hash_value: str, old_path: str, new_path: str) -> None:
         self._request(

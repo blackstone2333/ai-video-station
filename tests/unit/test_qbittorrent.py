@@ -186,3 +186,25 @@ def test_qbittorrent_uploads_torrent_files(tmp_path):
     body = responses.calls[2].request.body
     assert b"movie.torrent" in body and b"Movie.mkv" in body
     assert b"/volume1/video/Incoming/Films" in body
+
+
+@responses.activate
+def test_qbittorrent_can_submit_paused_and_select_episode_files(tmp_path):
+    settings = Settings(data_dir=tmp_path, qb_host="qb.test", qb_password="secret", scheduler_enabled=False)
+    base = "http://qb.test:8080"
+    responses.post(f"{base}/api/v2/auth/login", body="Ok.")
+    responses.get(f"{base}/api/v2/torrents/categories", json={settings.qb_tv_category: {}})
+    responses.post(f"{base}/api/v2/torrents/add", body="Ok.")
+    responses.post(f"{base}/api/v2/torrents/filePrio", body="Ok.")
+    responses.post(f"{base}/api/v2/torrents/filePrio", body="Ok.")
+
+    client = QBittorrentClient(settings)
+    client.add_download(MAGNET, settings.qb_tv_category, paused=True)
+    client.set_file_priorities("a" * 40, selected_indices=[1, 3], skipped_indices=[0, 2])
+
+    added = parse_qs(responses.calls[2].request.body)
+    assert added["paused"] == ["true"]
+    skipped = parse_qs(responses.calls[3].request.body)
+    selected = parse_qs(responses.calls[4].request.body)
+    assert skipped == {"hash": ["a" * 40], "id": ["0|2"], "priority": ["0"]}
+    assert selected == {"hash": ["a" * 40], "id": ["1|3"], "priority": ["1"]}

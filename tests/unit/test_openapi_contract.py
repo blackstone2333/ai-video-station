@@ -13,11 +13,12 @@ def test_openapi_covers_actual_agent_routes_and_scopes():
     document = yaml.safe_load(DOCUMENT.read_text(encoding="utf-8"))
 
     assert document["openapi"] == "3.1.0"
-    assert document["info"]["version"] == "2.0.2"
+    assert document["info"]["version"] == "2.1.0"
     expected = {
         "/api/search": {"post"},
         "/api/download": {"post"},
         "/api/download/manual": {"post"},
+        "/api/download/manual/preview": {"post"},
         "/api/downloader/status": {"get"},
         "/api/qb/status": {"get"},
         "/api/downloader/tasks": {"get"},
@@ -27,7 +28,7 @@ def test_openapi_covers_actual_agent_routes_and_scopes():
         "/api/downloader/tasks/{task_hash}/relocate": {"post"},
         "/api/watchlist": {"get"},
         "/api/watchlist/add": {"post"},
-        "/api/watchlist/{item_id}": {"delete"},
+        "/api/watchlist/{item_id}": {"patch", "delete"},
         "/api/watchlist/check": {"post"},
         "/api/naming/jobs": {"get"},
         "/api/naming/jobs/{job_id}": {"get", "delete"},
@@ -72,7 +73,7 @@ def test_openapi_models_the_agent_contract_gaps_that_regressed_before():
     assert "path_rule_id" in schemas["WatchlistAddRequest"]["properties"]
     assert {"address_page", "allow_private_hosts"} <= set(schemas["Site"]["properties"])
     assert {"scopes", "token"} <= set(schemas["Agent"]["properties"])
-    assert "missing_in_downloader" in schemas["NamingStatus"]["enum"]
+    assert {"missing_in_downloader", "waiting_selection"} <= set(schemas["NamingStatus"]["enum"])
     assert {"request_id", "errors"} <= set(schemas["Problem"]["properties"])
     assert "Pagination" in schemas
 

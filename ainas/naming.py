@@ -18,6 +18,7 @@ from .errors import AppError, ConflictError, NotFoundError
 from .media_policies import policy_for
 from .qbittorrent import QBittorrentClient, torrent_hash
 from .quality import Release, canonical_media_name, detect_episode, detect_season
+from .resource_preferences import select_episode_files
 from .watchlist import utc_now_iso
 from .state import StateStore, StateStoreError
 
@@ -460,6 +461,7 @@ class NamingService:
                 "pending",
                 "waiting_metadata",
                 "waiting_download",
+                "waiting_selection",
                 "retrying",
             }
             hardlink_unfinished = job.get("status") == "completed" and job.get("hardlink_status") in {
@@ -570,7 +572,13 @@ class NamingService:
         return {"submission": {"category": current_category, "final_category": final_category,
                 "save_path": str(save_path), "root_name": plan.root_name}}
 
-    def add_download(self, release: Release, final_category: str, path_rule_id: Optional[str] = None) -> Dict[str, Any]:
+    def add_download(
+        self,
+        release: Release,
+        final_category: str,
+        path_rule_id: Optional[str] = None,
+        wanted_episodes: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
         rule = self._rule_for(release.media_type, final_category, path_rule_id)
         if rule:
@@ -588,6 +596,8 @@ class NamingService:
                 pending_hash,
                 plan,
                 final_category,
+                wanted_episodes=list(wanted_episodes or []),
+                selection=None,
                 **self._submission(plan, final_category, current_category, save_path),
             )
             if (use_staging or track_only)
@@ -595,12 +605,13 @@ class NamingService:
         )
         if job and not hash_value:
             job = self.repository.update(job["id"], {"status": "submitting"})
-        result = self.qb.add_download(
-            release.download_link,
-            current_category,
-            rename=plan.root_name if self.settings.naming_enabled and plan.rename_enabled else None,
-            save_path=save_path,
-        )
+        add_options: Dict[str, Any] = {
+            "rename": plan.root_name if self.settings.naming_enabled and plan.rename_enabled else None,
+            "save_path": save_path,
+        }
+        if wanted_episodes and job:
+            add_options["paused"] = True
+        result = self.qb.add_download(release.download_link, current_category, **add_options)
         task_id = result.get("qb_task_id") or hash_value
         if job and not task_id:
             reconciler = getattr(self.qb, "reconcile_submission", None)
@@ -634,6 +645,7 @@ class NamingService:
         filename: str,
         torrent_hash_value: str,
         path_rule_id: Optional[str] = None,
+        wanted_episodes: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         plan = self.planner.from_release(release)
         rule = self._rule_for(release.media_type, final_category, path_rule_id)
@@ -643,14 +655,21 @@ class NamingService:
         track_only = not plan.rename_enabled and self.settings.medialib_hardlink_enabled
         current_category = self.settings.qb_naming_category if use_staging else final_category
         save_path = self._download_path(plan, final_category, rule)
-        job = self.repository.upsert(torrent_hash_value, plan, final_category, **self._submission(plan, final_category, current_category, save_path)) if (use_staging or track_only) else None
-        result = self.qb.add_torrent_file(
-            content,
-            filename,
-            current_category,
-            rename=plan.root_name if use_staging else None,
-            save_path=save_path,
-        )
+        job = self.repository.upsert(
+            torrent_hash_value,
+            plan,
+            final_category,
+            wanted_episodes=list(wanted_episodes or []),
+            selection=None,
+            **self._submission(plan, final_category, current_category, save_path),
+        ) if (use_staging or track_only) else None
+        add_options: Dict[str, Any] = {
+            "rename": plan.root_name if use_staging else None,
+            "save_path": save_path,
+        }
+        if wanted_episodes and job:
+            add_options["paused"] = True
+        result = self.qb.add_torrent_file(content, filename, current_category, **add_options)
         if job and result.get("qb_task_id") and result["qb_task_id"] != job.get("torrent_hash"):
             job = self.repository.update(job["id"], {"torrent_hash": result["qb_task_id"]})
         return {
@@ -751,8 +770,49 @@ class NamingService:
                 job["id"],
                 {"status": "waiting_metadata", "checks": checks, "last_check": now, "last_error": None},
             )
+        wanted_episodes = list(job.get("wanted_episodes") or [])
+        selection = dict(job.get("selection") or {})
+        if wanted_episodes and not selection.get("applied"):
+            selection = select_episode_files(files, wanted_episodes)
+            if not selection["safe"]:
+                return self.repository.update(
+                    job["id"],
+                    {
+                        "status": "waiting_selection",
+                        "selection": selection,
+                        "checks": checks,
+                        "last_check": now,
+                        "last_error": "全集文件无法安全拆分，请确认后再继续",
+                    },
+                )
+            self.qb.set_file_priorities(
+                job["torrent_hash"],
+                selection["selected_indices"],
+                selection["skipped_indices"],
+            )
+            self.qb.resume(job["torrent_hash"])
+            selection = {**selection, "applied": True, "applied_at": now}
+            job = self.repository.update(
+                job["id"],
+                {
+                    "status": "waiting_download",
+                    "selection": selection,
+                    "checks": checks,
+                    "last_check": now,
+                    "last_error": None,
+                },
+            )
         progress = float(torrent.get("progress", 0) or 0)
-        selected = [item for item in files if int(item.get("priority", 1) or 0) > 0]
+        selected_indices = set(selection.get("selected_indices") or []) if selection.get("applied") else None
+        selected = [
+            item
+            for fallback_index, item in enumerate(files)
+            if (
+                int(item.get("index") if item.get("index") is not None else fallback_index) in selected_indices
+                if selected_indices is not None
+                else int(item.get("priority", 1) or 0) > 0
+            )
+        ]
         files_complete = all(float(item.get("progress", progress) or 0) >= 0.999999 for item in selected)
         if progress < 0.999999 or not files_complete:
             return self.repository.update(
@@ -768,7 +828,7 @@ class NamingService:
         # The preview is an operation journal: do not re-plan on a retry,
         # because changes in qB metadata would otherwise rename a different
         # set of paths mid-job.
-        preview = job.get("result") or self.planner.plan_files(files, plan)
+        preview = job.get("result") or self.planner.plan_files(selected, plan)
         if not job.get("result"):
             job = self.repository.update(job["id"], {"result": preview, "rename_checkpoint": job.get("rename_checkpoint") or {"files": 0, "folders": 0, "torrent": False}})
         try:
@@ -776,7 +836,7 @@ class NamingService:
             already_named = False
             if callable(verifier):
                 try:
-                    verifier(torrent, files, preview)
+                    verifier(torrent, selected, preview)
                     already_named = True
                 except AppError:
                     pass
@@ -799,7 +859,7 @@ class NamingService:
                     checkpoint["torrent"] = True
                     job = self.repository.update(job["id"], {"rename_checkpoint": checkpoint, "result": preview})
             if callable(verifier):
-                verifier(torrent, files, preview)
+                verifier(torrent, selected, preview)
             self.qb.set_category(job["torrent_hash"], job["final_category"])
             self.qb.resume(job["torrent_hash"])
             hardlink_enabled = bool(self.hardlinker and self.hardlinker.enabled)
