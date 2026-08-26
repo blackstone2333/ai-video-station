@@ -10,6 +10,7 @@ from .client import AVSClient, AVSClientError
 
 MediaType = Literal["auto", "movie", "tv", "anime", "custom"]
 ViewingMode = Literal["daily", "collection", "compact"]
+CleanupPolicy = Literal["quality_first", "space_first"]
 ToolHandler = Callable[..., Awaitable[dict[str, Any]]]
 
 
@@ -43,6 +44,11 @@ TOOL_SPECS: tuple[ToolSpec, ...] = (
     ToolSpec("avs_add_watchlist", "Add an AVS watchlist item; AVS returns an existing matching item when present.", ToolAnnotations(False, False, True, True)),
     ToolSpec("avs_update_watchlist", "Update an AVS watchlist viewing mode.", ToolAnnotations(False, False, True, True)),
     ToolSpec("avs_check_watchlist", "Run an AVS watchlist check, optionally for one item.", ToolAnnotations(False, False, False, True)),
+    ToolSpec("avs_scan_duplicates", "Scan enabled AVS media paths and persist a non-destructive duplicate cleanup plan.", ToolAnnotations(False, False, False, True)),
+    ToolSpec("avs_list_cleanup_plans", "List persisted AVS duplicate cleanup plans.", ToolAnnotations(True, False, True, True)),
+    ToolSpec("avs_get_cleanup_plan", "Get one AVS duplicate cleanup plan with its versions and paths.", ToolAnnotations(True, False, True, True)),
+    ToolSpec("avs_execute_cleanup_plan", "Delete explicitly selected duplicate versions after AVS revalidates every path. This is destructive.", ToolAnnotations(False, True, False, True)),
+    ToolSpec("avs_retry_cleanup_plan", "Retry only failed items from a previously confirmed cleanup execution. This can be destructive.", ToolAnnotations(False, True, False, True)),
 )
 
 
@@ -167,6 +173,66 @@ class MCPToolBindings:
         if item_id is not None:
             body["item_id"] = item_id
         return await self.client.request("POST", "/api/watchlist/check", json=body)
+
+    async def scan_duplicates(
+        self,
+        policy: CleanupPolicy = "quality_first",
+        media_type: Literal["movie", "tv", "anime", "custom"] | None = None,
+    ) -> dict[str, Any]:
+        body: dict[str, Any] = {"policy": policy}
+        if media_type is not None:
+            body["media_type"] = media_type
+        return await self.client.request("POST", "/api/cleanup/scan", json=body)
+
+    async def list_cleanup_plans(
+        self, page: int = 1, per_page: int = 20, status: str | None = None
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = _page_params(page, per_page)
+        if status:
+            params["status"] = status
+        return await self.client.request("GET", "/api/cleanup/plans", params=params)
+
+    async def get_cleanup_plan(self, plan_id: str) -> dict[str, Any]:
+        if not plan_id.strip() or "/" in plan_id:
+            raise ValueError("plan_id must be a non-blank path segment")
+        return await self.client.request("GET", f"/api/cleanup/plans/{plan_id}")
+
+    async def execute_cleanup_plan(
+        self,
+        plan_id: str,
+        selections: list[dict[str, Any]],
+        confirmation: Literal["DELETE_SELECTED_DUPLICATES"],
+        delete_source: bool = False,
+    ) -> dict[str, Any]:
+        if not plan_id.strip() or "/" in plan_id:
+            raise ValueError("plan_id must be a non-blank path segment")
+        if not selections:
+            raise ValueError("selections must not be empty")
+        normalized: list[dict[str, Any]] = []
+        for selection in selections:
+            if not isinstance(selection, dict):
+                raise ValueError("each cleanup selection must be an object")
+            group_id = selection.get("group_id")
+            version_ids = selection.get("delete_version_ids")
+            if not isinstance(group_id, str) or not group_id.strip():
+                raise ValueError("each cleanup selection needs a group_id")
+            if not isinstance(version_ids, list) or not version_ids or not all(isinstance(item, str) and item.strip() for item in version_ids):
+                raise ValueError("each cleanup selection needs non-empty delete_version_ids")
+            normalized.append({"group_id": group_id, "delete_version_ids": version_ids})
+        return await self.client.request(
+            "POST",
+            f"/api/cleanup/plans/{plan_id}/execute",
+            json={
+                "selections": normalized,
+                "delete_source": delete_source,
+                "confirmation": confirmation,
+            },
+        )
+
+    async def retry_cleanup_plan(self, plan_id: str) -> dict[str, Any]:
+        if not plan_id.strip() or "/" in plan_id:
+            raise ValueError("plan_id must be a non-blank path segment")
+        return await self.client.request("POST", f"/api/cleanup/plans/{plan_id}/retry", json={})
 
 
 async def tool_result(call: ToolHandler, *args: Any, **kwargs: Any) -> dict[str, Any]:

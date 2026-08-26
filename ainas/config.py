@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     sixv_address_page: str = "https://www.6v123.net"
     request_timeout_seconds: float = Field(default=15.0, gt=0, le=120)
     search_detail_limit: int = Field(default=20, ge=1, le=100)
-    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/2.1.2; +NAS)"
+    user_agent: str = "Mozilla/5.0 (compatible; ai-video-station/2.2.0; +NAS)"
 
     downloader_type: str = "qbittorrent"
     qb_host: Optional[str] = None
@@ -58,6 +58,11 @@ class Settings(BaseSettings):
     download_custom_path: Path = Path("/volume1/video/Downloads/Custom")
 
     watchlist_check_hours: int = Field(default=12, ge=3, le=168)
+    cleanup_auto_scan_enabled: bool = False
+    cleanup_auto_execute_enabled: bool = False
+    cleanup_auto_delete_source: bool = False
+    cleanup_policy: str = "quality_first"
+    cleanup_scan_hours: int = Field(default=24, ge=3, le=168)
     watchlist_expire_days: int = Field(default=14, ge=1, le=365)
     scheduler_enabled: bool = True
 
@@ -107,6 +112,14 @@ class Settings(BaseSettings):
             raise ValueError("must be qbittorrent or transmission")
         return value
 
+    @field_validator("cleanup_policy")
+    @classmethod
+    def validate_cleanup_policy(cls, value: str) -> str:
+        value = value.strip().lower()
+        if value not in {"quality_first", "space_first"}:
+            raise ValueError("must be quality_first or space_first")
+        return value
+
     @field_validator("qb_movie_category", "qb_tv_category", "qb_anime_category", "qb_custom_category")
     @classmethod
     def validate_category_name(cls, value: str) -> str:
@@ -119,6 +132,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_medialib_paths(self) -> "Settings":
+        if self.cleanup_auto_execute_enabled and not self.cleanup_auto_scan_enabled:
+            raise ValueError("CLEANUP_AUTO_EXECUTE_ENABLED requires CLEANUP_AUTO_SCAN_ENABLED")
+        if self.cleanup_auto_delete_source and not self.cleanup_auto_execute_enabled:
+            raise ValueError("CLEANUP_AUTO_DELETE_SOURCE requires CLEANUP_AUTO_EXECUTE_ENABLED")
         base = Path(os.path.normpath(str(self.medialib_base_path)))
         if not base.is_absolute():
             raise ValueError("MEDIALIB_BASE_PATH must be an absolute host path")
@@ -227,6 +244,10 @@ class Settings(BaseSettings):
     @property
     def naming_jobs_path(self) -> Path:
         return self.data_dir / "naming_jobs.json"
+
+    @property
+    def cleanup_plans_path(self) -> Path:
+        return self.data_dir / "cleanup_plans.json"
 
     @property
     def dismissed_downloads_path(self) -> Path:

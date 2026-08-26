@@ -15,7 +15,7 @@ from .agent_access import AgentAccessRepository
 from .errors import AppError, ConflictError, ForbiddenError, NotFoundError, ServiceUnavailableError, ValidationAppError
 from .logging_config import configure_logging, read_log_entries
 from .middleware import install_middleware
-from .permissions import require_scope
+from .permissions import CLEANUP_SCOPE, require_scope
 from .models import (
     DownloadRequest,
     DownloaderRelocateRequest,
@@ -34,6 +34,8 @@ from .models import (
     SearchRequest,
     SitePatchRequest,
     SystemSettingsPatchRequest,
+    CleanupScanRequest,
+    CleanupExecuteRequest,
     WatchlistAddRequest,
     WatchlistCheckRequest,
     WatchlistPatchRequest,
@@ -126,6 +128,22 @@ def _start_scheduler(app: Flask, settings: Settings, services: AppServices) -> O
         max_instances=1,
         coalesce=True,
     )
+    cleanup_last_run = {"at": None}
+    def check_cleanup() -> None:
+        if not services.cleanup or not settings.cleanup_auto_scan_enabled:
+            return
+        from datetime import datetime, timezone
+        now = datetime.now(timezone.utc)
+        previous = cleanup_last_run["at"]
+        if previous and (now - previous).total_seconds() < settings.cleanup_scan_hours * 3600:
+            return
+        cleanup_last_run["at"] = now
+        plan = services.cleanup.scan(settings.cleanup_policy)
+        if settings.cleanup_auto_execute_enabled:
+            selections = services.cleanup.automatic_selections(plan)
+            if selections:
+                services.cleanup.execute(plan["id"], selections, settings.cleanup_auto_delete_source, "DELETE_SELECTED_DUPLICATES")
+    scheduler.add_job(check_cleanup, "interval", hours=1, id="cleanup-check", replace_existing=True, max_instances=1, coalesce=True)
     if services.naming:
         def check_naming_jobs() -> None:
             with app.app_context():
@@ -212,6 +230,9 @@ def create_app(
         "downloader_settings_update": "settings",
         "downloader_settings_test": "settings",
         "system_settings_update": "settings",
+        "cleanup_scan": CLEANUP_SCOPE,
+        "cleanup_execute": CLEANUP_SCOPE,
+        "cleanup_retry": CLEANUP_SCOPE,
     }
     agent_scope_exempt = {"agent_connect", "agent_heartbeat"}
 
@@ -550,6 +571,42 @@ def create_app(
         report = services.watchlist_service.check(body.item_id)
         return jsonify({"success": True, **report})
 
+    @app.post("/api/cleanup/scan")
+    def cleanup_scan():
+        if not services.cleanup: raise ServiceUnavailableError("cleanup is not initialized")
+        body = _parse_json(CleanupScanRequest)
+        item = services.cleanup.scan(body.policy, body.media_type)
+        return jsonify({"success": True, "item": item}), 201
+
+    @app.get("/api/cleanup/plans")
+    def cleanup_plans():
+        if not services.cleanup: raise ServiceUnavailableError("cleanup is not initialized")
+        try:
+            page=max(1,int(request.args.get("page","1"))); per_page=min(100,max(1,int(request.args.get("per_page","20"))))
+        except ValueError as exc: raise ValidationAppError("page and per_page must be integers") from exc
+        items=services.cleanup.repository.list(); status=request.args.get("status")
+        if status: items=[x for x in items if x.get("status")==status]
+        items.sort(key=lambda x:x.get("created_at",""),reverse=True); total=len(items)
+        return jsonify({"success":True,"items":items[(page-1)*per_page:page*per_page],"total":total,"page":page,"per_page":per_page})
+
+    @app.get("/api/cleanup/plans/<plan_id>")
+    def cleanup_plan(plan_id: str):
+        if not services.cleanup: raise ServiceUnavailableError("cleanup is not initialized")
+        return jsonify({"success":True,"item":services.cleanup.repository.get(plan_id)})
+
+    @app.post("/api/cleanup/plans/<plan_id>/execute")
+    def cleanup_execute(plan_id: str):
+        if not services.cleanup: raise ServiceUnavailableError("cleanup is not initialized")
+        body=_parse_json(CleanupExecuteRequest)
+        item, results=services.cleanup.execute(plan_id, [item.model_dump() for item in body.selections], body.delete_source, body.confirmation)
+        return jsonify({"success":True,"item":item,"results":results})
+
+    @app.post("/api/cleanup/plans/<plan_id>/retry")
+    def cleanup_retry(plan_id: str):
+        if not services.cleanup: raise ServiceUnavailableError("cleanup is not initialized")
+        item, results=services.cleanup.retry(plan_id)
+        return jsonify({"success":True,"item":item,"results":results})
+
     @app.get("/api/naming/jobs")
     def naming_jobs():
         if not services.naming_jobs:
@@ -839,11 +896,11 @@ def create_app(
         if not services.system_settings:
             raise ServiceUnavailableError("system settings are not initialized")
         body = _parse_json(SystemSettingsPatchRequest)
-        values = services.system_settings.update(body.model_dump())
+        values = services.system_settings.update(body.model_dump(exclude_none=True))
         scheduler = app.extensions.get("video_station_scheduler")
         if scheduler and scheduler.get_job("watchlist-check"):
             scheduler.reschedule_job("watchlist-check", trigger="interval", hours=values["watchlist_check_hours"])
-        return jsonify({"success": True, "settings": values, "message": "订阅检查周期已更新"})
+        return jsonify({"success": True, "settings": values, "message": "系统定时设置已更新"})
 
     @app.get("/api/agents")
     def agents_list():

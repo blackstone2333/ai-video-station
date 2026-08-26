@@ -217,6 +217,12 @@ class TransmissionClient:
     def resume(self, hash_value: str) -> None:
         self._rpc("torrent-start", {"ids": [hash_value]})
 
+    def pause(self, hash_value: str) -> None:
+        self._rpc("torrent-stop", {"ids": [hash_value]})
+
+    def delete(self, hash_value: str, delete_files: bool = True) -> None:
+        self._rpc("torrent-remove", {"ids": [hash_value], "delete-local-data": delete_files})
+
     def recheck(self, hash_value: str) -> None:
         self._rpc("torrent-verify", {"ids": [hash_value]})
 

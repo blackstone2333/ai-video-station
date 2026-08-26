@@ -1,9 +1,9 @@
 openapi: 3.1.0
 info:
   title: AI Video Station API
-  version: 2.1.2
+  version: 2.2.0
   description: >-
-    Media search, downloads, watchlists, naming jobs, path rules and Agent access.
+    Media search, downloads, watchlists, naming, hardlinks, duplicate cleanup, path rules and Agent access.
     Unless an operation says otherwise, an Agent token needs the documented x-agent-scope.
 servers:
   - url: http://localhost:16666
@@ -70,7 +70,7 @@ components:
         size_preference: {type: string, enum: [smaller, larger]}
     AgentScope:
       type: string
-      enum: [read, search, download, watchlist, naming, settings]
+      enum: [read, search, download, watchlist, naming, cleanup, settings]
     SearchRequest:
       type: object
       required: [keyword]
@@ -233,6 +233,84 @@ components:
       additionalProperties: false
       properties:
         job_id: {type: [string, 'null'], minLength: 8, maxLength: 64}
+    CleanupPolicy:
+      type: string
+      enum: [quality_first, space_first]
+    CleanupScanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        policy: {allOf: [{$ref: '#/components/schemas/CleanupPolicy'}], default: quality_first}
+        media_type: {type: [string, 'null'], enum: [movie, tv, anime, custom, null]}
+    CleanupSelection:
+      type: object
+      required: [group_id, delete_version_ids]
+      additionalProperties: false
+      properties:
+        group_id: {type: string, minLength: 1, maxLength: 128}
+        delete_version_ids: {type: array, minItems: 1, maxItems: 1000, items: {type: string, minLength: 1}}
+    CleanupExecuteRequest:
+      type: object
+      required: [selections, confirmation]
+      additionalProperties: false
+      properties:
+        selections: {type: array, minItems: 1, maxItems: 1000, items: {$ref: '#/components/schemas/CleanupSelection'}}
+        delete_source:
+          type: boolean
+          default: false
+          description: False removes only selected media-library hardlinks. True also removes corresponding complete source data.
+        confirmation: {type: string, const: DELETE_SELECTED_DUPLICATES}
+    CleanupVersion:
+      type: object
+      required: [id, media_type, source_paths, target_paths, size, device, inode, link_count, managed, safe]
+      properties:
+        id: {type: string}
+        media_type: {type: string, enum: [movie, tv, anime, custom]}
+        path_rule_id: {type: string}
+        source_paths: {type: array, items: {type: string}}
+        target_paths: {type: array, items: {type: string}}
+        size: {type: integer, minimum: 0}
+        device: {type: integer}
+        inode: {type: integer}
+        link_count: {type: integer, minimum: 1}
+        mtime_ns: {type: integer}
+        resolution: {type: [string, 'null']}
+        source: {type: [string, 'null']}
+        hdr: {type: [string, 'null']}
+        audio: {type: [string, 'null']}
+        codec: {type: [string, 'null']}
+        torrent_hash: {type: [string, 'null']}
+        managed: {type: boolean}
+        safe: {type: boolean}
+        safety_reason: {type: [string, 'null']}
+    CleanupGroup:
+      type: object
+      required: [id, media_type, identity, recommended_keep_id, versions]
+      properties:
+        id: {type: string}
+        media_type: {type: string, enum: [movie, tv, anime, custom]}
+        identity: {type: string}
+        recommended_keep_id: {type: string}
+        versions: {type: array, minItems: 2, items: {$ref: '#/components/schemas/CleanupVersion'}}
+    CleanupPlan:
+      type: object
+      required: [id, status, policy, created_at, updated_at, groups, summary, results]
+      properties:
+        id: {type: string}
+        status: {type: string, enum: [ready, completed, partial]}
+        policy: {$ref: '#/components/schemas/CleanupPolicy'}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        groups: {type: array, items: {$ref: '#/components/schemas/CleanupGroup'}}
+        summary:
+          type: object
+          properties:
+            groups: {type: integer, minimum: 0}
+            logical_duplicate_size: {type: integer, minimum: 0}
+            reclaimable_if_source_deleted: {type: integer, minimum: 0}
+            estimated_reclaimable: {type: integer, minimum: 0}
+        results: {type: array, items: {type: object}}
+        error: {type: [string, 'null']}
     Site:
       type: object
       required: [name, base_urls]
@@ -364,6 +442,17 @@ components:
       additionalProperties: false
       properties:
         location: {type: string, description: Absolute downloader-visible path.}
+    SystemSettingsPatchRequest:
+      type: object
+      minProperties: 1
+      additionalProperties: false
+      properties:
+        watchlist_check_hours: {type: integer, minimum: 3, maximum: 168}
+        cleanup_auto_scan_enabled: {type: boolean}
+        cleanup_auto_execute_enabled: {type: boolean}
+        cleanup_auto_delete_source: {type: boolean}
+        cleanup_policy: {$ref: '#/components/schemas/CleanupPolicy'}
+        cleanup_scan_hours: {type: integer, minimum: 3, maximum: 168}
     Agent:
       type: object
       required: [id, name, scopes, capabilities, revoked, online]
@@ -385,7 +474,7 @@ components:
         name: {type: string, minLength: 1, maxLength: 100, default: My Agent}
         scopes:
           type: array
-          maxItems: 6
+          maxItems: 7
           default: [read]
           items: {$ref: '#/components/schemas/AgentScope'}
     AgentScopesUpdateRequest:
@@ -393,7 +482,7 @@ components:
       required: [scopes]
       additionalProperties: false
       properties:
-        scopes: {type: array, minItems: 1, maxItems: 6, items: {$ref: '#/components/schemas/AgentScope'}}
+        scopes: {type: array, minItems: 1, maxItems: 7, items: {$ref: '#/components/schemas/AgentScope'}}
     AgentConnectRequest:
       type: object
       additionalProperties: false
@@ -407,6 +496,7 @@ components:
     SiteId: {in: path, name: site_id, required: true, schema: {type: string}}
     RuleId: {in: path, name: rule_id, required: true, schema: {type: string}}
     AgentId: {in: path, name: agent_id, required: true, schema: {type: string}}
+    PlanId: {in: path, name: plan_id, required: true, schema: {type: string}}
     Page: {in: query, name: page, schema: {type: integer, minimum: 1, default: 1}}
     PerPage: {in: query, name: per_page, schema: {type: integer, minimum: 1, maximum: 100, default: 20}}
   responses:
@@ -560,6 +650,44 @@ paths:
       security: [{ApiKey: []}, {AgentToken: []}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/WatchlistCheckRequest'}}}}
       responses: {'200': {description: Check report}, default: {$ref: '#/components/responses/Problem'}}
+  /api/cleanup/scan:
+    post:
+      summary: Scan enabled media paths and persist a duplicate cleanup plan
+      description: Read-only for media files. Normal source/library hardlinks with the same device and inode are treated as one physical version.
+      x-agent-scope: cleanup
+      security: [{ApiKey: []}, {AgentToken: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CleanupScanRequest'}}}}
+      responses: {'201': {description: Persisted cleanup plan, content: {application/json: {schema: {type: object, properties: {item: {$ref: '#/components/schemas/CleanupPlan'}}}}}}, '422': {$ref: '#/components/responses/Validation'}, default: {$ref: '#/components/responses/Problem'}}
+  /api/cleanup/plans:
+    get:
+      summary: List persisted duplicate cleanup plans
+      x-agent-scope: read
+      security: [{ApiKey: []}, {AgentToken: []}]
+      parameters: [{$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/PerPage'}, {in: query, name: status, schema: {type: string, enum: [ready, completed, partial]}}]
+      responses: {'200': {description: Cleanup plans and pagination}, default: {$ref: '#/components/responses/Problem'}}
+  /api/cleanup/plans/{plan_id}:
+    parameters: [{$ref: '#/components/parameters/PlanId'}]
+    get:
+      summary: Get one duplicate cleanup plan
+      x-agent-scope: read
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses: {'200': {description: Cleanup plan}, '404': {$ref: '#/components/responses/NotFound'}, default: {$ref: '#/components/responses/Problem'}}
+  /api/cleanup/plans/{plan_id}/execute:
+    parameters: [{$ref: '#/components/parameters/PlanId'}]
+    post:
+      summary: Execute explicitly selected duplicate cleanup versions
+      description: AVS validates every selected and retained file before changing any path. It removes selected library hardlinks first; source deletion is opt-in.
+      x-agent-scope: cleanup
+      security: [{ApiKey: []}, {AgentToken: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/CleanupExecuteRequest'}}}}
+      responses: {'200': {description: Updated plan and per-version results}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, '422': {$ref: '#/components/responses/Validation'}, default: {$ref: '#/components/responses/Problem'}}
+  /api/cleanup/plans/{plan_id}/retry:
+    parameters: [{$ref: '#/components/parameters/PlanId'}]
+    post:
+      summary: Retry failed items using the previously confirmed selections and source-delete mode
+      x-agent-scope: cleanup
+      security: [{ApiKey: []}, {AgentToken: []}]
+      responses: {'200': {description: Updated plan and retry results}, '404': {$ref: '#/components/responses/NotFound'}, '409': {$ref: '#/components/responses/Conflict'}, default: {$ref: '#/components/responses/Problem'}}
   /api/naming/jobs:
     get:
       summary: List naming jobs with pagination
@@ -739,10 +867,10 @@ paths:
       security: [{ApiKey: []}, {AgentToken: []}]
       responses: {'200': {description: System settings}, default: {$ref: '#/components/responses/Problem'}}
     patch:
-      summary: Set watchlist check period
+      summary: Update watchlist and duplicate-cleanup scheduler settings
       x-agent-scope: settings
       security: [{ApiKey: []}, {AgentToken: []}]
-      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [watchlist_check_hours], properties: {watchlist_check_hours: {type: integer, minimum: 3, maximum: 168}}}}}}
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsPatchRequest'}}}}
       responses: {'200': {description: Updated settings}, default: {$ref: '#/components/responses/Problem'}}
   /api/agents:
     get:

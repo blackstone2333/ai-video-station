@@ -12,6 +12,7 @@ from .errors import ForbiddenError
 
 READ_SCOPE = "read"
 WRITE_SCOPE = "write"
+CLEANUP_SCOPE = "cleanup"
 
 # A conservative default that route code can extend or override.  It is kept
 # separate from the routes so permissions remain explicit during rollout.

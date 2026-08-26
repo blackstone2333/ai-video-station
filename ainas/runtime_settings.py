@@ -57,6 +57,8 @@ class Downloader(Protocol):
     def rename_torrent(self, hash_value: str, name: str) -> None: ...
     def set_category(self, hash_value: str, category: str) -> None: ...
     def resume(self, hash_value: str) -> None: ...
+    def pause(self, hash_value: str) -> None: ...
+    def delete(self, hash_value: str, delete_files: bool = True) -> None: ...
     def recheck(self, hash_value: str) -> None: ...
     def set_location(self, hash_value: str, location: Any) -> None: ...
     def reconcile_submission(
@@ -86,7 +88,7 @@ COMMON_DOWNLOADER_OPERATIONS = frozenset(
     {
         "add_download", "add_torrent_file", "torrent_info", "files", "rename_file",
         "rename_folder", "rename_torrent", "set_category", "resume", "recheck",
-        "set_location", "set_file_priorities", "status", "tasks",
+        "set_location", "set_file_priorities", "status", "tasks", "pause", "delete",
     }
 )
 DOWNLOADER_REGISTRY: Mapping[str, DownloaderCapabilities] = {
@@ -133,7 +135,7 @@ class DownloaderSettingsRepository:
         values = self.settings.model_dump()
         values.update(changes)
         try:
-            return Settings.model_validate(values)
+            candidate = Settings.model_validate(values)
         except ValidationError as exc:
             raise ValidationAppError(
                 "下载器设置校验失败",
@@ -146,6 +148,7 @@ class DownloaderSettingsRepository:
                     for item in exc.errors()
                 ],
             ) from exc
+        return candidate
 
     @staticmethod
     def _secret_value(candidate: Settings, name: str) -> str:
@@ -203,7 +206,7 @@ class DownloaderSettingsRepository:
 
 
 class SystemSettingsRepository:
-    FIELDS = ("watchlist_check_hours",)
+    FIELDS = ("watchlist_check_hours", "cleanup_auto_scan_enabled", "cleanup_auto_execute_enabled", "cleanup_auto_delete_source", "cleanup_policy", "cleanup_scan_hours")
 
     def __init__(self, settings: Settings, state_store: StateStore | None = None) -> None:
         self.settings = settings
@@ -222,8 +225,12 @@ class SystemSettingsRepository:
             raise ValidationAppError("包含不支持的系统设置")
         values = self.settings.model_dump()
         values.update(changes)
+        if values.get("cleanup_auto_execute_enabled") and not values.get("cleanup_auto_scan_enabled"):
+            raise ValidationAppError("自动执行重复清理前必须开启自动扫描")
+        if values.get("cleanup_auto_delete_source") and not values.get("cleanup_auto_execute_enabled"):
+            raise ValidationAppError("自动删除源数据前必须开启自动执行")
         try:
-            return Settings.model_validate(values)
+            candidate = Settings.model_validate(values)
         except ValidationError as exc:
             raise ValidationAppError(
                 "系统设置校验失败",
@@ -236,6 +243,7 @@ class SystemSettingsRepository:
                     for item in exc.errors()
                 ],
             ) from exc
+        return candidate
 
     def load(self) -> Dict[str, Any]:
         with self._lock:

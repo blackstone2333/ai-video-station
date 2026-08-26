@@ -8,7 +8,7 @@ import os
 import sys
 from typing import Any, Callable, Mapping, Sequence
 from urllib.error import HTTPError, URLError
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
@@ -19,6 +19,7 @@ COMMANDS = {
     "watchlist": ("GET", "/api/watchlist"),
     "naming": ("GET", "/api/naming/jobs?per_page=100"),
     "hardlinks": ("GET", "/api/hardlinks?status=all&per_page=100"),
+    "cleanup-plans": ("GET", "/api/cleanup/plans?per_page=100"),
     "logs": ("GET", "/api/logs?limit=200"),
 }
 
@@ -199,6 +200,18 @@ def _parser(environment: Mapping[str, str]) -> argparse.ArgumentParser:
     naming_retry.add_argument("job_id")
     naming_check = subparsers.add_parser("naming-check", help="检查一个或全部命名任务")
     naming_check.add_argument("--job-id")
+    cleanup_scan = subparsers.add_parser("cleanup-scan", help="只读扫描重复版本并生成清理计划")
+    cleanup_scan.add_argument("--policy", choices=("quality_first", "space_first"), default="quality_first")
+    cleanup_scan.add_argument("--type", choices=("movie", "tv", "anime", "custom"))
+    cleanup_show = subparsers.add_parser("cleanup-show", help="查看一个清理计划")
+    cleanup_show.add_argument("plan_id")
+    cleanup_execute = subparsers.add_parser("cleanup-execute", help="执行清理计划中的明确选择")
+    cleanup_execute.add_argument("plan_id")
+    cleanup_execute.add_argument("--selections", required=True, help='JSON 数组，例如 [{"group_id":"...","delete_version_ids":["..."]}]')
+    cleanup_execute.add_argument("--delete-source", action="store_true", help="同时删除下载器源数据；默认仅移除媒体库硬链接")
+    cleanup_execute.add_argument("--confirm", required=True, choices=("DELETE_SELECTED_DUPLICATES",), help="不可逆操作确认字符串")
+    cleanup_retry = subparsers.add_parser("cleanup-retry", help="重试清理计划中的失败项")
+    cleanup_retry.add_argument("plan_id")
     request = subparsers.add_parser("request", help="调用任意 OpenAPI 路径")
     request.add_argument("method", choices=("GET", "POST", "PATCH", "DELETE"))
     request.add_argument("path")
@@ -268,6 +281,30 @@ def main(
         elif args.command == "naming-check":
             method, path = "POST", "/api/naming/jobs/check"
             data = {"job_id": args.job_id} if args.job_id else {}
+        elif args.command == "cleanup-scan":
+            method, path = "POST", "/api/cleanup/scan"
+            data = {"policy": args.policy}
+            if args.type:
+                data["media_type"] = args.type
+        elif args.command == "cleanup-show":
+            method, path = "GET", f"/api/cleanup/plans/{quote(args.plan_id, safe='')}"
+            data = None
+        elif args.command == "cleanup-execute":
+            method, path = "POST", f"/api/cleanup/plans/{quote(args.plan_id, safe='')}/execute"
+            try:
+                selections = json.loads(args.selections)
+            except json.JSONDecodeError as exc:
+                raise CliError("--selections 必须是有效 JSON") from exc
+            if not isinstance(selections, list) or not selections:
+                raise CliError("--selections 必须是非空 JSON 数组")
+            data = {
+                "selections": selections,
+                "delete_source": args.delete_source,
+                "confirmation": args.confirm,
+            }
+        elif args.command == "cleanup-retry":
+            method, path = "POST", f"/api/cleanup/plans/{quote(args.plan_id, safe='')}/retry"
+            data = {}
         else:
             method, path = args.method, args.path
             try:
