@@ -7,10 +7,10 @@ function storedTheme() {
 }
 const state = {
   apiKey: sessionStorage.getItem("aiVideoStationApiKey") || sessionStorage.getItem("sixvApiKey") || "",
-  watchlist: [], downloads: [], hiddenDownloads: [], naming: [], hardlinks: [], sites: [], pathRules: [], agents: [], logs: [],
+  watchlist: [], downloads: [], hiddenDownloads: [], naming: [], hardlinks: [], cleanupPlans: [], sites: [], pathRules: [], agents: [], logs: [],
   paths: null, downloaderSettings: null, systemSettings: null, qb: null, loading: false,
   pathsDirty: false, downloaderDirty: false, systemDirty: false, downloadsLoading: false, downloadSyncedAt: null,
-  searchResults: [], namingPage: 1, hardlinksPage: 1, namingMeta: {}, hardlinksMeta: {}, modalReturnFocus: null,
+  searchResults: [], namingPage: 1, hardlinksPage: 1, namingMeta: {}, hardlinksMeta: {}, cleanupMeta: {}, cleanupExecution: null, modalReturnFocus: null,
   theme: {...DEFAULT_THEME, ...storedTheme()},
 };
 const ACTIVE_DOWNLOAD_STATES = new Set(["downloading","stalledDL","metaDL","queuedDL","forcedDL","checkingDL"]);
@@ -59,7 +59,7 @@ function stateLabel(value) {
     uploading:"做种中", stalledUP:"做种等待", queuedUP:"做种排队", forcedUP:"强制做种", checkingUP:"校验完成资源", pausedUP:"已完成", completed:"已完成", pending:"待处理",
     missingFiles:"文件缺失", error:"下载器错误",
     submitting:"提交中", awaiting_binding:"等待绑定下载器", waiting_metadata:"等待元数据", retrying:"重试中", failed:"失败", found:"已找到", monitoring:"追更中", expired:"超期监听",
-    waiting_download:"等待下载完成", waiting_selection:"全集待确认", missing_in_downloader:"下载器中缺失", done:"硬链接完成", partial:"部分入库", conflict:"入库冲突", disabled:"硬链接已关闭", site_disabled:"已停用",
+    waiting_download:"等待下载完成", waiting_selection:"全集待确认", missing_in_downloader:"下载器中缺失", done:"硬链接完成", ready:"待处理", partial:"部分入库", conflict:"入库冲突", disabled:"硬链接已关闭", site_disabled:"已停用",
   };
   return labels[value] || value || "未知";
 }
@@ -68,6 +68,12 @@ function chip(value) {
   const ok = ["completed","found","monitoring","downloading","uploading","pausedUP","done"].includes(value);
   const error = ["failed", "missing_in_downloader", "partial", "conflict"].includes(value);
   return `<span class="status-chip ${error ? "error" : ok ? "ok" : "wait"}">${escapeHTML(stateLabel(value))}</span>`;
+}
+
+function cleanupPlanChip(value) {
+  const label = value === "partial" ? "部分失败" : stateLabel(value);
+  const kind = value === "completed" ? "ok" : value === "partial" ? "error" : "wait";
+  return `<span class="status-chip ${kind}">${escapeHTML(label)}</span>`;
 }
 
 function namingStatus(item) {
@@ -415,11 +421,15 @@ function renderAutomation() {
   const online = state.qb?.connected;
   const downloader = state.qb?.client === "transmission" ? "Transmission" : "qBittorrent";
   const hours = state.systemSettings?.watchlist_check_hours || 12;
+  const cleanupMode = state.systemSettings?.cleanup_auto_scan_enabled
+    ? (state.systemSettings.cleanup_auto_execute_enabled ? "自动扫描并执行" : "只自动扫描")
+    : "手动扫描";
   $("#automation-status").innerHTML = `
     <div class="status-row ${online ? "" : "error"}"><i></i><span>${downloader} 连接</span><small>${online ? escapeHTML(state.qb.version) : "不可用"}</small></div>
     <div class="status-row ${waiting ? "warn" : ""}"><i></i><span>等待命名或入库</span><small>${waiting} 项</small></div>
     <div class="status-row ${failed ? "error" : ""}"><i></i><span>命名或入库失败</span><small>${failed} 项</small></div>
-    <div class="status-row"><i></i><span>订阅定时检查</span><small>每 ${hours} 小时</small></div>`;
+    <div class="status-row"><i></i><span>订阅定时检查</span><small>每 ${hours} 小时</small></div>
+    <div class="status-row ${state.systemSettings?.cleanup_auto_delete_source ? "warn" : ""}"><i></i><span>重复清理</span><small>${cleanupMode}</small></div>`;
 }
 
 const MEDIA_GROUPS = [
@@ -451,7 +461,14 @@ function renderPaths() {
 }
 
 function renderSystemSettings() {
-  if (state.systemSettings && !state.systemDirty) $("#watchlist-hours").value = state.systemSettings.watchlist_check_hours;
+  if (state.systemSettings && !state.systemDirty) {
+    $("#watchlist-hours").value = state.systemSettings.watchlist_check_hours;
+    $("#cleanup-auto-scan").checked = Boolean(state.systemSettings.cleanup_auto_scan_enabled);
+    $("#cleanup-auto-execute").checked = Boolean(state.systemSettings.cleanup_auto_execute_enabled);
+    $("#cleanup-auto-delete-source").checked = Boolean(state.systemSettings.cleanup_auto_delete_source);
+    $("#cleanup-policy").value = state.systemSettings.cleanup_policy || "quality_first";
+    $("#cleanup-scan-hours").value = state.systemSettings.cleanup_scan_hours || 24;
+  }
   if (!state.downloaderSettings || state.downloaderDirty) return;
   const item = state.downloaderSettings;
   $("#downloader-type").value = item.downloader_type;
@@ -462,6 +479,71 @@ function renderSystemSettings() {
   $("#tr-password").value = ""; $("#tr-password").placeholder = item.transmission_password_configured ? "已配置；留空保持原密码" : "尚未配置";
   $("#tr-rpc-path").value = item.transmission_rpc_path || "/transmission/rpc"; $("#tr-https").checked = Boolean(item.transmission_use_https); $("#tr-verify").checked = Boolean(item.transmission_verify_ssl);
   toggleDownloaderFields();
+}
+
+function cleanupVersionName(version) {
+  const path = version.source_paths?.[0] || version.target_paths?.[0] || version.id;
+  return String(path).split("/").filter(Boolean).at(-1) || version.id;
+}
+
+function cleanupVersionMarkup(plan, group, version) {
+  const recommended = version.id === group.recommended_keep_id;
+  const selectable = plan.status === "ready" && version.managed && version.safe;
+  const completed = (plan.results || []).some((item) => item.version_id === version.id && item.status === "completed");
+  const checked = selectable && !recommended && !completed;
+  const paths = [
+    ...(version.source_paths || []).map((path) => `<span>源 · ${escapeHTML(path)}</span>`),
+    ...(version.target_paths || []).map((path) => `<span>库 · ${escapeHTML(path)}</span>`),
+  ].join("");
+  const quality = [version.resolution, version.source, version.hdr, version.audio, version.codec].filter(Boolean);
+  const safety = !version.managed ? "非 AVS 管理，禁止清理" : !version.safe ? `需要人工处理：${version.safety_reason || "无法可靠识别"}` : completed ? "已完成清理" : "已通过基础识别";
+  return `<label class="cleanup-version ${recommended ? "recommended" : ""} ${selectable ? "" : "unsafe"}">
+    <input type="checkbox" data-cleanup-version="${escapeHTML(version.id)}" data-cleanup-group="${escapeHTML(group.id)}" data-cleanup-plan="${escapeHTML(plan.id)}" ${checked ? "checked" : ""} ${selectable && !completed ? "" : "disabled"} aria-label="选择清理 ${escapeHTML(cleanupVersionName(version))}">
+    <span class="cleanup-version-main"><span class="cleanup-version-title"><strong>${escapeHTML(cleanupVersionName(version))}</strong><small>${formatBytes(version.size)}</small></span>
+    <span class="cleanup-quality">${recommended ? '<i class="quality-pill keep">建议保留</i>' : ""}${quality.map((item) => `<i class="quality-pill">${escapeHTML(item)}</i>`).join("")}<i class="quality-pill warn">inode ${escapeHTML(version.inode)} · ${Number(version.link_count || 0)} 链接</i></span>
+    <span class="cleanup-paths">${paths || "<span>未记录路径</span>"}<span>${escapeHTML(safety)}</span></span></span>
+  </label>`;
+}
+
+function renderCleanupPlans() {
+  const filter = $("#cleanup-status-filter").value;
+  const plans = state.cleanupPlans.filter((item) => !filter || item.status === filter);
+  $("#cleanup-plan-count").textContent = `${state.cleanupMeta.total ?? state.cleanupPlans.length} 个计划`;
+  $("#cleanup-plans").innerHTML = plans.length ? plans.map((plan, index) => {
+    const summary = plan.summary || {};
+    const groups = plan.groups || [];
+    const failed = (plan.results || []).filter((item) => item.status === "failed");
+    const groupMarkup = groups.length ? groups.map((group) => `<section class="cleanup-group"><div class="cleanup-group-head"><strong>${escapeHTML(group.identity || group.id)}</strong><small>${escapeHTML(mediaTypeLabel(group.media_type))} · ${group.versions?.length || 0} 个版本</small></div>${(group.versions || []).map((version) => cleanupVersionMarkup(plan, group, version)).join("")}</section>`).join("") : '<div class="empty">本次扫描没有发现可比较的重复版本</div>';
+    const retry = plan.status === "partial" ? `<button class="quiet-button" data-cleanup-retry="${escapeHTML(plan.id)}" type="button">重试失败项</button>` : "";
+    const execute = plan.status === "ready" && groups.length ? `<button class="primary-button" data-cleanup-execute="${escapeHTML(plan.id)}" type="button">核对并执行所选项</button>` : "";
+    return `<details class="cleanup-plan" ${index === 0 ? "open" : ""}><summary><span class="cleanup-plan-title">${cleanupPlanChip(plan.status)}<strong>${plan.policy === "space_first" ? "空间优先" : "质量优先"}扫描</strong></span><small>${formatDate(plan.created_at)} · ${groups.length} 组重复</small></summary><div class="cleanup-plan-body">
+      <div class="cleanup-summary-strip"><div><span>重复组</span><strong>${Number(summary.groups || groups.length)}</strong></div><div><span>逻辑重复体积</span><strong>${formatBytes(summary.logical_duplicate_size)}</strong></div><div><span>删源后预计释放</span><strong>${formatBytes(summary.reclaimable_if_source_deleted || summary.estimated_reclaimable)}</strong></div></div>
+      ${groupMarkup}${failed.length ? `<div class="cleanup-result-error">${failed.map((item) => `${escapeHTML(item.version_id)}：${escapeHTML(item.error || "未知错误")}`).join("<br>")}</div>` : ""}
+      <div class="cleanup-plan-actions"><small>可改选任意安全版本，但每组必须至少保留一个版本。清理前 AVS 会重新核对所有文件。</small><div class="head-actions">${retry}${execute}</div></div>
+    </div></details>`;
+  }).join("") : '<div class="empty">还没有符合条件的清理计划。先执行一次只读扫描。</div>';
+}
+
+function prepareCleanupExecution(planId, trigger) {
+  const plan = state.cleanupPlans.find((item) => item.id === planId);
+  if (!plan) { toast("找不到清理计划，请刷新后重试", true); return; }
+  const selections = [];
+  const selectedVersions = [];
+  for (const group of plan.groups || []) {
+    const inputs = $$(`[data-cleanup-plan="${CSS.escape(planId)}"][data-cleanup-group="${CSS.escape(group.id)}"]`);
+    const ids = inputs.filter((input) => input.checked).map((input) => input.dataset.cleanupVersion);
+    if (ids.length === (group.versions || []).length) { toast(`「${group.identity}」不能删除全部版本`, true); return; }
+    if (ids.length) {
+      selections.push({group_id: group.id, delete_version_ids: ids});
+      selectedVersions.push(...(group.versions || []).filter((item) => ids.includes(item.id)));
+    }
+  }
+  if (!selections.length) { toast("请至少勾选一个要清理的安全版本", true); return; }
+  state.cleanupExecution = {planId, selections, selectedVersions};
+  $("#cleanup-confirm-summary").textContent = `将处理 ${selectedVersions.length} 个版本，共 ${formatBytes(selectedVersions.reduce((sum, item) => sum + Number(item.size || 0), 0))}。默认只删除媒体库中的所选硬链接。`;
+  $("#cleanup-confirm-paths").innerHTML = selectedVersions.map((item) => `<div class="cleanup-confirm-item"><strong>${escapeHTML(cleanupVersionName(item))}</strong><small>${[...(item.target_paths || []), ...(item.source_paths || [])].map(escapeHTML).join("<br>")}</small></div>`).join("");
+  $("#cleanup-delete-source").checked = false; $("#cleanup-understand").checked = false;
+  openModal("#cleanup-confirm-modal", trigger);
 }
 
 function renderAgents() {
@@ -487,7 +569,7 @@ function renderLogs() {
 }
 
 function renderAll() {
-  renderMetrics(); renderDownloads(); renderWatchlist(); renderNaming(); renderHardlinks(); renderSites(); renderPaths(); renderSystemSettings(); renderAgents(); renderAutomation(); renderLogs();
+  renderMetrics(); renderDownloads(); renderWatchlist(); renderNaming(); renderHardlinks(); renderCleanupPlans(); renderSites(); renderPaths(); renderSystemSettings(); renderAgents(); renderAutomation(); renderLogs();
   const online = state.qb?.connected;
   const downloader = state.qb?.client === "transmission" ? "Transmission" : "qBittorrent";
   $("#downloader-name").textContent = downloader;
@@ -504,7 +586,7 @@ async function loadAll(silent = false) {
     const paths = [
       "/api/downloader/status", "/api/downloader/tasks", "/api/watchlist", `/api/naming/jobs?page=${state.namingPage}&per_page=50`,
       `/api/hardlinks?status=all&page=${state.hardlinksPage}&per_page=50`, "/api/settings/sites", "/api/settings/paths", "/api/settings/path-rules",
-      "/api/settings/downloader", "/api/settings/system", "/api/agents", "/api/logs?limit=500",
+      "/api/settings/downloader", "/api/settings/system", "/api/agents", "/api/logs?limit=500", "/api/cleanup/plans?per_page=20",
     ];
     const requests = await Promise.allSettled(paths.map((path) => api(path)));
     const authFailure = requests.find((item) => item.status === "rejected" && item.reason instanceof AuthError);
@@ -516,6 +598,7 @@ async function loadAll(silent = false) {
     state.watchlist = value(2, {items:[]}).items; const namingResult = value(3, {items:[]}); const hardlinksResult = value(4, {items:[]}); state.naming = namingResult.items || []; state.hardlinks = hardlinksResult.items || []; state.namingMeta = namingResult; state.hardlinksMeta = hardlinksResult;
     state.sites = value(5, {items:[]}).items; state.paths = value(6, {settings:state.paths}).settings; state.pathRules = value(7, {items:[]}).items;
     state.downloaderSettings = value(8, {settings:state.downloaderSettings}).settings; state.systemSettings = value(9, {settings:state.systemSettings}).settings; state.agents = value(10, {items:[]}).items; state.logs = value(11, {items:[]}).items;
+    const cleanupResult = value(12, {items:[], total:0}); state.cleanupPlans = cleanupResult.items || []; state.cleanupMeta = cleanupResult;
     renderAll(); $("#auth-modal").classList.add("hidden");
     if (!silent && requests.some((item) => item.status === "rejected")) toast("部分数据暂时不可用", true);
   } catch (error) {
@@ -683,7 +766,7 @@ function updateManualLinkName() {
 
 function agentPrompt(agent) {
   const origin = location.origin;
-  return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\nCLI：python -m ainas.cli\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 首次使用时 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink","logs"]}\n3. 不需要发送心跳；仅在需要查看或操作时调用 API，任意有效请求都会更新最近使用时间\n4. 也可以设置 AVS_URL=${origin} 与 AVS_TOKEN 后使用 CLI；先运行 python -m ainas.cli status\n5. 搜索时省略 add_to_watchlist 或明确传 false；只有用户明确要求订阅时才调用 /api/watchlist/add\n6. 读取 OpenAPI 后再调用业务接口；涉及新增下载、删除或修改设置时，先向我确认目标\n7. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
+  return `请连接我的 AI Video Station，并把它作为媒体自动化工具使用。\n\n服务地址：${origin}\nOpenAPI：${origin}/openapi.yaml\n专用令牌：${agent.token}\nCLI：python -m ainas.cli\n\n连接方式：\n1. 所有 /api 请求使用 Authorization: Bearer ${agent.token}\n2. 首次使用时 POST ${origin}/api/agents/connect，JSON 为 {"name":"我的 Agent","capabilities":["search","download","watchlist","naming","hardlink","cleanup","logs"]}\n3. 不需要发送心跳；仅在需要查看或操作时调用 API，任意有效请求都会更新最近使用时间\n4. 也可以设置 AVS_URL=${origin} 与 AVS_TOKEN 后使用 CLI；先运行 python -m ainas.cli status\n5. 搜索时省略 add_to_watchlist 或明确传 false；只有用户明确要求订阅时才调用 /api/watchlist/add\n6. 读取 OpenAPI 后再调用业务接口；涉及新增下载、重复清理、删除或修改设置时，先向我确认目标\n7. 不要在回复、日志或其他文件中再次显示这枚令牌。`;
 }
 
 function openAgentScopes(agentId, trigger = document.activeElement) {
@@ -712,17 +795,52 @@ function bindEvents() {
     const page = event.target.closest("[data-page-kind]"); if (page) { state[`${page.dataset.pageKind}Page`] = Number(page.dataset.page); loadAll(true); }
     const searchDownload = event.target.closest("[data-search-download]"); if (searchDownload) actOnSearchResult(Number(searchDownload.dataset.searchDownload), "download", searchDownload);
     const searchSubscribe = event.target.closest("[data-search-subscribe]"); if (searchSubscribe) actOnSearchResult(Number(searchSubscribe.dataset.searchSubscribe), "subscribe", searchSubscribe);
+    const cleanupExecute = event.target.closest("[data-cleanup-execute]"); if (cleanupExecute) prepareCleanupExecution(cleanupExecute.dataset.cleanupExecute, cleanupExecute);
+    const cleanupRetry = event.target.closest("[data-cleanup-retry]"); if (cleanupRetry) runAction(cleanupRetry, `/api/cleanup/plans/${encodeURIComponent(cleanupRetry.dataset.cleanupRetry)}/retry`, "失败清理项已重试");
   });
   $$(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => { resetManualPreview(); openModal("#download-modal"); }));
   $("#add-watchlist").addEventListener("click", () => openModal("#watchlist-modal"));
   $("#refresh-all").addEventListener("click", () => loadAll()); $("#refresh-downloads").addEventListener("click", () => refreshDownloads()); $("#show-hidden-downloads").addEventListener("click", () => openModal("#hidden-downloads-modal")); $("#watch-filter").addEventListener("input", renderWatchlist);
-  $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks);
+  $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks); $("#cleanup-status-filter").addEventListener("change", renderCleanupPlans);
   $("#log-level").addEventListener("change", renderLogs); $("#log-query").addEventListener("input", renderLogs); $("#refresh-logs").addEventListener("click", loadLogs);
   $("#log-since").addEventListener("change", loadLogs);
   $("#job-detail-logs").addEventListener("click", (event) => showJobLogs(event.currentTarget.dataset.jobId));
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
+  $("#cleanup-scan-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = $("#cleanup-scan"); button.disabled = true;
+    try {
+      const payload = {policy:$("#cleanup-policy").value}; if ($("#cleanup-media-type").value) payload.media_type = $("#cleanup-media-type").value;
+      const result = await api("/api/cleanup/scan", {method:"POST", body:JSON.stringify(payload)});
+      toast(result.item?.groups?.length ? `扫描完成，发现 ${result.item.groups.length} 组重复` : "扫描完成，没有发现重复版本"); await loadAll(true);
+    } catch (error) { showError(error); } finally { button.disabled = false; }
+  });
+  $("#cleanup-settings-form").addEventListener("input", () => { state.systemDirty = true; });
+  $("#cleanup-settings-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]');
+    const autoScan = $("#cleanup-auto-scan").checked; const autoExecute = $("#cleanup-auto-execute").checked; const autoDelete = $("#cleanup-auto-delete-source").checked;
+    if (autoExecute && !autoScan) { toast("开启自动执行前，需要先开启定时扫描", true); return; }
+    if (autoDelete && !autoExecute) { toast("自动删除源数据只能在自动执行开启后使用", true); return; }
+    const becameDestructive = (autoExecute && !state.systemSettings?.cleanup_auto_execute_enabled) || (autoDelete && !state.systemSettings?.cleanup_auto_delete_source);
+    if (becameDestructive && !confirm("自动执行可能移除媒体库硬链接；自动删源还会删除下载器任务或源文件。确认按当前分级开关保存吗？")) return;
+    button.disabled = true;
+    try {
+      const payload = {cleanup_auto_scan_enabled:autoScan, cleanup_auto_execute_enabled:autoExecute, cleanup_auto_delete_source:autoDelete, cleanup_policy:$("#cleanup-policy").value, cleanup_scan_hours:Number($("#cleanup-scan-hours").value)};
+      const result = await api("/api/settings/system", {method:"PATCH", body:JSON.stringify(payload)}); state.systemSettings = result.settings; state.systemDirty = false; toast("重复清理自动化设置已保存"); renderSystemSettings(); renderAutomation();
+    } catch (error) { showError(error); } finally { button.disabled = false; }
+  });
+  $("#cleanup-confirm-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const execution = state.cleanupExecution; if (!execution) { toast("清理选择已失效，请重新打开计划", true); return; }
+    const button = $("#cleanup-confirm-submit"); button.disabled = true;
+    try {
+      const payload = {selections:execution.selections, delete_source:$("#cleanup-delete-source").checked, confirmation:"DELETE_SELECTED_DUPLICATES"};
+      const result = await api(`/api/cleanup/plans/${encodeURIComponent(execution.planId)}/execute`, {method:"POST", body:JSON.stringify(payload)});
+      $("#cleanup-confirm-modal").classList.add("hidden"); state.cleanupExecution = null;
+      const failed = (result.results || []).filter((item) => item.status === "failed").length;
+      toast(failed ? `清理完成，但有 ${failed} 项失败，可在记录中重试` : "所选重复版本已处理", failed > 0); await loadAll(true);
+    } catch (error) { showError(error); } finally { button.disabled = false; }
+  });
   $("#search-form").addEventListener("submit", async (event) => { event.preventDefault(); const button = $("#search-submit"); button.disabled = true; try { const result = await api("/api/search", {method:"POST",body:JSON.stringify({keyword:$("#search-keyword").value.trim(),type:$("#search-type").value,add_to_watchlist:false})}); state.searchResults = (result.items || result.results || []).map((item) => ({...item, watchlist_exists: Boolean(result.watchlist_exists)})); renderSearchResults(); $("#search-provider-note").textContent = `已从 ${new Set(state.searchResults.map((item) => item.provider || item.source || item.site_name).filter(Boolean)).size} 个来源返回 ${state.searchResults.length} 条结果。`; toast("搜索已完成"); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
   $("#watchlist-body").addEventListener("change", async (event) => {
     const select = event.target.closest("[data-watch-mode]"); if (!select) return;

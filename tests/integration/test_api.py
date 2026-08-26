@@ -151,6 +151,43 @@ class StubNamingService:
         return {"id": job_id, "status": "retrying", "plan": plan}
 
 
+class StubCleanup:
+    def __init__(self):
+        self.repository = self
+        self.items = []
+        self.executions = []
+
+    def scan(self, policy="quality_first", media_type=None):
+        item = {
+            "id": "cleanup-plan-1",
+            "status": "ready",
+            "policy": policy,
+            "media_type": media_type,
+            "created_at": "2026-08-26T00:00:00+00:00",
+            "updated_at": "2026-08-26T00:00:00+00:00",
+            "groups": [],
+            "summary": {"groups": 0, "logical_duplicate_size": 0, "reclaimable_if_source_deleted": 0},
+            "results": [],
+        }
+        self.items = [item]
+        return item
+
+    def list(self):
+        return self.items
+
+    def get(self, plan_id):
+        return next(item for item in self.items if item["id"] == plan_id)
+
+    def execute(self, plan_id, selections, delete_source, confirmation):
+        self.executions.append((plan_id, selections, delete_source, confirmation))
+        item = self.get(plan_id)
+        item["status"] = "completed"
+        return item, [{"version_id": "version-1", "status": "completed"}]
+
+    def retry(self, plan_id):
+        return self.get(plan_id), []
+
+
 def build_test_app(tmp_path: Path):
     settings = Settings(
         data_dir=tmp_path,
@@ -181,6 +218,7 @@ def build_test_app(tmp_path: Path):
         naming=StubNamingService(naming_jobs),
         sites=sites,
         dismissed_downloads=dismissed_downloads,
+        cleanup=StubCleanup(),
     )
     return create_app(settings, services, start_scheduler=False), services
 
@@ -195,6 +233,8 @@ def test_health_auth_search_download_and_qb(tmp_path):
     page = admin.get_data(as_text=True)
     assert 'id="header-theme-mode"' in page
     assert 'data-panel="logs"' in page
+    assert 'data-panel="cleanup"' in page
+    assert 'id="cleanup-confirm-modal"' in page
     assert 'id="refresh-downloads"' in page
     assert 'id="show-hidden-downloads"' in page
     assert 'id="hidden-downloads-modal"' in page
@@ -714,3 +754,40 @@ def test_naming_correction_preview_and_apply_endpoints_require_naming_scope(tmp_
     assert client.post(
         f"/api/naming/jobs/{job['id']}/preview", json={"media_name": "无权限"}, headers=admin
     ).status_code == 200
+
+
+def test_cleanup_routes_require_cleanup_scope_and_keep_confirmation_explicit(tmp_path):
+    app, services = build_test_app(tmp_path)
+    client = app.test_client()
+    admin = {"X-Api-Key": "integration-api-key-1234"}
+    read_agent = client.post(
+        "/api/agents/bootstrap", json={"name": "reader", "scopes": ["read"]}, headers=admin
+    ).json["agent"]
+    cleanup_agent = client.post(
+        "/api/agents/bootstrap", json={"name": "cleaner", "scopes": ["cleanup"]}, headers=admin
+    ).json["agent"]
+    read_bearer = {"Authorization": f"Bearer {read_agent['token']}"}
+    cleanup_bearer = {"Authorization": f"Bearer {cleanup_agent['token']}"}
+
+    assert client.post("/api/cleanup/scan", json={}, headers=read_bearer).status_code == 403
+    scanned = client.post(
+        "/api/cleanup/scan", json={"policy": "space_first", "media_type": "tv"}, headers=cleanup_bearer
+    )
+    assert scanned.status_code == 201
+    assert scanned.json["item"]["policy"] == "space_first"
+    assert client.get("/api/cleanup/plans", headers=cleanup_bearer).status_code == 403
+    assert client.get("/api/cleanup/plans", headers=read_bearer).status_code == 200
+
+    payload = {
+        "selections": [{"group_id": "group-1", "delete_version_ids": ["version-1"]}],
+        "delete_source": True,
+        "confirmation": "DELETE_SELECTED_DUPLICATES",
+    }
+    executed = client.post("/api/cleanup/plans/cleanup-plan-1/execute", json=payload, headers=cleanup_bearer)
+    assert executed.status_code == 200
+    assert services.cleanup.executions[-1] == (
+        "cleanup-plan-1",
+        [{"group_id": "group-1", "delete_version_ids": ["version-1"]}],
+        True,
+        "DELETE_SELECTED_DUPLICATES",
+    )

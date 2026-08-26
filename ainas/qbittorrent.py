@@ -311,6 +311,12 @@ class QBittorrentClient:
     def resume(self, hash_value: str) -> None:
         self._request("POST", "/api/v2/torrents/resume", data={"hashes": hash_value})
 
+    def pause(self, hash_value: str) -> None:
+        self._request("POST", "/api/v2/torrents/pause", data={"hashes": hash_value})
+
+    def delete(self, hash_value: str, delete_files: bool = True) -> None:
+        self._request("POST", "/api/v2/torrents/delete", data={"hashes": hash_value, "deleteFiles": "true" if delete_files else "false"})
+
     def recheck(self, hash_value: str) -> None:
         self._request("POST", "/api/v2/torrents/recheck", data={"hashes": hash_value})
 

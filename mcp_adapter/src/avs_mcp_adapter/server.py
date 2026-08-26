@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, Literal
 
 from .client import AVSClient, AVSSettings
-from .tools import MCPToolBindings, MediaType, TOOL_SPECS, ViewingMode, tool_result
+from .tools import CleanupPolicy, MCPToolBindings, MediaType, TOOL_SPECS, ViewingMode, tool_result
 
 
 def _sdk_annotations(spec: Any) -> Any:
@@ -168,6 +168,62 @@ def create_server(client: AVSClient | None = None) -> Any:
     )
     async def avs_check_watchlist(item_id: str | None = None) -> dict[str, Any]:
         return await tool_result(tools.check_watchlist, item_id)
+
+    @server.tool(
+        name="avs_scan_duplicates",
+        description=specs["avs_scan_duplicates"].description,
+        annotations=_sdk_annotations(specs["avs_scan_duplicates"]),
+    )
+    async def avs_scan_duplicates(
+        policy: CleanupPolicy = "quality_first",
+        media_type: Literal["movie", "tv", "anime", "custom"] | None = None,
+    ) -> dict[str, Any]:
+        return await tool_result(tools.scan_duplicates, policy, media_type)
+
+    @server.tool(
+        name="avs_list_cleanup_plans",
+        description=specs["avs_list_cleanup_plans"].description,
+        annotations=_sdk_annotations(specs["avs_list_cleanup_plans"]),
+    )
+    async def avs_list_cleanup_plans(
+        page: int = 1, per_page: int = 20, status: str | None = None
+    ) -> dict[str, Any]:
+        return await tool_result(tools.list_cleanup_plans, page, per_page, status)
+
+    @server.tool(
+        name="avs_get_cleanup_plan",
+        description=specs["avs_get_cleanup_plan"].description,
+        annotations=_sdk_annotations(specs["avs_get_cleanup_plan"]),
+    )
+    async def avs_get_cleanup_plan(plan_id: str) -> dict[str, Any]:
+        return await tool_result(tools.get_cleanup_plan, plan_id)
+
+    @server.tool(
+        name="avs_execute_cleanup_plan",
+        description=specs["avs_execute_cleanup_plan"].description,
+        annotations=_sdk_annotations(specs["avs_execute_cleanup_plan"]),
+    )
+    async def avs_execute_cleanup_plan(
+        plan_id: str,
+        selections: list[dict[str, Any]],
+        confirmation: Literal["DELETE_SELECTED_DUPLICATES"],
+        delete_source: bool = False,
+    ) -> dict[str, Any]:
+        return await tool_result(
+            tools.execute_cleanup_plan,
+            plan_id,
+            selections,
+            confirmation,
+            delete_source,
+        )
+
+    @server.tool(
+        name="avs_retry_cleanup_plan",
+        description=specs["avs_retry_cleanup_plan"].description,
+        annotations=_sdk_annotations(specs["avs_retry_cleanup_plan"]),
+    )
+    async def avs_retry_cleanup_plan(plan_id: str) -> dict[str, Any]:
+        return await tool_result(tools.retry_cleanup_plan, plan_id)
 
     return server
 

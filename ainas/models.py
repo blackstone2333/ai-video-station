@@ -264,13 +264,39 @@ class DownloaderSettingsPatchRequest(StrictModel):
 
 
 class SystemSettingsPatchRequest(StrictModel):
-    watchlist_check_hours: int = Field(ge=3, le=168)
+    watchlist_check_hours: Optional[int] = Field(default=None, ge=3, le=168)
+    cleanup_auto_scan_enabled: Optional[bool] = None
+    cleanup_auto_execute_enabled: Optional[bool] = None
+    cleanup_auto_delete_source: Optional[bool] = None
+    cleanup_policy: Optional[Literal["quality_first", "space_first"]] = None
+    cleanup_scan_hours: Optional[int] = Field(default=None, ge=3, le=168)
+
+    @model_validator(mode="after")
+    def require_change(self) -> "SystemSettingsPatchRequest":
+        if not self.model_fields_set: raise ValueError("at least one system setting is required")
+        return self
+
+
+class CleanupScanRequest(StrictModel):
+    policy: Literal["quality_first", "space_first"] = "quality_first"
+    media_type: Optional[Literal["movie", "tv", "anime", "custom"]] = None
+
+
+class CleanupExecuteRequest(StrictModel):
+    selections: List["CleanupSelection"] = Field(min_length=1, max_length=1000)
+    delete_source: bool = False
+    confirmation: str = ""
+
+
+class CleanupSelection(StrictModel):
+    group_id: str = Field(min_length=1, max_length=128)
+    delete_version_ids: List[str] = Field(min_length=1, max_length=1000)
 
 
 class AgentBootstrapRequest(StrictModel):
     name: str = Field(default="My Agent", min_length=1, max_length=100)
-    scopes: List[Literal["read", "search", "download", "watchlist", "naming", "settings"]] = Field(
-        default_factory=lambda: ["read"], max_length=6
+    scopes: List[Literal["read", "search", "download", "watchlist", "naming", "cleanup", "settings"]] = Field(
+        default_factory=lambda: ["read"], max_length=7
     )
 
 
@@ -280,8 +306,8 @@ class AgentConnectRequest(StrictModel):
 
 
 class AgentScopesUpdateRequest(StrictModel):
-    scopes: List[Literal["read", "search", "download", "watchlist", "naming", "settings"]] = Field(
-        min_length=1, max_length=6
+    scopes: List[Literal["read", "search", "download", "watchlist", "naming", "cleanup", "settings"]] = Field(
+        min_length=1, max_length=7
     )
 
 

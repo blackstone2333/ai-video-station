@@ -4,6 +4,14 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
+## v2.2.0 更新说明
+
+- 新增“重复与洗版”中心：扫描已启用的下载目录和媒体库目录，先按设备号与 inode 合并正常硬链接，再识别同一电影或同一集的不同物理版本，避免把 AVS 自己创建的硬链接误报为重复占用。
+- 支持质量优先、空间优先和逐项手动选择。质量优先默认保留综合质量更好的版本；空间优先可以保留满足观看要求的较小版本并清理 4K 等大体积版本，执行前会显示预计真实释放空间。
+- 清理采用“生成计划 → 明确确认 → 执行”的两段式流程；执行前重新核对路径、inode、文件大小、下载器状态和保留版本，陈旧计划、符号链接、路径逃逸及多文件 torrent 的部分源删除会在任何文件变化前被拒绝。
+- 整个 torrent 都可淘汰时，AVS 只通过下载器正常 API 暂停并删除任务与源数据；下载器任务已不存在或文件不受下载器管理时，AVS 可以在已配置下载根目录内直接删除。媒体库硬链接先移除，源数据后处理，不修改 qBittorrent 源码、系统或全局配置。
+- 后台、REST/OpenAPI、CLI 和 MCP 均可扫描、查看、执行与重试洗版计划。Agent 需要单独授予 `cleanup` 权限；自动扫描、自动执行和自动删源分级控制，升级后全部默认关闭。
+
 ## v2.1.2 更新说明
 
 - 多文件 torrent 改为逐文件后处理：单集下载完成后立即执行规范命名和硬链接，不再等待整包全部完成。
@@ -44,7 +52,7 @@ v2.1 不执行洗版清理，也不会删除旧下载、下载器任务或媒体
 - 搜索与订阅彻底解耦：搜索默认只返回结果，订阅使用独立接口，避免 Agent 多轮搜索产生重复监听。
 - 命名和硬链接增加可恢复检查点、下载器任务延迟绑定、缺失终态、部分入库与冲突状态；失败、缺失、部分和冲突记录都可重试或只删除 AVS 记录。
 - 目录映射成为下载路由：电影、电视剧、动漫、自定义每类可配置多条规则，手动下载、搜索结果和订阅都能明确选择规则并先做只读预检。
-- Agent 改为后台授予最小权限，API 默认拒绝未鉴权访问；管理页可随时调整 `read/search/download/watchlist/naming/settings` 范围。
+- Agent 改为后台授予最小权限，API 默认拒绝未鉴权访问；管理页可随时调整 `read/search/download/watchlist/naming/cleanup/settings` 范围。
 - 运行状态迁移到 `data/state.db`。首次启动会一次性导入旧 JSON，但不会删除或改写旧文件；SQLite 此后成为权威状态源。
 - 增加并发 Provider、受控适配器注册、私网/重定向/响应体保护、Provider 预览，以及显式下载器能力契约。
 - 管理页补齐资源搜索、分页、命名修正预览、安全迁移、路径诊断、Agent 权限、完整错误与请求 ID 展示。
@@ -109,7 +117,7 @@ docker compose up -d --build --remove-orphans
 - 多目录映射：每类可配置多个下载源目录，每个源目录独立对应一个硬链接目标目录
 - 下载器切换：在后台配置并切换 qBittorrent / Transmission
 - 同盘硬链接：基于 `os.link` 入库，不复制媒体内容，不覆盖目标同名文件
-- 管理后台：标题栏主题切换、订阅周期、下载记录、命名任务、硬链接记录、系统日志、站点、目录和下载器设置
+- 管理后台：标题栏主题切换、订阅周期、下载记录、命名任务、硬链接记录、重复与洗版、系统日志、站点、目录和下载器设置
 - Agent 连接：顶部一键生成独立、可撤销、只显示一次的 Agent 令牌
 - Agent 操作面：REST/OpenAPI 与 `python -m ainas.cli` 命令行，按需连接，无需心跳
 
@@ -453,7 +461,7 @@ python -m ainas.cli request POST /api/naming/jobs/check --data '{"job_id":"任�
 
 ## Agent MCP 适配器
 
-[`mcp_adapter/`](mcp_adapter/) 是一个独立安装的 stdio MCP 服务，只调用 AVS REST，不直接读取状态库、媒体文件或下载器，也不新增网络端口。它提供搜索、手动预览与下载、查看下载/命名/硬链接、重试命名和订阅等 12 个白名单工具。
+[`mcp_adapter/`](mcp_adapter/) 是一个独立安装的 stdio MCP 服务，只调用 AVS REST，不直接读取状态库、媒体文件或下载器，也不新增网络端口。它提供搜索、手动预览与下载、查看下载/命名/硬链接、重试命名、订阅和重复清理等 17 个白名单工具。
 
 ```bash
 cd mcp_adapter
@@ -465,7 +473,7 @@ export AVS_TOKEN='后台生成的最小权限 Agent Token'
 .venv/bin/avs-mcp
 ```
 
-Codex、Claude Desktop 等客户端的 stdio 配置示例、工具与权限对照见 [`mcp_adapter/README.md`](mcp_adapter/README.md)。推荐为 MCP 单独创建 Agent Token，只授予实际使用的 `read/search/download/watchlist/naming` 范围，不授予 `settings`。
+Codex、Claude Desktop 等客户端的 stdio 配置示例、工具与权限对照见 [`mcp_adapter/README.md`](mcp_adapter/README.md)。推荐为 MCP 单独创建 Agent Token，只授予实际使用的 `read/search/download/watchlist/naming/cleanup` 范围，不授予 `settings`。`cleanup` 含显式删除能力，不需要洗版的 Agent 不应获得该权限。
 
 ## 升级现有安装
 
@@ -497,13 +505,13 @@ docker compose up -d --build --remove-orphans
 
 ## CI、发布与回滚
 
-每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.1.2` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
+每个 PR 和 `main` 推送都会运行 Python 测试与覆盖率门槛、MCP 官方 SDK 测试和 wheel 构建、Compose 静态配置检查，并分别验证 `linux/amd64` 与 `linux/arm64` 镜像可构建。推送形如 `v2.2.0` 的 Git 标签会发布多架构镜像到 GHCR；工作流拒绝覆盖已发布的版本标签，并同时生成对应提交 SHA 标签，不发布 `latest`。
 
 部署已发布镜像时，请固定一个版本，不要使用浮动标签：
 
 ```bash
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.2 docker compose pull
-IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.1.2 docker compose up -d --no-build --remove-orphans
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.2.0 docker compose pull
+IMAGE=ghcr.io/blackstone2333/ai-video-station:v2.2.0 docker compose up -d --no-build --remove-orphans
 ```
 
 回滚就是在完成并校验备份后，将上述版本替换为上一个已验证的 `v*` 标签并重新执行两条命令。若升级涉及运行时数据变化，先停止服务并按上一节恢复对应备份，再启动旧版本。

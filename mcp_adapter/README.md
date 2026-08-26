@@ -67,10 +67,15 @@ For Claude Desktop, use its operating-system secret/environment mechanism rather
 | `avs_add_watchlist` | `POST /api/watchlist/add` | watchlist | non-destructive, idempotent |
 | `avs_update_watchlist` | `PATCH /api/watchlist/{id}` | watchlist | non-destructive, idempotent |
 | `avs_check_watchlist` | `POST /api/watchlist/check` | watchlist | non-destructive, non-idempotent, open-world |
+| `avs_scan_duplicates` | `POST /api/cleanup/scan` | cleanup | non-destructive, non-idempotent, open-world |
+| `avs_list_cleanup_plans` | `GET /api/cleanup/plans` | read | read-only, idempotent |
+| `avs_get_cleanup_plan` | `GET /api/cleanup/plans/{id}` | read | read-only, idempotent |
+| `avs_execute_cleanup_plan` | `POST /api/cleanup/plans/{id}/execute` | cleanup | destructive, non-idempotent, open-world |
+| `avs_retry_cleanup_plan` | `POST /api/cleanup/plans/{id}/retry` | cleanup | destructive, non-idempotent, open-world |
 
-`list_naming_jobs` and `list_hardlinks` accept `page` / `per_page` (1–100) and their corresponding status filter. A REST problem response is returned as structured tool data containing `status`, `title`, `detail`, `request_id`, and `errors`, so callers can give an actionable error or quote the request ID to an AVS administrator.
+`list_naming_jobs`, `list_hardlinks`, and `list_cleanup_plans` accept `page` / `per_page` (1–100) and their corresponding status filter. Cleanup execution requires explicit version IDs plus the exact `DELETE_SELECTED_DUPLICATES` confirmation. Source deletion is off unless `delete_source=true` is also provided. A REST problem response is returned as structured tool data containing `status`, `title`, `detail`, `request_id`, and `errors`, so callers can give an actionable error or quote the request ID to an AVS administrator.
 
-Not exposed: settings, site configuration, path rules, deletion endpoints, torrent-file uploads, qBittorrent relocation/recovery, naming-plan edits, or arbitrary REST paths.
+Not exposed: settings, site configuration, path rules, general deletion endpoints, torrent-file uploads, qBittorrent relocation/recovery, naming-plan edits, or arbitrary REST paths. The only destructive MCP surface is the allow-listed, two-stage duplicate cleanup flow.
 
 ## Verification
 

@@ -36,10 +36,34 @@ def test_downloader_settings_persist_mask_secrets_and_reload(tmp_path):
 def test_system_settings_validate_persist_and_reload(tmp_path):
     settings = Settings(data_dir=tmp_path, scheduler_enabled=False)
     repository = SystemSettingsRepository(settings)
-    assert repository.update({"watchlist_check_hours": 72}) == {"watchlist_check_hours": 72}
+    values = repository.update({"watchlist_check_hours": 72})
+    assert values["watchlist_check_hours"] == 72
+    assert values["cleanup_auto_scan_enabled"] is False
+    assert values["cleanup_auto_execute_enabled"] is False
+    assert values["cleanup_auto_delete_source"] is False
     assert SystemSettingsRepository(Settings(data_dir=tmp_path, scheduler_enabled=False)).get()["watchlist_check_hours"] == 72
     with pytest.raises(ValidationAppError):
         repository.update({"watchlist_check_hours": 2})
+
+
+def test_cleanup_automation_requires_each_safer_parent_switch(tmp_path):
+    repository = SystemSettingsRepository(Settings(data_dir=tmp_path, scheduler_enabled=False))
+    with pytest.raises(ValidationAppError, match="自动扫描"):
+        repository.update({"cleanup_auto_execute_enabled": True})
+    with pytest.raises(ValidationAppError, match="自动执行"):
+        repository.update({"cleanup_auto_delete_source": True})
+
+    values = repository.update(
+        {
+            "cleanup_auto_scan_enabled": True,
+            "cleanup_auto_execute_enabled": True,
+            "cleanup_auto_delete_source": True,
+            "cleanup_policy": "space_first",
+            "cleanup_scan_hours": 48,
+        }
+    )
+    assert values["cleanup_auto_delete_source"] is True
+    assert values["cleanup_policy"] == "space_first"
 
 
 def test_downloader_manager_rebuilds_client_when_type_changes(tmp_path, monkeypatch):

@@ -98,7 +98,7 @@ class AVSClient:
             transport=transport,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "avs-mcp-adapter/0.1",
+                "User-Agent": "avs-mcp-adapter/0.2.0",
                 **self._auth_headers(settings.token),
             },
         )

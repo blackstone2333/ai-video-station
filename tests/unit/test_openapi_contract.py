@@ -13,7 +13,7 @@ def test_openapi_covers_actual_agent_routes_and_scopes():
     document = yaml.safe_load(DOCUMENT.read_text(encoding="utf-8"))
 
     assert document["openapi"] == "3.1.0"
-    assert document["info"]["version"] == "2.1.2"
+    assert document["info"]["version"] == "2.2.0"
     expected = {
         "/api/search": {"post"},
         "/api/download": {"post"},
@@ -30,6 +30,11 @@ def test_openapi_covers_actual_agent_routes_and_scopes():
         "/api/watchlist/add": {"post"},
         "/api/watchlist/{item_id}": {"patch", "delete"},
         "/api/watchlist/check": {"post"},
+        "/api/cleanup/scan": {"post"},
+        "/api/cleanup/plans": {"get"},
+        "/api/cleanup/plans/{plan_id}": {"get"},
+        "/api/cleanup/plans/{plan_id}/execute": {"post"},
+        "/api/cleanup/plans/{plan_id}/retry": {"post"},
         "/api/naming/jobs": {"get"},
         "/api/naming/jobs/{job_id}": {"get", "delete"},
         "/api/naming/jobs/{job_id}/preview": {"post"},
@@ -76,6 +81,9 @@ def test_openapi_models_the_agent_contract_gaps_that_regressed_before():
     assert {"missing_in_downloader", "waiting_selection"} <= set(schemas["NamingStatus"]["enum"])
     assert {"request_id", "errors"} <= set(schemas["Problem"]["properties"])
     assert "Pagination" in schemas
+    assert "cleanup" in schemas["AgentScope"]["enum"]
+    assert schemas["CleanupExecuteRequest"]["properties"]["confirmation"]["const"] == "DELETE_SELECTED_DUPLICATES"
+    assert schemas["SystemSettingsPatchRequest"]["additionalProperties"] is False
 
     watchlist_schema = document["paths"]["/api/watchlist/add"]["post"]["requestBody"]["content"]["application/json"]["schema"]
     assert watchlist_schema["$ref"].endswith("/WatchlistAddRequest")

@@ -16,6 +16,9 @@ from ainas.config import Settings
         {"qb_movie_category": ""},
         {"qb_movie_category": "x" * 101},
         {"medialib_base_path": Path("relative")},
+        {"cleanup_policy": "delete_everything"},
+        {"cleanup_auto_execute_enabled": True},
+        {"cleanup_auto_delete_source": True},
     ],
 )
 def test_settings_reject_invalid_public_configuration(tmp_path, changes):

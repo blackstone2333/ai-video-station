@@ -54,10 +54,11 @@
       <button class="tab" data-tab="downloads" type="button" role="tab" aria-selected="false" aria-controls="panel-downloads">下载记录 <span>04</span></button>
       <button class="tab" data-tab="naming" type="button" role="tab" aria-selected="false" aria-controls="panel-naming">规范命名 <span>05</span></button>
       <button class="tab" data-tab="hardlinks" type="button" role="tab" aria-selected="false" aria-controls="panel-hardlinks">媒体入库 <span>06</span></button>
-      <button class="tab" data-tab="sites" type="button" role="tab" aria-selected="false" aria-controls="panel-sites">站点设置 <span>07</span></button>
-      <button class="tab" data-tab="paths" type="button" role="tab" aria-selected="false" aria-controls="panel-paths">路径设置 <span>08</span></button>
-      <button class="tab" data-tab="system" type="button" role="tab" aria-selected="false" aria-controls="panel-system">系统设置 <span>09</span></button>
-      <button class="tab" data-tab="logs" type="button" role="tab" aria-selected="false" aria-controls="panel-logs">系统日志 <span>10</span></button>
+      <button class="tab" data-tab="cleanup" type="button" role="tab" aria-selected="false" aria-controls="panel-cleanup">重复与洗版 <span>07</span></button>
+      <button class="tab" data-tab="sites" type="button" role="tab" aria-selected="false" aria-controls="panel-sites">站点设置 <span>08</span></button>
+      <button class="tab" data-tab="paths" type="button" role="tab" aria-selected="false" aria-controls="panel-paths">路径设置 <span>09</span></button>
+      <button class="tab" data-tab="system" type="button" role="tab" aria-selected="false" aria-controls="panel-system">系统设置 <span>10</span></button>
+      <button class="tab" data-tab="logs" type="button" role="tab" aria-selected="false" aria-controls="panel-logs">系统日志 <span>11</span></button>
     </nav>
 
     <section id="panel-search" class="panel" data-panel="search" role="tabpanel" aria-labelledby="tab-search">
@@ -125,6 +126,32 @@
         <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>目标目录</th><th>链接文件</th><th>状态</th><th>错误</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="hardlinks-body"></tbody></table></div>
         <div id="hardlinks-pagination" class="pagination"></div>
       </article>
+    </section>
+
+    <section id="panel-cleanup" class="panel" data-panel="cleanup" role="tabpanel">
+      <div class="panel-grid cleanup-layout">
+        <article class="card span-5 cleanup-console">
+          <header class="card-head"><div><p>VERSION CONTROL</p><h2>重复检查与洗版</h2></div><span class="count-chip">两段式清理</span></header>
+          <form id="cleanup-scan-form" class="settings-form">
+            <p class="cleanup-intro">AVS 会先合并正常硬链接，再比较同一电影或同一集的不同物理版本。扫描只生成计划，不会删除文件。</p>
+            <label>扫描策略<select id="cleanup-policy"><option value="quality_first">质量优先 · 默认保留高质量版</option><option value="space_first">空间优先 · 默认保留适中的小体积版</option></select></label>
+            <label>媒体范围<select id="cleanup-media-type"><option value="">全部分类</option><option value="movie">电影</option><option value="tv">电视剧</option><option value="anime">动漫</option><option value="custom">自定义</option></select></label>
+            <button id="cleanup-scan" class="primary-button wide" type="submit">开始只读扫描</button>
+          </form>
+          <form id="cleanup-settings-form" class="settings-form cleanup-settings">
+            <div class="section-rule"><span>AUTOMATION</span><small>升级后默认全部关闭</small></div>
+            <label class="toggle-row"><span><b>定时扫描</b><small>按周期生成新的清理计划，不自动删文件</small></span><input id="cleanup-auto-scan" type="checkbox" role="switch"></label>
+            <label>扫描周期（小时）<input id="cleanup-scan-hours" type="number" min="3" max="168" value="24"></label>
+            <label class="toggle-row"><span><b>自动执行建议</b><small>只处理 AVS 可验证、安全且非推荐保留的版本</small></span><input id="cleanup-auto-execute" type="checkbox" role="switch"></label>
+            <label class="toggle-row danger-toggle"><span><b>自动删除源数据</b><small>会通过下载器 API 或受控文件删除释放空间</small></span><input id="cleanup-auto-delete-source" type="checkbox" role="switch"></label>
+            <button class="quiet-button wide" type="submit">保存自动化设置</button>
+          </form>
+        </article>
+        <article class="card span-7 cleanup-history">
+          <header class="card-head action-head"><div><p>CLEANUP PLANS</p><h2>扫描与清理记录</h2></div><div class="head-actions"><select id="cleanup-status-filter" class="filter-input"><option value="">全部状态</option><option value="ready">待处理</option><option value="completed">已完成</option><option value="partial">部分失败</option></select><span id="cleanup-plan-count" class="count-chip">0 个计划</span></div></header>
+          <div id="cleanup-plans" class="cleanup-plans"><div class="empty">正在读取清理计划…</div></div>
+        </article>
+      </div>
     </section>
 
     <section id="panel-sites" class="panel" data-panel="sites">
@@ -294,7 +321,7 @@
       <header><div><span class="auth-kicker">AGENT BRIDGE</span><h2 id="agent-title">连接你的 Agent</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
       <p>生成一枚独立、可随时撤销的 Agent 令牌。Agent 按需调用 REST/OpenAPI 或 CLI，不需要持续心跳。</p>
       <label>Agent 名称<input id="agent-name" maxlength="100" required placeholder="例如：客厅自动化助手"></label>
-      <fieldset class="scope-picker"><legend>授予范围</legend><label><input type="checkbox" name="agent-scope" value="read" checked> 只读</label><label><input type="checkbox" name="agent-scope" value="search" checked> 搜索</label><label><input type="checkbox" name="agent-scope" value="download" checked> 下载</label><label><input type="checkbox" name="agent-scope" value="watchlist" checked> 订阅</label><label><input type="checkbox" name="agent-scope" value="naming"> 命名与入库</label><label><input type="checkbox" name="agent-scope" value="settings"> 设置</label></fieldset>
+      <fieldset class="scope-picker"><legend>授予范围</legend><label><input type="checkbox" name="agent-scope" value="read" checked> 只读</label><label><input type="checkbox" name="agent-scope" value="search" checked> 搜索</label><label><input type="checkbox" name="agent-scope" value="download" checked> 下载</label><label><input type="checkbox" name="agent-scope" value="watchlist" checked> 订阅</label><label><input type="checkbox" name="agent-scope" value="naming"> 命名与入库</label><label><input type="checkbox" name="agent-scope" value="cleanup"> 重复清理</label><label><input type="checkbox" name="agent-scope" value="settings"> 设置</label></fieldset>
       <button id="create-agent-config" class="primary-button wide" type="button">生成并复制连接方案</button>
       <div id="agent-config-wrap" class="hidden"><label>把下面内容发给你的 Agent<textarea id="agent-config" rows="10" readonly></textarea></label><button id="copy-agent-config" class="quiet-button" type="button">再次复制</button></div>
       <div class="agent-list-head"><b>已授权 Agent</b><span id="agent-count">0 个</span></div><div id="agent-list" class="agent-list"></div>
@@ -305,7 +332,7 @@
     <form id="agent-scopes-form" class="modal-card">
       <header><div><span class="auth-kicker">AGENT PERMISSIONS</span><h2 id="agent-scopes-title">编辑 Agent 权限</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
       <p id="agent-scopes-description">更新会立即替换该 Agent 的授权范围，令牌保持不变。</p><input id="agent-scopes-id" type="hidden">
-      <fieldset class="scope-picker"><legend>管理员授予的范围</legend><label><input type="checkbox" name="agent-edit-scope" value="read"> 只读</label><label><input type="checkbox" name="agent-edit-scope" value="search"> 搜索</label><label><input type="checkbox" name="agent-edit-scope" value="download"> 下载</label><label><input type="checkbox" name="agent-edit-scope" value="watchlist"> 订阅</label><label><input type="checkbox" name="agent-edit-scope" value="naming"> 命名与入库</label><label><input type="checkbox" name="agent-edit-scope" value="settings"> 设置</label></fieldset>
+      <fieldset class="scope-picker"><legend>管理员授予的范围</legend><label><input type="checkbox" name="agent-edit-scope" value="read"> 只读</label><label><input type="checkbox" name="agent-edit-scope" value="search"> 搜索</label><label><input type="checkbox" name="agent-edit-scope" value="download"> 下载</label><label><input type="checkbox" name="agent-edit-scope" value="watchlist"> 订阅</label><label><input type="checkbox" name="agent-edit-scope" value="naming"> 命名与入库</label><label><input type="checkbox" name="agent-edit-scope" value="cleanup"> 重复清理</label><label><input type="checkbox" name="agent-edit-scope" value="settings"> 设置</label></fieldset>
       <div id="agent-scopes-errors" class="field-errors" aria-live="polite"></div><div class="modal-actions"><button class="primary-button" type="submit">保存权限</button></div>
     </form>
   </div>
@@ -337,6 +364,17 @@
       <div id="naming-relocate-fields" class="relocation-fields hidden"><label>新的下载器保存路径<input id="relocate-location" type="text" placeholder="/downloads/Movies/Example" autocomplete="off"></label><small>将把当前下载器任务迁移到此绝对路径；不会修改已入库文件，也不会修改命名计划。</small></div>
       <div id="naming-preview" class="preflight-box">尚未预览。</div><div id="naming-plan-errors" class="field-errors" aria-live="polite"></div>
       <div class="modal-actions"><button id="preview-naming-plan" class="quiet-button" type="button">预览路径</button><button id="save-naming-plan" class="primary-button" type="submit">确认计划并重试</button></div>
+    </form>
+  </div>
+
+  <div id="cleanup-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cleanup-confirm-title">
+    <form id="cleanup-confirm-form" class="modal-card cleanup-confirm-card">
+      <header><div><span class="auth-kicker">DESTRUCTIVE ACTION</span><h2 id="cleanup-confirm-title">确认执行清理计划</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
+      <p id="cleanup-confirm-summary">尚未选择要清理的版本。</p>
+      <div id="cleanup-confirm-paths" class="cleanup-confirm-paths"></div>
+      <label class="toggle-row danger-toggle"><span><b>同时删除下载源数据</b><small>关闭时只移除所选版本的媒体库硬链接，下载源文件继续保留。</small></span><input id="cleanup-delete-source" type="checkbox" role="switch"></label>
+      <label class="cleanup-understand"><input id="cleanup-understand" type="checkbox" required> 我已核对保留版本和删除路径，理解删除源数据可能无法撤销。</label>
+      <div class="modal-actions"><button class="quiet-button" data-close-modal type="button">取消</button><button id="cleanup-confirm-submit" class="danger-solid-button" type="submit">执行所选清理</button></div>
     </form>
   </div>
 

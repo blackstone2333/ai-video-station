@@ -40,6 +40,7 @@ from .runtime_settings import (
 )
 from .agent_access import AgentAccessRepository
 from .state import StateStore, StateStoreError
+from .cleanup import CleanupPlanRepository, CleanupService
 
 
 logger = logging.getLogger(__name__)
@@ -683,6 +684,7 @@ class AppServices:
     agents: Optional[AgentAccessRepository] = None
     dismissed_downloads: Optional[DismissedDownloadRepository] = None
     state_store: Optional[StateStore] = None
+    cleanup: Optional[CleanupService] = None
 
 
 def build_services(settings: Settings) -> AppServices:
@@ -714,6 +716,7 @@ def build_services(settings: Settings) -> AppServices:
     naming_jobs = NamingJobRepository(settings.naming_jobs_path, state_store)
     hardlinker = MediaLibraryService(settings, path_rules=path_rules)
     naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker, path_rules=path_rules)
+    cleanup = CleanupService(settings, CleanupPlanRepository(state_store), path_rules, naming_jobs, qb)
     download = DownloadService(settings, qb, cache, naming, path_rules)
     watchlist_service = WatchlistService(settings, watchlist, search, qb, naming, path_rules)
     return AppServices(
@@ -734,4 +737,5 @@ def build_services(settings: Settings) -> AppServices:
         agents=agents,
         dismissed_downloads=dismissed_downloads,
         state_store=state_store,
+        cleanup=cleanup,
     )
