@@ -78,6 +78,56 @@ def test_movie_plan_corrects_obfuscated_link_name_and_subtitle():
     assert renamed["sample.mp4"] == "大黄蜂-Sample (2018) - 1080p.mp4"
 
 
+def test_movie_plan_drops_nested_advertising_folder_but_keeps_torrent_root():
+    release = build_release(
+        "抓特务",
+        "ztw.2026.1080p.mkv",
+        "https://sixv.test/dy/2.html",
+        "magnet:?xt=urn:btih:" + "f" * 40 + "&dn=ztw.2026.1080p.mkv",
+        "movie",
+        2026,
+    )
+    plan = EmbyNamingPlanner.from_release(release)
+    preview = EmbyNamingPlanner().plan_files(
+        [
+            {
+                "name": "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.mkv",
+                "size": 1000,
+            },
+            {
+                "name": "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.chs.srt",
+                "size": 10,
+            },
+        ],
+        plan,
+    )
+
+    renamed = {item["old_path"]: item["new_path"] for item in preview["operations"]}
+    assert renamed[
+        "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.mkv"
+    ] == "抓特务/抓特务 (2026) - 1080p.mkv"
+    assert renamed[
+        "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.chs.srt"
+    ] == "抓特务/抓特务 (2026) - 1080p.zh-CN.srt"
+    assert preview["folder_operations"] == []
+
+
+def test_movie_plan_drops_obfuscated_torrent_root_when_qb_reports_paths_relative_to_it():
+    plan = EmbyNamingPlanner.from_release(movie_release())
+    preview = EmbyNamingPlanner().plan_files(
+        [{"name": "ztw.电影港 地址发布页/ztw.1080p.mkv", "size": 1000}],
+        plan,
+    )
+
+    assert preview["operations"] == [
+        {
+            "kind": "file",
+            "old_path": "ztw.电影港 地址发布页/ztw.1080p.mkv",
+            "new_path": "大黄蜂 (2018) - 1080p.mkv",
+        }
+    ]
+
+
 def test_tv_plan_turns_bare_numbers_into_emby_episode_names():
     plan = EmbyNamingPlanner.from_release(tv_release())
     assert plan.media_name == "漫长的季节"

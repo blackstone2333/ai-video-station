@@ -1,4 +1,4 @@
-"""Hardlink completed qBittorrent downloads into the Emby media library."""
+"""Hardlink completed downloads into a player-neutral standard media library."""
 
 from __future__ import annotations
 
@@ -254,6 +254,41 @@ class MediaLibraryService:
         return relative
 
     @staticmethod
+    def _movie_relative(relative: Path) -> Path:
+        """Drop known advertising folders in the media-library target.
+
+        Movie libraries conventionally contain one title directory.  A
+        second directory from a torrent is sometimes a 6v advertising folder,
+        so preserving it makes the media scanner treat that folder as a second
+        movie.  Keep legitimate folders such as ``Extras`` intact.  The source
+        path is left untouched; only the hardlink destination is adjusted as a
+        safe historical fallback for jobs created before the naming fix.
+        """
+        advertising_tokens = (
+            "电影港",
+            "dygang",
+            "dyg7",
+            "dyg.me",
+            "地址发布",
+            "发布页",
+            "收藏不迷路",
+            "最新电影",
+            "最新影片",
+            "www.",
+            "网址",
+            "广告",
+        )
+        value = relative
+        while len(value.parts) > 1:
+            folder = value.parts[0].casefold()
+            if not any(token in folder for token in advertising_tokens) and not re.search(
+                r"(?:^|[ ._-])ad(?:$|[ ._-])", folder
+            ):
+                break
+            value = Path(*value.parts[1:])
+        return value
+
+    @staticmethod
     def _tv_relative(relative: Path) -> Path:
         if len(relative.parts) > 1:
             return relative
@@ -289,7 +324,7 @@ class MediaLibraryService:
         relative = self._strip_media_root(relative, removable_roots)
 
         if policy.target_layout == "title":
-            return (target_root or self._target_root(media_type)) / root_name / relative
+            return (target_root or self._target_root(media_type)) / root_name / self._movie_relative(relative)
         return (target_root or self._target_root(media_type)) / root_name / self._tv_relative(relative)
 
     def verify_named_sources(

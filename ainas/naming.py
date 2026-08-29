@@ -122,6 +122,30 @@ class EmbyNamingPlanner:
         return str(parent / basename) if str(parent) != "." else basename
 
     @staticmethod
+    def _movie_path(
+        old_path: str,
+        basename: str,
+        root_names: Tuple[str, ...] = (),
+    ) -> str:
+        """Keep a torrent's root while dropping nested release/advertising folders.
+
+        qBittorrent reports a multi-file torrent path relative to the category
+        save directory (or, depending on the qBittorrent version, relative to
+        the torrent root).  A component matching the known title is the
+        former case and is kept for the later torrent rename; an unknown first
+        component is treated as the latter case and removed along with any
+        deeper 6v advertising folders.  Moving the file to the torrent root
+        makes the source path deterministic for the hardlink stage.
+        """
+        path = PurePosixPath(old_path)
+        if len(path.parts) <= 1:
+            return basename
+        known_roots = {value.casefold() for value in root_names if value}
+        if known_roots and path.parts[0].casefold() not in known_roots:
+            return basename
+        return str(PurePosixPath(path.parts[0]) / basename)
+
+    @staticmethod
     def _unique_path(path: str, used: set[str]) -> str:
         if path not in used:
             used.add(path)
@@ -273,7 +297,15 @@ class EmbyNamingPlanner:
             else:
                 main_index = main_videos.index(item) if item in main_videos else index
                 new_basename = self._movie_basename(item, plan, main_index, len(main_videos))
-            new_path = self._unique_path(self._new_path(old_path, safe_name(new_basename)), used_paths)
+            if policy_for(plan.media_type).naming_layout == "movie":
+                planned_path = self._movie_path(
+                    old_path,
+                    safe_name(new_basename),
+                    (plan.media_name, plan.root_name),
+                )
+            else:
+                planned_path = self._new_path(old_path, safe_name(new_basename))
+            new_path = self._unique_path(planned_path, used_paths)
             video_map.append((str(old_value.with_suffix("")), str(PurePosixPath(new_path).with_suffix(""))))
             if new_path != old_path:
                 operations.append({"kind": "file", "old_path": old_path, "new_path": new_path})

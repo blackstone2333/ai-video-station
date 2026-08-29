@@ -108,6 +108,50 @@ def test_movie_strips_obfuscated_torrent_root_directory(tmp_path):
     assert not (target / "DHF.2018.1080p").exists()
 
 
+def test_movie_flattens_nested_advertising_folder_in_media_library(tmp_path):
+    settings, host, mount = media_settings(tmp_path)
+    source = (
+        mount
+        / "Downloads"
+        / "sixv-movie"
+        / "抓特务"
+        / "ztw.电影港 地址发布页 www.dygang.me 收藏不迷路"
+        / "抓特务 - 1080p.mkv"
+    )
+    source.parent.mkdir(parents=True)
+    source.write_bytes(b"video")
+
+    result = MediaLibraryService(settings).link_completed(
+        {
+            "save_path": str(host / "Downloads" / "sixv-movie"),
+            "content_path": str(host / "Downloads" / "sixv-movie" / "抓特务"),
+        },
+        [
+            {
+                "name": "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.mkv",
+                "priority": 1,
+                "size": len(b"video"),
+            }
+        ],
+        {"media_type": "movie", "media_name": "抓特务", "root_name": "抓特务 (2026)"},
+        {
+            "operations": [
+                {
+                    "kind": "file",
+                    "old_path": "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.mkv",
+                    "new_path": "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/抓特务 - 1080p.mkv",
+                }
+            ],
+            "folder_operations": [],
+        },
+    )
+
+    target = mount / "video" / "movies" / "抓特务 (2026)" / "抓特务 - 1080p.mkv"
+    assert result["linked"] == 1
+    assert target.stat().st_ino == source.stat().st_ino
+    assert not (target.parent / "ztw.电影港 地址发布页 www.dygang.me 收藏不迷路").exists()
+
+
 def test_tv_keeps_season_and_adds_it_for_root_episodes(tmp_path):
     settings, host, mount = media_settings(tmp_path)
     source_root = mount / "Downloads" / "sixv-tv"
