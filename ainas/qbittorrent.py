@@ -110,7 +110,12 @@ class QBittorrentClient:
                 verify=self.settings.qb_verify_ssl,
             )
             response.raise_for_status()
-            if response.text.strip() != "Ok.":
+            # qBittorrent 5.x may return 204 with an empty body after setting
+            # the SID cookie; older releases return 200 with the literal
+            # ``Ok.``.  Any other non-empty success response (notably
+            # ``Fails.``) still represents rejected credentials.
+            body = response.text.strip()
+            if body and body != "Ok.":
                 raise ServiceUnavailableError("qBittorrent rejected the configured username or password")
         except requests.Timeout as exc:
             raise UpstreamError("qBittorrent", "login timed out", timeout=True) from exc

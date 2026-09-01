@@ -1,8 +1,10 @@
 from urllib.parse import parse_qs
 
+import pytest
 import responses
 
 from ainas.config import Settings
+from ainas.errors import ServiceUnavailableError, UpstreamError
 from ainas.path_settings import PathSettingsRepository
 from ainas.qbittorrent import QBittorrentClient, torrent_hash
 from tests.unit.test_torrent_meta import TORRENT
@@ -15,6 +17,52 @@ def test_hash_and_unconfigured_status(settings):
     assert torrent_hash(MAGNET) == "a" * 40
     assert torrent_hash("https://x.test/file.torrent") is None
     assert QBittorrentClient(settings).status()["configured"] is False
+
+
+def qb_settings(tmp_path):
+    return Settings(
+        data_dir=tmp_path,
+        qb_host="qb.test",
+        qb_port=8080,
+        qb_username="admin",
+        qb_password="secret",
+        scheduler_enabled=False,
+    )
+
+
+@responses.activate
+def test_login_accepts_qbittorrent_5_empty_204_response(tmp_path):
+    settings = qb_settings(tmp_path)
+    responses.post(f"{settings.qb_base_url}/api/v2/auth/login", body="", status=204)
+
+    QBittorrentClient(settings).login()
+
+
+@responses.activate
+def test_login_accepts_legacy_ok_response(tmp_path):
+    settings = qb_settings(tmp_path)
+    responses.post(f"{settings.qb_base_url}/api/v2/auth/login", body="Ok.", status=200)
+
+    QBittorrentClient(settings).login()
+
+
+@responses.activate
+def test_login_rejects_legacy_fails_response(tmp_path):
+    settings = qb_settings(tmp_path)
+    responses.post(f"{settings.qb_base_url}/api/v2/auth/login", body="Fails.", status=200)
+
+    with pytest.raises(ServiceUnavailableError, match="rejected the configured username or password"):
+        QBittorrentClient(settings).login()
+
+
+@pytest.mark.parametrize("status", [401, 403])
+@responses.activate
+def test_login_rejects_http_auth_errors(tmp_path, status):
+    settings = qb_settings(tmp_path)
+    responses.post(f"{settings.qb_base_url}/api/v2/auth/login", body="", status=status)
+
+    with pytest.raises(UpstreamError, match="qBittorrent: login failed"):
+        QBittorrentClient(settings).login()
 
 
 @responses.activate
