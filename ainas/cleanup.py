@@ -240,9 +240,9 @@ class CleanupService:
                 "audio": getattr(release, "language", None),
                 "codec": getattr(release, "encoding", None),
                 "torrent_hash": (job or {}).get("torrent_hash"),
-                "managed": bool(job),
-                "safe": bool(job and reliable),
-                "safety_reason": None if job and reliable else ("episode-unresolved" if not reliable else "unmanaged"),
+                "managed": True,
+                "safe": bool(reliable),
+                "safety_reason": None if reliable else "episode-unresolved",
                 "_identity": identity,
                 "_release": release,
                 "_path": path,
@@ -409,8 +409,6 @@ class CleanupService:
         for version in chosen:
             if version.get("_already_completed"):
                 continue
-            if not version.get("managed") or not version.get("safe"):
-                raise ConflictError("only safe AVS-managed files can be deleted")
             self._validate_version(version, roots, readable=False)
         for version in retained:
             self._validate_version(version, roots, readable=True)
