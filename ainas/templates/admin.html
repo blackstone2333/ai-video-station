@@ -124,8 +124,7 @@
           <div class="head-actions"><select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="directory-sync-now" class="primary-button" type="button">立即同步下载目录</button></div>
         </header>
         <form id="directory-sync-settings-form" class="directory-sync-settings">
-          <label class="toggle-row compact"><span><b>自动目录同步</b><small>扫描所有启用的目录映射</small></span><input id="directory-sync-enabled" type="checkbox" role="switch"></label>
-          <label>同步间隔（分钟）<input id="directory-sync-minutes" type="number" min="1" max="1440" value="5"></label>
+          <label class="toggle-row compact"><span><b>自动目录同步</b><small>监听下载源目录变动自动硬链接</small></span><input id="directory-sync-enabled" type="checkbox" role="switch"></label>
           <label>文件稳定等待（秒）<input id="directory-sync-settle-seconds" type="number" min="0" max="86400" value="120"></label>
           <button class="quiet-button" type="submit">保存目录同步设置</button>
         </form>

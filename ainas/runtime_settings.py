@@ -209,7 +209,6 @@ class SystemSettingsRepository:
     FIELDS = (
         "watchlist_check_hours",
         "directory_sync_enabled",
-        "directory_sync_minutes",
         "directory_sync_settle_seconds",
         "cleanup_auto_scan_enabled",
         "cleanup_auto_execute_enabled",
@@ -230,7 +229,8 @@ class SystemSettingsRepository:
         self.load()
 
     def _candidate(self, changes: Mapping[str, Any]) -> Settings:
-        unknown = sorted(set(changes) - set(self.FIELDS))
+        cleaned = {k: v for k, v in changes.items() if k != "directory_sync_minutes"}
+        unknown = sorted(set(cleaned) - set(self.FIELDS))
         if unknown:
             raise ValidationAppError("包含不支持的系统设置")
         values = self.settings.model_dump()
@@ -264,7 +264,8 @@ class SystemSettingsRepository:
                     raise ValidationAppError(f"保存的系统设置无法读取：{exc}") from exc
                 if not isinstance(value, dict):
                     raise ValidationAppError("保存的系统设置格式无效")
-                candidate = self._candidate(value)
+                cleaned = {k: v for k, v in value.items() if k != "directory_sync_minutes"}
+                candidate = self._candidate(cleaned)
                 for name in self.FIELDS:
                     setattr(self.settings, name, getattr(candidate, name))
             return self.get()
@@ -274,7 +275,8 @@ class SystemSettingsRepository:
 
     def update(self, changes: Mapping[str, Any]) -> Dict[str, Any]:
         with self._lock:
-            candidate = self._candidate(changes)
+            cleaned = {k: v for k, v in changes.items() if k != "directory_sync_minutes"}
+            candidate = self._candidate(cleaned)
             value = {name: getattr(candidate, name) for name in self.FIELDS}
             try:
                 self.state_store.write_document("system_settings", value) if self.state_store else _atomic_write(self.path, "system-settings-", value)

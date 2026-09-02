@@ -88,9 +88,9 @@ def test_openapi_models_the_agent_contract_gaps_that_regressed_before():
     assert set(schemas["DirectorySyncScanRequest"]["properties"]) == {"path_rule_id"}
     assert {
         "directory_sync_enabled",
-        "directory_sync_minutes",
         "directory_sync_settle_seconds",
     } <= set(schemas["SystemSettingsPatchRequest"]["properties"])
+    assert "directory_sync_minutes" not in schemas["SystemSettingsPatchRequest"]["properties"]
 
     watchlist_schema = document["paths"]["/api/watchlist/add"]["post"]["requestBody"]["content"]["application/json"]["schema"]
     assert watchlist_schema["$ref"].endswith("/WatchlistAddRequest")

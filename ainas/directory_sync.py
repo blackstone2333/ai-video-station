@@ -10,12 +10,20 @@ import time
 import uuid
 from copy import deepcopy
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
 from .errors import AppError, ConflictError, NotFoundError, ValidationAppError
 from .qbittorrent import normalized_task_progress
 from .state import StateStore, StateStoreError
 from .watchlist import utc_now_iso
+
+try:
+    from watchdog.events import FileSystemEvent, FileSystemEventHandler
+    from watchdog.observers import Observer
+except ImportError:  # pragma: no cover
+    FileSystemEvent = object  # type: ignore
+    FileSystemEventHandler = object  # type: ignore
+    Observer = None  # type: ignore
 
 
 logger = logging.getLogger(__name__)
@@ -103,8 +111,8 @@ class DirectorySyncService:
     @property
     def enabled(self) -> bool:
         # This reflects whether hardlinking is available at all.  The runtime
-        # directory_sync_enabled switch controls scheduling only; an explicit
-        # manual scan must remain usable when automatic scans are disabled.
+        # directory_sync_enabled switch controls filesystem watching / scheduling;
+        # an explicit manual scan must remain usable when automatic scans are disabled.
         return bool(self.settings.medialib_hardlink_enabled)
 
     def _container_path(self, value: str | Path) -> Path:
@@ -149,9 +157,6 @@ class DirectorySyncService:
                     candidates.append(task["content_path"])
                 elif task and task.get("save_path") and task.get("name"):
                     candidates.append(Path(str(task["save_path"])) / str(task["name"]))
-            # An unbound submission has no safe torrent-specific directory yet.
-            # Temporarily exclude its save path rather than risk importing a
-            # partially-written file under an unknown task name.
             if not candidates and submission.get("save_path"):
                 candidates.append(submission["save_path"])
             for candidate in candidates:
@@ -217,6 +222,35 @@ class DirectorySyncService:
                 continue
             yield path
 
+    def _candidate_files_for_paths(
+        self,
+        changed_paths: Sequence[Path | str],
+        source_root: Path,
+        target_roots: Sequence[Path],
+    ) -> Iterable[Path]:
+        seen: Set[Path] = set()
+        for item in changed_paths:
+            path = Path(item).resolve(strict=False)
+            if not self._inside(path, source_root):
+                continue
+            if path.is_dir():
+                for sub_path in self._candidate_files(path, target_roots):
+                    if sub_path not in seen:
+                        seen.add(sub_path)
+                        yield sub_path
+            elif path.is_file():
+                if path.is_symlink() or path.suffix.casefold() not in VIDEO_EXTENSIONS:
+                    continue
+                if any(self._inside(path, root) for root in target_roots):
+                    continue
+                if self._contains_symlink(path, source_root):
+                    continue
+                if IGNORED_VIDEO_RE.search(path.stem):
+                    continue
+                if path not in seen:
+                    seen.add(path)
+                    yield path
+
     @staticmethod
     def _result(status: str, source: Path, target: Path, **extra: Any) -> Dict[str, Any]:
         return {"status": status, "source": str(source), "target": str(target), **extra}
@@ -226,6 +260,8 @@ class DirectorySyncService:
         rule: Mapping[str, Any],
         active_roots: Sequence[Path],
         target_roots: Sequence[Path],
+        changed_paths: Optional[Sequence[Path | str]] = None,
+        is_auto: bool = False,
     ) -> Dict[str, Any]:
         now = utc_now_iso()
         source_root = self._container_path(rule["source_path"]).resolve(strict=False)
@@ -243,7 +279,12 @@ class DirectorySyncService:
             else:
                 settle_seconds = int(getattr(self.settings, "directory_sync_settle_seconds", 120))
                 current_time = time.time()
-                for source in self._candidate_files(source_root, target_roots):
+                candidates = (
+                    self._candidate_files_for_paths(changed_paths, source_root, target_roots)
+                    if changed_paths is not None
+                    else self._candidate_files(source_root, target_roots)
+                )
+                for source in candidates:
                     scanned += 1
                     if any(self._inside(source.resolve(strict=False), root) for root in active_roots):
                         waiting += 1
@@ -300,18 +341,32 @@ class DirectorySyncService:
             "last_check": now,
             "completed_at": now,
         }
-        logger.info(
-            "directory_sync_completed",
+        should_save = not is_auto or linked > 0 or conflicts > 0 or bool(errors)
+        if should_save:
+            saved = self.repository.save(item)
+            logger.info(
+                "directory_sync_completed",
+                extra={
+                    "run_id": item["id"],
+                    "path_rule_id": rule.get("id"),
+                    "scanned": scanned,
+                    "linked": linked,
+                    "conflicts": conflicts,
+                    "waiting": waiting,
+                    "is_auto": is_auto,
+                },
+            )
+            return saved
+        logger.debug(
+            "directory_sync_skipped_empty",
             extra={
-                "run_id": item["id"],
                 "path_rule_id": rule.get("id"),
                 "scanned": scanned,
-                "linked": linked,
-                "conflicts": conflicts,
+                "already_linked": already_linked,
                 "waiting": waiting,
             },
         )
-        return self.repository.save(item)
+        return item
 
     def scan(self, path_rule_id: Optional[str] = None) -> Dict[str, Any]:
         if not self.enabled:
@@ -328,7 +383,10 @@ class DirectorySyncService:
                 self._container_path(rule["target_path"]).resolve(strict=False) for rule in rules
             ]
             active_roots = [*self._active_naming_roots(), *self._active_downloader_roots()]
-            runs = [self._sync_rule(rule, active_roots, target_roots) for rule in rules]
+            runs = [
+                self._sync_rule(rule, active_roots, target_roots, changed_paths=None, is_auto=False)
+                for rule in rules
+            ]
             return {
                 "running": False,
                 "enabled": True,
@@ -339,3 +397,251 @@ class DirectorySyncService:
             }
         finally:
             self._lock.release()
+
+    def scan_changed(
+        self,
+        path_rule_id: str,
+        changed_paths: Sequence[Path | str],
+        is_auto: bool = True,
+    ) -> Dict[str, Any]:
+        if not self.enabled:
+            return {"running": False, "enabled": False, "runs": [], "linked": 0, "waiting": 0}
+        if not self._lock.acquire(blocking=False):
+            return {"running": True, "enabled": True, "runs": [], "linked": 0, "waiting": 0}
+        try:
+            rules = [item for item in self.path_rules.list() if item.get("enabled")]
+            rule = next((item for item in rules if item.get("id") == path_rule_id), None)
+            if not rule:
+                return {"running": False, "enabled": True, "runs": [], "linked": 0, "waiting": 0}
+            target_roots = [
+                self._container_path(r["target_path"]).resolve(strict=False) for r in rules
+            ]
+            active_roots = [*self._active_naming_roots(), *self._active_downloader_roots()]
+            run = self._sync_rule(
+                rule,
+                active_roots,
+                target_roots,
+                changed_paths=changed_paths,
+                is_auto=is_auto,
+            )
+            return {
+                "running": False,
+                "enabled": True,
+                "runs": [run],
+                "linked": int(run.get("linked") or 0),
+                "waiting": int(run.get("waiting") or 0),
+                "conflicts": int(run.get("conflicts") or 0),
+            }
+        finally:
+            self._lock.release()
+
+
+class DirectorySyncEventHandler(FileSystemEventHandler):
+    """Event handler for a specific path rule's watched source directory."""
+
+    def __init__(self, watcher: DirectorySyncWatcher, rule_id: str, source_root: Path) -> None:
+        super().__init__()
+        self.watcher = watcher
+        self.rule_id = rule_id
+        self.source_root = source_root
+
+    def on_any_event(self, event: Any) -> None:
+        event_type = getattr(event, "event_type", "")
+        if event_type in ("deleted", "opened"):
+            return
+        is_directory = getattr(event, "is_directory", False)
+        if is_directory and event_type == "modified":
+            return
+
+        raw_path = getattr(event, "dest_path", None) if event_type == "moved" else getattr(event, "src_path", "")
+        if not raw_path:
+            return
+        path = Path(raw_path).resolve(strict=False)
+        if path == self.source_root:
+            return
+        try:
+            path.relative_to(self.source_root)
+        except ValueError:
+            return
+
+        if any(part.startswith(".") and part != "." for part in path.parts):
+            return
+
+        if not is_directory:
+            if path.suffix.casefold() not in VIDEO_EXTENSIONS:
+                return
+            if IGNORED_VIDEO_RE.search(path.stem):
+                return
+
+        self.watcher.queue_event(self.rule_id, path)
+
+
+class DirectorySyncWatcher:
+    """Watch download source directories using filesystem events and trigger targeted sync."""
+
+    def __init__(
+        self,
+        service: DirectorySyncService,
+        path_rules: Any,
+        settings: Any,
+        observer_cls: Any = None,
+    ) -> None:
+        self.service = service
+        self.path_rules = path_rules
+        self.settings = settings
+        self.observer_cls = Observer if observer_cls is None else observer_cls
+        self._observer: Any = None
+        self._watches: Dict[str, tuple[Any, Path]] = {}
+        self._timers: Dict[str, threading.Timer] = {}
+        self._pending_paths: Dict[str, Set[Path]] = {}
+        self._lock = threading.RLock()
+        self._running = False
+
+    @property
+    def running(self) -> bool:
+        with self._lock:
+            return self._running
+
+    def start(self) -> None:
+        with self._lock:
+            if self._running:
+                return
+            if not self.observer_cls:
+                logger.warning("directory_sync_watcher_unavailable_no_watchdog")
+                return
+            self._observer = self.observer_cls()
+            self._sync_watches_locked()
+            try:
+                self._observer.start()
+                self._running = True
+                logger.info("directory_sync_watcher_started", extra={"watches": len(self._watches)})
+            except Exception as exc:
+                logger.error("directory_sync_watcher_start_failed", extra={"error": str(exc)})
+                self._running = False
+                self._observer = None
+
+    def stop(self) -> None:
+        with self._lock:
+            if not self._running and not self._observer:
+                return
+            self._running = False
+            for timer in list(self._timers.values()):
+                timer.cancel()
+            self._timers.clear()
+            self._pending_paths.clear()
+            self._watches.clear()
+            if self._observer:
+                try:
+                    self._observer.stop()
+                    self._observer.join(timeout=2.0)
+                except Exception:
+                    pass
+                self._observer = None
+            logger.info("directory_sync_watcher_stopped")
+
+    def reload(self) -> None:
+        with self._lock:
+            if not self._running:
+                return
+            self._sync_watches_locked()
+
+    def _sync_watches_locked(self) -> None:
+        if not self._observer:
+            return
+        auto_enabled = bool(getattr(self.settings, "directory_sync_enabled", True))
+        if not auto_enabled or not self.service.enabled:
+            for rule_id, (watch, _) in list(self._watches.items()):
+                try:
+                    self._observer.unschedule(watch)
+                except Exception:
+                    pass
+            self._watches.clear()
+            for timer in list(self._timers.values()):
+                timer.cancel()
+            self._timers.clear()
+            self._pending_paths.clear()
+            logger.info("directory_sync_watcher_disabled_or_cleared")
+            return
+
+        enabled_rules = [r for r in self.path_rules.list() if r.get("enabled")]
+        active_rule_ids = set()
+
+        for rule in enabled_rules:
+            rule_id = str(rule.get("id"))
+            active_rule_ids.add(rule_id)
+            try:
+                source_root = self.service._container_path(rule["source_path"]).resolve(strict=False)
+            except Exception:
+                continue
+
+            if not source_root.exists() or not source_root.is_dir() or source_root.is_symlink():
+                if rule_id in self._watches:
+                    watch, _ = self._watches.pop(rule_id)
+                    try:
+                        self._observer.unschedule(watch)
+                    except Exception:
+                        pass
+                continue
+
+            current_watch = self._watches.get(rule_id)
+            if current_watch:
+                watch, watched_path = current_watch
+                if watched_path == source_root:
+                    continue
+                try:
+                    self._observer.unschedule(watch)
+                except Exception:
+                    pass
+                self._watches.pop(rule_id, None)
+
+            handler = DirectorySyncEventHandler(self, rule_id, source_root)
+            try:
+                watch = self._observer.schedule(handler, str(source_root), recursive=True)
+                self._watches[rule_id] = (watch, source_root)
+                logger.info(
+                    "directory_sync_watch_registered",
+                    extra={"rule_id": rule_id, "path": str(source_root)},
+                )
+            except Exception as exc:
+                logger.warning(
+                    "directory_sync_watch_failed",
+                    extra={"rule_id": rule_id, "path": str(source_root), "error": str(exc)},
+                )
+
+        for rule_id in list(self._watches):
+            if rule_id not in active_rule_ids:
+                watch, _ = self._watches.pop(rule_id)
+                try:
+                    self._observer.unschedule(watch)
+                except Exception:
+                    pass
+                if rule_id in self._timers:
+                    self._timers.pop(rule_id).cancel()
+                self._pending_paths.pop(rule_id, None)
+
+    def queue_event(self, rule_id: str, path: Path) -> None:
+        with self._lock:
+            if not self._running or not getattr(self.settings, "directory_sync_enabled", True):
+                return
+            self._pending_paths.setdefault(rule_id, set()).add(path)
+            if rule_id in self._timers:
+                self._timers[rule_id].cancel()
+            settle = int(getattr(self.settings, "directory_sync_settle_seconds", 120))
+            delay = max(0.05, float(settle))
+            timer = threading.Timer(delay, self._trigger_sync, args=(rule_id,))
+            timer.daemon = True
+            self._timers[rule_id] = timer
+            timer.start()
+
+    def _trigger_sync(self, rule_id: str) -> None:
+        with self._lock:
+            paths = self._pending_paths.pop(rule_id, set())
+            self._timers.pop(rule_id, None)
+        if not paths:
+            return
+        if not getattr(self.settings, "directory_sync_enabled", True) or not self.service.enabled:
+            return
+        try:
+            self.service.scan_changed(path_rule_id=rule_id, changed_paths=list(paths), is_auto=True)
+        except Exception as exc:  # pragma: no cover
+            logger.error("directory_sync_trigger_error", extra={"rule_id": rule_id, "error": str(exc)})

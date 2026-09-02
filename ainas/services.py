@@ -41,7 +41,7 @@ from .runtime_settings import (
 from .agent_access import AgentAccessRepository
 from .state import StateStore, StateStoreError
 from .cleanup import CleanupPlanRepository, CleanupService
-from .directory_sync import DirectorySyncRepository, DirectorySyncService
+from .directory_sync import DirectorySyncRepository, DirectorySyncService, DirectorySyncWatcher
 
 
 logger = logging.getLogger(__name__)
@@ -687,6 +687,7 @@ class AppServices:
     state_store: Optional[StateStore] = None
     cleanup: Optional[CleanupService] = None
     directory_sync: Optional[DirectorySyncService] = None
+    directory_watcher: Optional[DirectorySyncWatcher] = None
 
 
 def build_services(settings: Settings) -> AppServices:
@@ -726,6 +727,11 @@ def build_services(settings: Settings) -> AppServices:
         naming_jobs,
         qb,
     )
+    directory_watcher = DirectorySyncWatcher(
+        service=directory_sync,
+        path_rules=path_rules,
+        settings=settings,
+    )
     download = DownloadService(settings, qb, cache, naming, path_rules)
     watchlist_service = WatchlistService(settings, watchlist, search, qb, naming, path_rules)
     return AppServices(
@@ -748,4 +754,5 @@ def build_services(settings: Settings) -> AppServices:
         state_store=state_store,
         cleanup=cleanup,
         directory_sync=directory_sync,
+        directory_watcher=directory_watcher,
     )

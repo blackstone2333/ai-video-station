@@ -266,7 +266,6 @@ class DownloaderSettingsPatchRequest(StrictModel):
 class SystemSettingsPatchRequest(StrictModel):
     watchlist_check_hours: Optional[int] = Field(default=None, ge=3, le=168)
     directory_sync_enabled: Optional[bool] = None
-    directory_sync_minutes: Optional[int] = Field(default=None, ge=1, le=1440)
     directory_sync_settle_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
     cleanup_auto_scan_enabled: Optional[bool] = None
     cleanup_auto_execute_enabled: Optional[bool] = None

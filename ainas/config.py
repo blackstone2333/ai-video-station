@@ -79,7 +79,6 @@ class Settings(BaseSettings):
     medialib_custom_path: Path = Path("/volume1/video/video/custom")
     medialib_mount_path: Path = Path("/medialib")
     directory_sync_enabled: bool = True
-    directory_sync_minutes: int = Field(default=5, ge=1, le=1440)
     directory_sync_settle_seconds: int = Field(default=120, ge=0, le=86400)
 
     api_key: Optional[SecretStr] = None

@@ -357,3 +357,51 @@ def test_automatic_execution_skips_groups_with_an_unverified_retained_version(cl
     assert service.automatic_selections(plan) == [
         {"group_id": "verified-retained", "delete_version_ids": ["managed-low-2"]}
     ]
+
+
+def test_user_can_delete_all_versions_in_a_group(cleanup_env):
+    service, _, jobs, _, source, target = cleanup_env
+    v1_source, v1_target = add_version(source, target, jobs, "电影A.1080p.mkv", b"v1")
+    v2_source, v2_target = add_version(source, target, jobs, "电影A.720p.mkv", b"v2")
+    plan = service.scan("quality_first")
+    group, versions = group_versions(plan)
+    v1 = versions[v1_source.name]
+    v2 = versions[v2_source.name]
+
+    # Delete both versions (delete all in group)
+    updated, results = service.execute(
+        plan["id"],
+        [{"group_id": group["id"], "delete_version_ids": [v1["id"], v2["id"]]}],
+        False,
+        "DELETE_SELECTED_DUPLICATES",
+    )
+
+    assert updated["status"] == "completed"
+    assert len(results) == 2
+    assert not v1_target.exists()
+    assert not v2_target.exists()
+    assert v1_source.exists()
+    assert v2_source.exists()
+
+
+def test_empty_delete_version_ids_is_skipped(cleanup_env):
+    service, _, jobs, _, source, target = cleanup_env
+    v1_source, v1_target = add_version(source, target, jobs, "电影B.1080p.mkv", b"v1")
+    v2_source, v2_target = add_version(source, target, jobs, "电影B.720p.mkv", b"v2")
+    plan = service.scan("quality_first")
+    group, versions = group_versions(plan)
+    v1 = versions[v1_source.name]
+
+    # One group with empty delete_version_ids, one group with 1 deletion
+    updated, results = service.execute(
+        plan["id"],
+        [
+            {"group_id": group["id"], "delete_version_ids": [v1["id"]]},
+        ],
+        False,
+        "DELETE_SELECTED_DUPLICATES",
+    )
+
+    assert updated["status"] == "completed"
+    assert not v1_target.exists()
+    assert v2_target.exists()

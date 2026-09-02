@@ -455,8 +455,7 @@ components:
       additionalProperties: false
       properties:
         watchlist_check_hours: {type: integer, minimum: 3, maximum: 168}
-        directory_sync_enabled: {type: boolean, description: Enables scheduled scans; manual scans remain available.}
-        directory_sync_minutes: {type: integer, minimum: 1, maximum: 1440}
+        directory_sync_enabled: {type: boolean, description: Enables filesystem watcher for automatic directory synchronization; manual scans remain available.}
         directory_sync_settle_seconds: {type: integer, minimum: 0, maximum: 86400}
         cleanup_auto_scan_enabled: {type: boolean}
         cleanup_auto_execute_enabled: {type: boolean}

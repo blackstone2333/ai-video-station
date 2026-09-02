@@ -389,18 +389,21 @@ class CleanupService:
             versions = {item["id"]: item for item in group["versions"]}
             version_ids = list(selection.get("delete_version_ids") or [])
             ids = set(version_ids)
-            if not ids or len(ids) != len(version_ids) or not ids <= set(versions):
+            if not ids:
+                continue
+            if len(ids) != len(version_ids) or not ids <= set(versions):
                 raise ValidationAppError("unknown or duplicate cleanup version")
             active_ids = set(versions) - completed
             active_delete_ids = ids - completed
             retained_ids = active_ids - active_delete_ids
-            if active_delete_ids and not retained_ids:
-                raise ConflictError("a retained version is required")
             for version_id in ids:
                 value = deepcopy(versions[version_id])
                 value["_already_completed"] = version_id in completed
                 chosen.append(value)
             retained.extend(deepcopy(versions[version_id]) for version_id in retained_ids)
+
+        if not chosen:
+            raise ValidationAppError("at least one cleanup selection is required")
 
         roots = self._roots()
         for version in chosen:

@@ -427,7 +427,7 @@ function renderAutomation() {
     ? (state.systemSettings.cleanup_auto_execute_enabled ? "自动扫描并执行" : "只自动扫描")
     : "手动扫描";
   const syncMode = state.systemSettings?.directory_sync_enabled
-    ? `每 ${state.systemSettings.directory_sync_minutes || 5} 分钟`
+    ? "文件变动触发"
     : "仅手动";
   $("#automation-status").innerHTML = `
     <div class="status-row ${online ? "" : "error"}"><i></i><span>${downloader} 连接</span><small>${online ? escapeHTML(state.qb.version) : "不可用"}</small></div>
@@ -470,7 +470,6 @@ function renderSystemSettings() {
   if (state.systemSettings && !state.systemDirty) {
     $("#watchlist-hours").value = state.systemSettings.watchlist_check_hours;
     $("#directory-sync-enabled").checked = Boolean(state.systemSettings.directory_sync_enabled);
-    $("#directory-sync-minutes").value = state.systemSettings.directory_sync_minutes || 5;
     $("#directory-sync-settle-seconds").value = state.systemSettings.directory_sync_settle_seconds ?? 120;
     $("#cleanup-auto-scan").checked = Boolean(state.systemSettings.cleanup_auto_scan_enabled);
     $("#cleanup-auto-execute").checked = Boolean(state.systemSettings.cleanup_auto_execute_enabled);
@@ -495,22 +494,29 @@ function cleanupVersionName(version) {
   return String(path).split("/").filter(Boolean).at(-1) || version.id;
 }
 
-function cleanupVersionMarkup(plan, group, version, keepId) {
+function cleanupVersionMarkup(plan, group, version, isDeleteChecked) {
   const recommended = version.id === group.recommended_keep_id;
   const selectable = plan.status === "ready";
   const completed = (plan.results || []).some((item) => item.version_id === version.id && item.status === "completed");
-  const checked = version.id === keepId;
+  const removable = version.managed && version.safe && !completed;
+  const checked = Boolean(removable && isDeleteChecked);
   const paths = [
     ...(version.source_paths || []).map((path) => `<span>源 · ${escapeHTML(path)}</span>`),
     ...(version.target_paths || []).map((path) => `<span>库 · ${escapeHTML(path)}</span>`),
   ].join("");
   const quality = [version.resolution, version.source, version.hdr, version.audio, version.codec].filter(Boolean);
-  const removable = version.managed && version.safe && !completed;
-  const safety = !version.managed ? "可以保留；非 AVS 管理，系统不会自动删除" : !version.safe ? `可以保留；其他操作需人工处理：${version.safety_reason || "无法可靠识别"}` : completed ? "这个版本已完成清理" : "不保留时将作为安全版本清理";
+  const safety = !version.managed ? "非 AVS 管理，系统不会自动删除" : !version.safe ? `其他操作需人工处理：${version.safety_reason || "无法可靠识别"}` : completed ? "这个版本已完成清理" : "AVS 可安全管理的版本";
+
+  const actionPill = completed
+    ? '<i class="quality-pill">已清理</i>'
+    : checked
+    ? '<i class="quality-pill danger cleanup-status-pill">待清理</i>'
+    : '<i class="quality-pill keep cleanup-status-pill">保留</i>';
+
   return `<label class="cleanup-version ${recommended ? "recommended" : ""} ${removable ? "" : "unsafe"}">
-    <input type="radio" name="cleanup-keep-${escapeHTML(plan.id)}-${escapeHTML(group.id)}" data-cleanup-keep="${escapeHTML(version.id)}" data-cleanup-group="${escapeHTML(group.id)}" data-cleanup-plan="${escapeHTML(plan.id)}" ${checked ? "checked" : ""} ${selectable ? "" : "disabled"} aria-label="保留 ${escapeHTML(cleanupVersionName(version))}">
+    <input type="checkbox" data-cleanup-delete="${escapeHTML(version.id)}" data-cleanup-group="${escapeHTML(group.id)}" data-cleanup-plan="${escapeHTML(plan.id)}" ${checked ? "checked" : ""} ${selectable && removable ? "" : "disabled"} aria-label="${checked ? "清理" : "保留"} ${escapeHTML(cleanupVersionName(version))}">
     <span class="cleanup-version-main"><span class="cleanup-version-title"><strong>${escapeHTML(cleanupVersionName(version))}</strong><small>${formatBytes(version.size)}</small></span>
-    <span class="cleanup-quality">${recommended ? '<i class="quality-pill keep">建议保留</i>' : ""}${quality.map((item) => `<i class="quality-pill">${escapeHTML(item)}</i>`).join("")}<i class="quality-pill warn">inode ${escapeHTML(version.inode)} · ${Number(version.link_count || 0)} 链接</i></span>
+    <span class="cleanup-quality">${actionPill}${recommended ? '<i class="quality-pill keep">建议保留</i>' : ""}${quality.map((item) => `<i class="quality-pill">${escapeHTML(item)}</i>`).join("")}<i class="quality-pill warn">inode ${escapeHTML(version.inode)} · ${Number(version.link_count || 0)} 链接</i></span>
     <span class="cleanup-paths">${paths || "<span>未记录路径</span>"}<span>${escapeHTML(safety)}</span></span></span>
   </label>`;
 }
@@ -525,15 +531,28 @@ function renderCleanupPlans() {
     const failed = (plan.results || []).filter((item) => item.status === "failed");
     const groupMarkup = groups.length ? groups.map((group) => {
       const versions = group.versions || [];
-      const keepId = versions.some((item) => item.id === group.recommended_keep_id) ? group.recommended_keep_id : versions[0]?.id;
-      return `<section class="cleanup-group"><div class="cleanup-group-head"><strong>${escapeHTML(group.identity || group.id)}</strong><small>${escapeHTML(mediaTypeLabel(group.media_type))} · 请选择保留 1 个版本</small></div>${versions.map((version) => cleanupVersionMarkup(plan, group, version, keepId)).join("")}</section>`;
+      const recommendedId = group.recommended_keep_id;
+      return `<section class="cleanup-group">
+        <div class="cleanup-group-head">
+          <div class="cleanup-group-info"><strong>${escapeHTML(group.identity || group.id)}</strong><small>${escapeHTML(mediaTypeLabel(group.media_type))}</small></div>
+          <div class="cleanup-group-actions">
+            <button class="cleanup-btn-xs" type="button" data-group-action="recommend" data-plan-id="${escapeHTML(plan.id)}" data-group-id="${escapeHTML(group.id)}">按建议</button>
+            <button class="cleanup-btn-xs" type="button" data-group-action="keep-all" data-plan-id="${escapeHTML(plan.id)}" data-group-id="${escapeHTML(group.id)}">全部保留</button>
+            <button class="cleanup-btn-xs" type="button" data-group-action="delete-all" data-plan-id="${escapeHTML(plan.id)}" data-group-id="${escapeHTML(group.id)}">全部清理</button>
+          </div>
+        </div>
+        ${versions.map((version) => {
+          const isDelete = version.id !== recommendedId && version.managed && version.safe;
+          return cleanupVersionMarkup(plan, group, version, isDelete);
+        }).join("")}
+      </section>`;
     }).join("") : '<div class="empty">本次扫描没有发现可比较的重复版本</div>';
     const retry = plan.status === "partial" ? `<button class="quiet-button" data-cleanup-retry="${escapeHTML(plan.id)}" type="button">重试失败项</button>` : "";
-    const execute = plan.status === "ready" && groups.length ? `<button class="primary-button" data-cleanup-execute="${escapeHTML(plan.id)}" type="button">核对并清理多余版本</button>` : "";
+    const execute = plan.status === "ready" && groups.length ? `<button class="primary-button" data-cleanup-execute="${escapeHTML(plan.id)}" type="button">核对并清理勾选版本</button>` : "";
     return `<details class="cleanup-plan" ${index === 0 ? "open" : ""}><summary><span class="cleanup-plan-title">${cleanupPlanChip(plan.status)}<strong>${plan.policy === "space_first" ? "空间优先" : "质量优先"}扫描</strong></span><small>${formatDate(plan.created_at)} · ${groups.length} 组重复</small></summary><div class="cleanup-plan-body">
       <div class="cleanup-summary-strip"><div><span>重复组</span><strong>${Number(summary.groups || groups.length)}</strong></div><div><span>逻辑重复体积</span><strong>${formatBytes(summary.logical_duplicate_size)}</strong></div><div><span>删源后预计释放</span><strong>${formatBytes(summary.reclaimable_if_source_deleted || summary.estimated_reclaimable)}</strong></div></div>
       ${groupMarkup}${failed.length ? `<div class="cleanup-result-error">${failed.map((item) => `${escapeHTML(item.version_id)}：${escapeHTML(item.error || "未知错误")}`).join("<br>")}</div>` : ""}
-      <div class="cleanup-plan-actions"><small>每组只需选择“保留哪个”；其他可验证的安全版本会自动列入清理，执行前仍会再次确认路径。</small><div class="head-actions">${retry}${execute}</div></div>
+      <div class="cleanup-plan-actions"><small>框选多选：打勾 = 待清理，未打勾 = 保留。支持按建议预选、全部保留或全部清理，操作更自由精准。</small><div class="head-actions">${retry}${execute}</div></div>
     </div></details>`;
   }).join("") : '<div class="empty">还没有符合条件的清理计划。先执行一次只读扫描。</div>';
 }
@@ -544,22 +563,35 @@ function prepareCleanupExecution(planId, trigger) {
   const selections = [];
   const selectedVersions = [];
   const keptVersions = [];
+  const completedIds = new Set((plan.results || []).filter((item) => item.status === "completed").map((item) => item.version_id));
+
   for (const group of plan.groups || []) {
-    const keep = document.querySelector(`[data-cleanup-plan="${CSS.escape(planId)}"][data-cleanup-group="${CSS.escape(group.id)}"][data-cleanup-keep]:checked`);
-    if (!keep) { toast(`请为「${group.identity}」选择一个保留版本`, true); return; }
-    const completedIds = new Set((plan.results || []).filter((item) => item.status === "completed").map((item) => item.version_id));
-    const deletable = (group.versions || []).filter((item) => item.id !== keep.dataset.cleanupKeep && item.managed && item.safe && !completedIds.has(item.id));
-    if (deletable.length) {
-      selections.push({group_id: group.id, delete_version_ids: deletable.map((item) => item.id)});
-      selectedVersions.push(...deletable);
-      const kept = (group.versions || []).find((item) => item.id === keep.dataset.cleanupKeep);
-      if (kept) keptVersions.push(kept);
+    const deleteCheckboxes = Array.from(document.querySelectorAll(`[data-cleanup-plan="${CSS.escape(planId)}"][data-cleanup-group="${CSS.escape(group.id)}"][data-cleanup-delete]:checked`));
+    const deleteIds = deleteCheckboxes.map((cb) => cb.dataset.cleanupDelete).filter(Boolean);
+    const deleteIdSet = new Set(deleteIds);
+
+    const groupVersions = group.versions || [];
+    for (const v of groupVersions) {
+      if (completedIds.has(v.id)) continue;
+      if (deleteIdSet.has(v.id)) {
+        selectedVersions.push(v);
+      } else {
+        keptVersions.push(v);
+      }
+    }
+    if (deleteIds.length > 0) {
+      selections.push({group_id: group.id, delete_version_ids: deleteIds});
     }
   }
-  if (!selections.length) { toast("当前选择下没有可安全清理的多余版本", true); return; }
+
+  if (!selectedVersions.length) {
+    toast("当前未勾选任何待清理的版本（所有版本均已设为保留）", true);
+    return;
+  }
+
   state.cleanupExecution = {planId, selections, selectedVersions, keptVersions};
-  $("#cleanup-confirm-summary").textContent = `将保留 ${keptVersions.length} 个版本，清理 ${selectedVersions.length} 个多余版本（${formatBytes(selectedVersions.reduce((sum, item) => sum + Number(item.size || 0), 0))}）。默认只删除媒体库硬链接。`;
-  $("#cleanup-confirm-kept").innerHTML = `<strong>保留：</strong>${keptVersions.map((item) => escapeHTML(cleanupVersionName(item))).join("；")}`;
+  $("#cleanup-confirm-summary").textContent = `将保留 ${keptVersions.length} 个版本，清理 ${selectedVersions.length} 个勾选版本（${formatBytes(selectedVersions.reduce((sum, item) => sum + Number(item.size || 0), 0))}）。默认只删除媒体库硬链接。`;
+  $("#cleanup-confirm-kept").innerHTML = `<strong>保留：</strong>${keptVersions.map((item) => escapeHTML(cleanupVersionName(item))).join("；") || "无（全选清理）"}`;
   $("#cleanup-confirm-paths").innerHTML = selectedVersions.map((item) => `<div class="cleanup-confirm-item"><strong>${escapeHTML(cleanupVersionName(item))}</strong><small>${[...(item.target_paths || []), ...(item.source_paths || [])].map(escapeHTML).join("<br>")}</small></div>`).join("");
   $("#cleanup-delete-source").checked = false; $("#cleanup-understand").checked = false;
   openModal("#cleanup-confirm-modal", trigger);
@@ -814,8 +846,45 @@ function bindEvents() {
     const page = event.target.closest("[data-page-kind]"); if (page) { state[`${page.dataset.pageKind}Page`] = Number(page.dataset.page); loadAll(true); }
     const searchDownload = event.target.closest("[data-search-download]"); if (searchDownload) actOnSearchResult(Number(searchDownload.dataset.searchDownload), "download", searchDownload);
     const searchSubscribe = event.target.closest("[data-search-subscribe]"); if (searchSubscribe) actOnSearchResult(Number(searchSubscribe.dataset.searchSubscribe), "subscribe", searchSubscribe);
+    const actionBtn = event.target.closest("[data-group-action]");
+    if (actionBtn) {
+      const { groupAction, planId, groupId } = actionBtn.dataset;
+      const plan = state.cleanupPlans.find((p) => p.id === planId);
+      const group = plan?.groups?.find((g) => g.id === groupId);
+      if (group) {
+        const checkboxes = Array.from(document.querySelectorAll(`[data-cleanup-plan="${CSS.escape(planId)}"][data-cleanup-group="${CSS.escape(groupId)}"][data-cleanup-delete]`));
+        for (const cb of checkboxes) {
+          if (cb.disabled) continue;
+          const vId = cb.dataset.cleanupDelete;
+          if (groupAction === "keep-all") {
+            cb.checked = false;
+          } else if (groupAction === "delete-all") {
+            cb.checked = true;
+          } else if (groupAction === "recommend") {
+            cb.checked = vId !== group.recommended_keep_id;
+          }
+          cb.dispatchEvent(new Event("change", { bubbles: true }));
+        }
+      }
+      return;
+    }
     const cleanupExecute = event.target.closest("[data-cleanup-execute]"); if (cleanupExecute) prepareCleanupExecution(cleanupExecute.dataset.cleanupExecute, cleanupExecute);
     const cleanupRetry = event.target.closest("[data-cleanup-retry]"); if (cleanupRetry) runAction(cleanupRetry, `/api/cleanup/plans/${encodeURIComponent(cleanupRetry.dataset.cleanupRetry)}/retry`, "失败清理项已重试");
+  });
+  $("#cleanup-plans").addEventListener("change", (event) => {
+    const checkbox = event.target.closest("[data-cleanup-delete]");
+    if (!checkbox) return;
+    const label = checkbox.closest(".cleanup-version");
+    const pill = label?.querySelector(".cleanup-status-pill");
+    if (pill) {
+      if (checkbox.checked) {
+        pill.className = "quality-pill danger cleanup-status-pill";
+        pill.textContent = "待清理";
+      } else {
+        pill.className = "quality-pill keep cleanup-status-pill";
+        pill.textContent = "保留";
+      }
+    }
   });
   $$(".tab").forEach((button) => button.addEventListener("click", () => setTab(button.dataset.tab)));
   $$('[data-open-download]').forEach((button) => button.addEventListener("click", () => { resetManualPreview(); openModal("#download-modal"); }));
@@ -832,7 +901,7 @@ function bindEvents() {
   $("#directory-sync-settings-form").addEventListener("submit", async (event) => {
     event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
     try {
-      const payload = {directory_sync_enabled:$("#directory-sync-enabled").checked,directory_sync_minutes:Number($("#directory-sync-minutes").value),directory_sync_settle_seconds:Number($("#directory-sync-settle-seconds").value)};
+      const payload = {directory_sync_enabled:$("#directory-sync-enabled").checked,directory_sync_settle_seconds:Number($("#directory-sync-settle-seconds").value)};
       const result = await api("/api/settings/system", {method:"PATCH",body:JSON.stringify(payload)}); state.systemSettings = result.settings; state.systemDirty = false; toast("目录同步设置已保存"); renderSystemSettings(); renderAutomation();
     } catch (error) { showError(error); } finally { button.disabled = false; }
   });

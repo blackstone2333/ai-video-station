@@ -42,7 +42,7 @@ def test_system_settings_validate_persist_and_reload(tmp_path):
     assert values["cleanup_auto_execute_enabled"] is False
     assert values["cleanup_auto_delete_source"] is False
     assert values["directory_sync_enabled"] is True
-    assert values["directory_sync_minutes"] == 5
+    assert "directory_sync_minutes" not in values
     assert values["directory_sync_settle_seconds"] == 120
     assert SystemSettingsRepository(Settings(data_dir=tmp_path, scheduler_enabled=False)).get()["watchlist_check_hours"] == 72
     with pytest.raises(ValidationAppError):
@@ -55,7 +55,30 @@ def test_system_settings_validate_persist_and_reload(tmp_path):
         }
     )
     assert changed["directory_sync_enabled"] is False
-    assert changed["directory_sync_minutes"] == 15
+    assert "directory_sync_minutes" not in changed
+    assert changed["directory_sync_settle_seconds"] == 300
+
+
+def test_system_settings_ignores_legacy_directory_sync_minutes(tmp_path):
+    settings = Settings(data_dir=tmp_path, scheduler_enabled=False)
+    settings.system_settings_path.parent.mkdir(parents=True, exist_ok=True)
+    legacy_payload = {
+        "watchlist_check_hours": 24,
+        "directory_sync_enabled": True,
+        "directory_sync_minutes": 10,
+        "directory_sync_settle_seconds": 90,
+        "cleanup_auto_scan_enabled": False,
+        "cleanup_auto_execute_enabled": False,
+        "cleanup_auto_delete_source": False,
+        "cleanup_policy": "quality_first",
+        "cleanup_scan_hours": 24,
+    }
+    settings.system_settings_path.write_text(json.dumps(legacy_payload), encoding="utf-8")
+    repo = SystemSettingsRepository(settings)
+    loaded = repo.get()
+    assert "directory_sync_minutes" not in loaded
+    assert loaded["directory_sync_settle_seconds"] == 90
+    assert loaded["watchlist_check_hours"] == 24
 
 
 def test_cleanup_automation_requires_each_safer_parent_switch(tmp_path):

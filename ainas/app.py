@@ -164,31 +164,7 @@ def _start_scheduler(app: Flask, settings: Settings, services: AppServices) -> O
             max_instances=1,
             coalesce=True,
         )
-    if services.directory_sync:
-        def sync_download_directories() -> None:
-            if not settings.directory_sync_enabled:
-                return
-            with app.app_context():
-                report = services.directory_sync.scan()
-                if report.get("linked") or report.get("conflicts"):
-                    logger.info(
-                        "scheduled_directory_sync_completed",
-                        extra={
-                            "linked": report.get("linked", 0),
-                            "waiting": report.get("waiting", 0),
-                            "conflicts": report.get("conflicts", 0),
-                        },
-                    )
 
-        scheduler.add_job(
-            sync_download_directories,
-            "interval",
-            minutes=settings.directory_sync_minutes,
-            id="directory-sync",
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-        )
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
     return scheduler
@@ -863,6 +839,8 @@ def create_app(
             raise ServiceUnavailableError("path settings are not initialized")
         body = _parse_json(PathSettingsPatchRequest)
         values = services.path_settings.update(body.model_dump(exclude_none=True))
+        if services.directory_watcher:
+            services.directory_watcher.reload()
         return jsonify({"success": True, "settings": values, "message": "目录设置已保存并立即生效"})
 
     @app.get("/api/settings/path-rules")
@@ -880,6 +858,8 @@ def create_app(
             raise ServiceUnavailableError("path rules are not initialized")
         body = _parse_json(PathRuleInput)
         item = services.path_rules.add(body.model_dump())
+        if services.directory_watcher:
+            services.directory_watcher.reload()
         response = jsonify({"success": True, "item": item})
         response.status_code = 201
         response.headers["Location"] = f"/api/settings/path-rules/{item['id']}"
@@ -892,6 +872,8 @@ def create_app(
             raise ServiceUnavailableError("path rules are not initialized")
         body = _parse_json(PathRulePatchRequest)
         item = services.path_rules.update(rule_id, body.model_dump(exclude_none=True))
+        if services.directory_watcher:
+            services.directory_watcher.reload()
         return jsonify({"success": True, "item": item})
 
     @app.post("/api/settings/path-rules/<rule_id>/check")
@@ -912,6 +894,8 @@ def create_app(
         else:
             disable_media_path = request.args.get("disable_media_path", "false").casefold() in {"1", "true", "yes"}
         result = services.path_rules.delete(rule_id, disable_media_path=disable_media_path)
+        if services.directory_watcher:
+            services.directory_watcher.reload()
         return jsonify({"success": True, **result})
 
     @app.get("/api/settings/downloader")
@@ -950,12 +934,8 @@ def create_app(
         scheduler = app.extensions.get("video_station_scheduler")
         if scheduler and scheduler.get_job("watchlist-check"):
             scheduler.reschedule_job("watchlist-check", trigger="interval", hours=values["watchlist_check_hours"])
-        if scheduler and scheduler.get_job("directory-sync"):
-            scheduler.reschedule_job(
-                "directory-sync",
-                trigger="interval",
-                minutes=values["directory_sync_minutes"],
-            )
+        if services.directory_watcher:
+            services.directory_watcher.reload()
         return jsonify({"success": True, "settings": values, "message": "系统定时设置已更新"})
 
     @app.get("/api/agents")
@@ -1015,4 +995,7 @@ def create_app(
     scheduler_allowed = settings.scheduler_enabled if start_scheduler is None else start_scheduler
     if scheduler_allowed:
         app.extensions["video_station_scheduler"] = _start_scheduler(app, settings, services)
+        if services.directory_watcher:
+            services.directory_watcher.start()
+            atexit.register(services.directory_watcher.stop)
     return app
