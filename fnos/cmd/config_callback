@@ -1,0 +1,13 @@
+#!/bin/bash
+
+set -e
+api_key="${avs_api_key:-${AVS_API_KEY:-${TRIM_WIZARD_AVS_API_KEY:-}}}"
+"$TRIM_APPDEST/bin/configure" "$api_key"
+
+if ! docker compose \
+  --project-name ai-video-station \
+  --file "$TRIM_APPDEST/docker/docker-compose.yaml" \
+  up --detach --force-recreate >/dev/null; then
+  printf '设置已保存，但容器未能自动重建。请在应用中心重启 AI Video Station。\n' > "$TRIM_TEMP_LOGFILE"
+  exit 1
+fi

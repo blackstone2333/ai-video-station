@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# Do not delete user downloads or media-library files during uninstall.
+exit 0

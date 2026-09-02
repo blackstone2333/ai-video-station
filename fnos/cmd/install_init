@@ -1,0 +1,8 @@
+#!/bin/bash
+
+api_key="${avs_api_key:-${AVS_API_KEY:-${TRIM_WIZARD_AVS_API_KEY:-}}}"
+if [[ "$api_key" =~ ^[A-Za-z0-9._~-]{32,128}$ ]]; then
+  exit 0
+fi
+printf '后台管理密钥必须是 32–128 位字母、数字或 . _ ~ -。\n' > "$TRIM_TEMP_LOGFILE"
+exit 1

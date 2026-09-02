@@ -104,6 +104,7 @@ def test_main_high_frequency_commands_construct_typed_payloads():
     assert main(url + ["watchlist-check", "--item-id", "item-123"], environment=environment, opener=opener) == 0
     assert main(url + ["naming-retry", "job-123"], environment=environment, opener=opener) == 0
     assert main(url + ["naming-check", "--job-id", "job-123"], environment=environment, opener=opener) == 0
+    assert main(url + ["directory-sync", "--path-rule-id", "rule-123"], environment=environment, opener=opener) == 0
     assert main(url + ["cleanup-scan", "--policy", "space_first", "--type", "tv"], environment=environment, opener=opener) == 0
     assert main(url + ["cleanup-show", "plan/123"], environment=environment, opener=opener) == 0
     assert main(url + ["cleanup-execute", "plan-123", "--selections", '[{"group_id":"group-1","delete_version_ids":["version-1"]}]', "--delete-source", "--confirm", "DELETE_SELECTED_DUPLICATES"], environment=environment, opener=opener) == 0
@@ -117,6 +118,7 @@ def test_main_high_frequency_commands_construct_typed_payloads():
         ("POST", "http://nas.test:16666/api/watchlist/check", {"item_id": "item-123"}),
         ("POST", "http://nas.test:16666/api/naming/jobs/job-123/retry", None),
         ("POST", "http://nas.test:16666/api/naming/jobs/check", {"job_id": "job-123"}),
+        ("POST", "http://nas.test:16666/api/directory-sync/scan", {"path_rule_id": "rule-123"}),
         ("POST", "http://nas.test:16666/api/cleanup/scan", {"policy": "space_first", "media_type": "tv"}),
         ("GET", "http://nas.test:16666/api/cleanup/plans/plan%2F123", None),
         ("POST", "http://nas.test:16666/api/cleanup/plans/plan-123/execute", {"selections": [{"group_id": "group-1", "delete_version_ids": ["version-1"]}], "delete_source": True, "confirmation": "DELETE_SELECTED_DUPLICATES"}),

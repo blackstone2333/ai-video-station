@@ -1,0 +1,16 @@
+{
+  ".url": {
+    "ai-video-station.Application": {
+      "title": "AI Video Station",
+      "icon": "images/icon_{0}.png",
+      "type": "url",
+      "protocol": "http",
+      "port": "16666",
+      "url": "/admin",
+      "allUsers": false,
+      "control": {
+        "accessPerm": "readonly"
+      }
+    }
+  }
+}

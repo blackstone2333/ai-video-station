@@ -206,7 +206,17 @@ class DownloaderSettingsRepository:
 
 
 class SystemSettingsRepository:
-    FIELDS = ("watchlist_check_hours", "cleanup_auto_scan_enabled", "cleanup_auto_execute_enabled", "cleanup_auto_delete_source", "cleanup_policy", "cleanup_scan_hours")
+    FIELDS = (
+        "watchlist_check_hours",
+        "directory_sync_enabled",
+        "directory_sync_minutes",
+        "directory_sync_settle_seconds",
+        "cleanup_auto_scan_enabled",
+        "cleanup_auto_execute_enabled",
+        "cleanup_auto_delete_source",
+        "cleanup_policy",
+        "cleanup_scan_hours",
+    )
 
     def __init__(self, settings: Settings, state_store: StateStore | None = None) -> None:
         self.settings = settings

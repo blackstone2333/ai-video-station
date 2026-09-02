@@ -188,6 +188,33 @@ class StubCleanup:
         return self.get(plan_id), []
 
 
+class StubDirectorySync:
+    def __init__(self):
+        self.repository = self
+        self.items = []
+
+    def list(self):
+        return list(self.items)
+
+    def scan(self, path_rule_id=None):
+        item = {
+            "id": "directory-sync-1",
+            "source_kind": "directory_sync",
+            "name": "目录同步 · 动漫",
+            "type": "anime",
+            "path_rule_id": path_rule_id or "default-anime",
+            "status": "done",
+            "target": "/medialib/video/anime",
+            "linked": 1,
+            "skipped": 0,
+            "files": [],
+            "error": None,
+            "completed_at": "2026-09-02T00:00:00+00:00",
+        }
+        self.items = [item]
+        return {"running": False, "enabled": True, "runs": [item], "linked": 1, "waiting": 0, "conflicts": 0}
+
+
 def build_test_app(tmp_path: Path):
     settings = Settings(
         data_dir=tmp_path,
@@ -219,6 +246,7 @@ def build_test_app(tmp_path: Path):
         sites=sites,
         dismissed_downloads=dismissed_downloads,
         cleanup=StubCleanup(),
+        directory_sync=StubDirectorySync(),
     )
     return create_app(settings, services, start_scheduler=False), services
 
@@ -235,6 +263,8 @@ def test_health_auth_search_download_and_qb(tmp_path):
     assert 'data-panel="logs"' in page
     assert 'data-panel="cleanup"' in page
     assert 'id="cleanup-confirm-modal"' in page
+    assert 'id="directory-sync-now"' in page
+    assert 'id="directory-sync-settings-form"' in page
     assert 'id="refresh-downloads"' in page
     assert 'id="show-hidden-downloads"' in page
     assert 'id="hidden-downloads-modal"' in page
@@ -483,6 +513,16 @@ def test_hardlink_history_and_site_settings_api(tmp_path):
     assert history.status_code == 200
     assert history.json["items"][0]["type"] == "anime"
     assert history.json["items"][0]["linked"] == 1
+
+    synchronized = client.post(
+        "/api/directory-sync/scan",
+        json={"path_rule_id": "anime-rule-1234"},
+        headers=headers,
+    )
+    assert synchronized.status_code == 200
+    assert synchronized.json["linked"] == 1
+    combined = client.get("/api/hardlinks?status=all", headers=headers).json["items"]
+    assert {item["source_kind"] for item in combined} == {"naming", "directory_sync"}
 
     created = client.post(
         "/api/settings/sites",

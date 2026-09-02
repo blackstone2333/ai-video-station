@@ -153,7 +153,7 @@ class EmbyNamingPlanner:
         value = PurePosixPath(path)
         counter = 2
         while True:
-            candidate = str(value.with_name(f"{value.stem} - {counter}{value.suffix}"))
+            candidate = str(value.with_name(f"{value.stem}.{counter}{value.suffix}"))
             if candidate not in used:
                 used.add(candidate)
                 return candidate
@@ -166,7 +166,7 @@ class EmbyNamingPlanner:
             value += f".{plan.original_title}"
         selected_part = part or plan.part
         if selected_part:
-            value += f"-{selected_part}"
+            value += f".{selected_part}"
         return value
 
     @staticmethod
@@ -227,10 +227,10 @@ class EmbyNamingPlanner:
         if plan.year:
             value += f" ({plan.year})"
         if plan.edition:
-            value += f" - {plan.edition}"
+            value += f".{plan.edition}"
         video_format = cls._file_video_format(path, plan.video_format)
         if video_format:
-            value += f" - {video_format}"
+            value += f".{video_format}"
         return f"{value}{extension}"
 
     @staticmethod
@@ -287,12 +287,12 @@ class EmbyNamingPlanner:
                 # Episodic files are separate episodes, not automatically numbered movie parts.
                 part = self._file_part(old_value, index, len(videos), auto_number=False)
                 value = self._title_prefix(plan, part)
-                value += f" - {episode}"
+                value += f".{episode}"
                 if plan.episode_title:
-                    value += f" - {plan.episode_title}"
+                    value += f".{plan.episode_title}"
                 video_format = self._file_video_format(old_value, plan.video_format)
                 if video_format:
-                    value += f" - {video_format}"
+                    value += f".{video_format}"
                 new_basename = f"{value}{old_value.suffix.lower()}"
             else:
                 main_index = main_videos.index(item) if item in main_videos else index
@@ -768,9 +768,18 @@ class NamingService:
             return rule
         return self.path_rules.match(media_type, self.settings.download_path_for_category(final_category))
 
-    def _submission(self, plan: NamingPlan, final_category: str, current_category: str, save_path: Path) -> Dict[str, Any]:
+    def _submission(
+        self,
+        plan: NamingPlan,
+        final_category: str,
+        current_category: str,
+        save_path: Path,
+        *,
+        preserve_task_name: bool = False,
+    ) -> Dict[str, Any]:
         return {"submission": {"category": current_category, "final_category": final_category,
-                "save_path": str(save_path), "root_name": plan.root_name}}
+                "save_path": str(save_path), "root_name": plan.root_name,
+                "match_name": None if preserve_task_name else plan.root_name}}
 
     def add_download(
         self,
@@ -798,7 +807,15 @@ class NamingService:
                 final_category,
                 wanted_episodes=list(wanted_episodes or []),
                 selection=None,
-                **self._submission(plan, final_category, current_category, save_path),
+                preserve_task_name=True,
+                strict_source_paths=True,
+                **self._submission(
+                    plan,
+                    final_category,
+                    current_category,
+                    save_path,
+                    preserve_task_name=True,
+                ),
             )
             if (use_staging or track_only)
             else None
@@ -806,7 +823,9 @@ class NamingService:
         if job and not hash_value:
             job = self.repository.update(job["id"], {"status": "submitting"})
         add_options: Dict[str, Any] = {
-            "rename": plan.root_name if self.settings.naming_enabled and plan.rename_enabled else None,
+            # Keep the downloader's original task name. It is useful for
+            # diagnostics and does not control names inside the torrent.
+            "rename": None,
             "save_path": save_path,
         }
         if wanted_episodes and job:
@@ -819,7 +838,7 @@ class NamingService:
                 matched = reconciler(
                     category=current_category,
                     save_path=save_path,
-                    root_name=plan.root_name,
+                    root_name="",
                     expected_hash=None,
                 )
                 task_id = (matched or {}).get("hash")
@@ -861,10 +880,18 @@ class NamingService:
             final_category,
             wanted_episodes=list(wanted_episodes or []),
             selection=None,
-            **self._submission(plan, final_category, current_category, save_path),
+            preserve_task_name=True,
+            strict_source_paths=True,
+            **self._submission(
+                plan,
+                final_category,
+                current_category,
+                save_path,
+                preserve_task_name=True,
+            ),
         ) if (use_staging or track_only) else None
         add_options: Dict[str, Any] = {
-            "rename": plan.root_name if use_staging else None,
+            "rename": None,
             "save_path": save_path,
         }
         if wanted_episodes and job:
@@ -902,7 +929,14 @@ class NamingService:
                     match = reconciler(
                         category=str(submission.get("category") or ""),
                         save_path=submission.get("save_path"),
-                        root_name=str(submission.get("root_name") or ""),
+                        root_name=str(
+                            (
+                                submission.get("match_name")
+                                if "match_name" in submission
+                                else submission.get("root_name")
+                            )
+                            or ""
+                        ),
                         expected_hash=None,
                     )
                 except AppError as exc:
@@ -1045,6 +1079,8 @@ class NamingService:
         # The preview covers the whole selected torrent and remains the operation
         # journal while individual completed files are processed incrementally.
         preview = job.get("result") or self.planner.plan_files(selected, plan)
+        if job.get("strict_source_paths") and not preview.get("strict_source_paths"):
+            preview = {**preview, "strict_source_paths": True}
         if not job.get("result"):
             job = self.repository.update(
                 job["id"],
@@ -1100,6 +1136,49 @@ class NamingService:
                     job = self.repository.update(
                         job["id"], {"rename_checkpoint": checkpoint, "result": preview}
                     )
+
+                # A successful HTTP response is not enough: the downloader's
+                # file list must expose the planned path before hardlinking.
+                # This prevents a stale-source fallback from hiding a no-op.
+                if ready and job.get("strict_source_paths"):
+                    realized_paths = {
+                        str(item.get("name") or "") for item in self.qb.files(job["torrent_hash"])
+                    }
+                    expected_paths = {
+                        str(operation.get("new_path") or "")
+                        for operation in preview.get("operations") or []
+                        if self._operation_key(operation) in completed_operation_keys
+                        and (
+                            str(operation.get("old_path") or "") in ready_paths
+                            or str(operation.get("new_path") or "") in ready_paths
+                        )
+                    }
+                    missing = sorted(path for path in expected_paths if path not in realized_paths)
+                    if missing:
+                        # Do not leave an unverified rename checkpoint marked
+                        # as complete.  A later retry must be allowed to issue
+                        # the same file rename again if the downloader really
+                        # treated the first request as a no-op.
+                        missing_values = set(missing)
+                        missing_keys = {
+                            self._operation_key(operation)
+                            for operation in preview.get("operations") or []
+                            if str(operation.get("new_path") or "") in missing_values
+                        }
+                        completed_operation_keys = [
+                            key for key in completed_operation_keys if key not in missing_keys
+                        ]
+                        checkpoint["file_operations"] = completed_operation_keys
+                        checkpoint["files"] = len(completed_operation_keys)
+                        job = self.repository.update(
+                            job["id"], {"rename_checkpoint": checkpoint, "result": preview}
+                        )
+                        raise AppError(
+                            "Downloader Rename Not Applied",
+                            f"下载器未确认实际文件改名：{missing[0]}",
+                            "downloader-rename-not-applied",
+                            409,
+                        )
 
             hardlink_enabled = bool(self.hardlinker and self.hardlinker.enabled)
             hardlink_result = dict(job.get("hardlink_result") or {})
@@ -1166,7 +1245,7 @@ class NamingService:
                         job["id"], {"rename_checkpoint": checkpoint, "result": preview}
                     )
                 if not (job.get("rename_checkpoint") or {}).get("torrent"):
-                    if str(torrent.get("name") or "") != plan.root_name:
+                    if not job.get("preserve_task_name") and str(torrent.get("name") or "") != plan.root_name:
                         self.qb.rename_torrent(job["torrent_hash"], plan.root_name)
                     checkpoint = dict(job.get("rename_checkpoint") or {})
                     checkpoint["torrent"] = True

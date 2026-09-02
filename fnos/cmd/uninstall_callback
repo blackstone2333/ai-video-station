@@ -1,0 +1,4 @@
+#!/bin/bash
+
+# Data-share retention is controlled by fnOS and the user.
+exit 0

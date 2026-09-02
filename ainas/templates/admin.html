@@ -109,7 +109,7 @@
     <section id="panel-naming" class="panel" data-panel="naming">
       <article class="card">
         <header class="card-head action-head">
-          <div><p>EMBY NORMALIZER</p><h2>规范命名任务</h2></div>
+          <div><p>MEDIA NORMALIZER</p><h2>规范命名任务</h2></div>
           <div class="head-actions"><select id="naming-filter" class="filter-input"><option value="">全部状态</option><option value="submitting">提交中</option><option value="awaiting_binding">等待绑定下载器</option><option value="waiting_metadata">等待元数据</option><option value="waiting_selection">全集待确认</option><option value="waiting_download">等待下载</option><option value="missing_in_downloader">下载器中缺失</option><option value="completed">命名完成</option><option value="done">硬链接完成</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="check-naming" class="primary-button" type="button">立即处理</button></div>
         </header>
         <div class="table-wrap"><table><thead><tr><th>规范名称</th><th>原链接名称</th><th>状态</th><th>文件数</th><th>更新时间</th><th>错误</th><th>操作</th></tr></thead><tbody id="naming-body"></tbody></table></div>
@@ -120,9 +120,15 @@
     <section id="panel-hardlinks" class="panel" data-panel="hardlinks">
       <article class="card">
         <header class="card-head action-head">
-          <div><p>MEDIA LIBRARY</p><h2>硬链接入库记录</h2></div>
-          <select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select>
+          <div><p>MEDIA LIBRARY</p><h2>硬链接入库记录</h2><small>目录同步也会处理 Ani-RSS、手工复制或其他下载工具写入的文件。</small></div>
+          <div class="head-actions"><select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="directory-sync-now" class="primary-button" type="button">立即同步下载目录</button></div>
         </header>
+        <form id="directory-sync-settings-form" class="directory-sync-settings">
+          <label class="toggle-row compact"><span><b>自动目录同步</b><small>扫描所有启用的目录映射</small></span><input id="directory-sync-enabled" type="checkbox" role="switch"></label>
+          <label>同步间隔（分钟）<input id="directory-sync-minutes" type="number" min="1" max="1440" value="5"></label>
+          <label>文件稳定等待（秒）<input id="directory-sync-settle-seconds" type="number" min="0" max="86400" value="120"></label>
+          <button class="quiet-button" type="submit">保存目录同步设置</button>
+        </form>
         <div class="table-wrap"><table><thead><tr><th>媒体</th><th>类型</th><th>目标目录</th><th>链接文件</th><th>状态</th><th>错误</th><th>更新时间</th><th>操作</th></tr></thead><tbody id="hardlinks-body"></tbody></table></div>
         <div id="hardlinks-pagination" class="pagination"></div>
       </article>
@@ -370,7 +376,8 @@
   <div id="cleanup-confirm-modal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="cleanup-confirm-title">
     <form id="cleanup-confirm-form" class="modal-card cleanup-confirm-card">
       <header><div><span class="auth-kicker">DESTRUCTIVE ACTION</span><h2 id="cleanup-confirm-title">确认执行清理计划</h2></div><button class="modal-close" data-close-modal type="button" aria-label="关闭">×</button></header>
-      <p id="cleanup-confirm-summary">尚未选择要清理的版本。</p>
+      <p id="cleanup-confirm-summary">尚未选择要保留的版本。</p>
+      <div id="cleanup-confirm-kept" class="cleanup-confirm-kept"></div>
       <div id="cleanup-confirm-paths" class="cleanup-confirm-paths"></div>
       <label class="toggle-row danger-toggle"><span><b>同时删除下载源数据</b><small>关闭时只移除所选版本的媒体库硬链接，下载源文件继续保留。</small></span><input id="cleanup-delete-source" type="checkbox" role="switch"></label>
       <label class="cleanup-understand"><input id="cleanup-understand" type="checkbox" required> 我已核对保留版本和删除路径，理解删除源数据可能无法撤销。</label>

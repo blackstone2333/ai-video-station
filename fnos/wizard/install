@@ -1,0 +1,34 @@
+[
+  {
+    "stepTitle": "初始化 AI Video Station",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "应用会创建同一共享根目录下的 Downloads 与 Library 目录，以便通过硬链接零拷贝入库。飞牛影视、Emby、Jellyfin 等媒体软件均可扫描 Library 目录。下载器连接请在安装后进入管理后台配置。"
+      },
+      {
+        "type": "password",
+        "field": "avs_api_key",
+        "label": "后台管理密钥",
+        "rules": [
+          {
+            "required": true,
+            "message": "请输入后台管理密钥"
+          },
+          {
+            "pattern": "^[A-Za-z0-9._~-]{32,128}$",
+            "message": "请使用 32–128 位字母、数字或 . _ ~ -"
+          }
+        ]
+      },
+      {
+        "type": "tips",
+        "helpText": "请妥善保存管理密钥。应用不会在日志或安装结果中显示它。"
+      },
+      {
+        "type": "tips",
+        "helpText": "安装后请把共享根挂载给下载器，并为下载器授予 Downloads 写权限、为所用媒体软件授予 Library 读权限。AVS 不会修改其他应用的配置或权限。"
+      }
+    ]
+  }
+]

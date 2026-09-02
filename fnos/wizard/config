@@ -1,0 +1,22 @@
+[
+  {
+    "stepTitle": "AI Video Station 设置",
+    "items": [
+      {
+        "type": "tips",
+        "helpText": "如需轮换后台管理密钥，请输入新密钥；留空会保留当前密钥。下载器、站点、订阅周期和媒体目录映射请在应用管理后台设置。"
+      },
+      {
+        "type": "password",
+        "field": "avs_api_key",
+        "label": "新的后台管理密钥",
+        "rules": [
+          {
+            "pattern": "^$|^[A-Za-z0-9._~-]{32,128}$",
+            "message": "留空，或使用 32–128 位字母、数字或 . _ ~ -"
+          }
+        ]
+      }
+    ]
+  }
+]

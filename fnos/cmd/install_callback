@@ -1,0 +1,5 @@
+#!/bin/bash
+
+set -e
+api_key="${avs_api_key:-${AVS_API_KEY:-${TRIM_WIZARD_AVS_API_KEY:-}}}"
+"$TRIM_APPDEST/bin/configure" "$api_key"

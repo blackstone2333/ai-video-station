@@ -42,6 +42,7 @@ def test_openapi_covers_actual_agent_routes_and_scopes():
         "/api/naming/jobs/{job_id}/retry": {"post"},
         "/api/naming/jobs/check": {"post"},
         "/api/hardlinks": {"get"},
+        "/api/directory-sync/scan": {"post"},
         "/api/logs": {"get"},
         "/api/settings/sites": {"get", "post"},
         "/api/settings/sites/preview": {"post"},
@@ -84,6 +85,12 @@ def test_openapi_models_the_agent_contract_gaps_that_regressed_before():
     assert "cleanup" in schemas["AgentScope"]["enum"]
     assert schemas["CleanupExecuteRequest"]["properties"]["confirmation"]["const"] == "DELETE_SELECTED_DUPLICATES"
     assert schemas["SystemSettingsPatchRequest"]["additionalProperties"] is False
+    assert set(schemas["DirectorySyncScanRequest"]["properties"]) == {"path_rule_id"}
+    assert {
+        "directory_sync_enabled",
+        "directory_sync_minutes",
+        "directory_sync_settle_seconds",
+    } <= set(schemas["SystemSettingsPatchRequest"]["properties"])
 
     watchlist_schema = document["paths"]["/api/watchlist/add"]["post"]["requestBody"]["content"]["application/json"]["schema"]
     assert watchlist_schema["$ref"].endswith("/WatchlistAddRequest")

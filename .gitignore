@@ -11,3 +11,4 @@ htmlcov/
 data/*
 !data/.gitkeep
 backups/
+dist/

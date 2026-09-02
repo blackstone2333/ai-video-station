@@ -1,0 +1,97 @@
+#!/bin/bash
+
+set -euo pipefail
+umask 077
+
+fail() {
+  local message="$1"
+  if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+    printf '%s\n' "$message" > "$TRIM_TEMP_LOGFILE"
+  else
+    printf '%s\n' "$message" >&2
+  fi
+  exit 1
+}
+
+valid_single_line() {
+  local value="$1"
+  [ -n "$value" ] && [[ "$value" != *$'\n'* ]] && [[ "$value" != *$'\r'* ]]
+}
+
+pkgvar="${TRIM_PKGVAR:-}"
+media_root="${TRIM_DATA_SHARE_PATHS:-}"
+
+valid_single_line "$pkgvar" || fail "AI Video Station 运行数据目录无效。"
+valid_single_line "$media_root" || fail "AI Video Station 媒体共享目录无效。"
+[[ "$pkgvar" = /* ]] || fail "AI Video Station 运行数据目录必须是绝对路径。"
+[[ "$media_root" = /* ]] || fail "AI Video Station 媒体共享目录必须是绝对路径。"
+[[ "$media_root" != *:* ]] || fail "AI Video Station 需要且只允许一个媒体共享根目录。"
+
+env_file="$pkgvar/avs.env"
+api_key="${1:-}"
+if [ -z "$api_key" ]; then
+  api_key="${avs_api_key:-${AVS_API_KEY:-${TRIM_WIZARD_AVS_API_KEY:-}}}"
+fi
+if [ -z "$api_key" ] && [ -f "$env_file" ]; then
+  api_key="$(sed -n 's/^API_KEY=//p' "$env_file" | tail -n 1)"
+fi
+[[ "$api_key" =~ ^[A-Za-z0-9._~-]{32,128}$ ]] || fail "后台管理密钥必须是 32–128 位字母、数字或 . _ ~ -。"
+
+install -d -m 0750 "$pkgvar"
+for relative in \
+  Downloads/Movie \
+  Downloads/TV \
+  Downloads/Anime \
+  Downloads/Custom \
+  Library/Movies \
+  Library/TV \
+  Library/Anime \
+  Library/Custom; do
+  install -d -m 0770 "$media_root/$relative"
+done
+
+temp_file="$(mktemp "$pkgvar/.avs.env.XXXXXX")"
+cleanup() {
+  rm -f "$temp_file"
+}
+trap cleanup EXIT
+
+{
+  printf '%s\n' \
+    'PORT=16666' \
+    'DATA_DIR=/data' \
+    'TIMEZONE=Asia/Shanghai' \
+    'DOWNLOADER_TYPE=qbittorrent' \
+    'QB_HOST=' \
+    'QB_PORT=8080' \
+    'QB_USERNAME=admin' \
+    'QB_PASSWORD=' \
+    'TRANSMISSION_HOST=' \
+    'TRANSMISSION_PORT=9091' \
+    'TRANSMISSION_USERNAME=' \
+    'TRANSMISSION_PASSWORD=' \
+    'WATCHLIST_CHECK_HOURS=12' \
+    'SCHEDULER_ENABLED=true' \
+    'CLEANUP_AUTO_SCAN_ENABLED=false' \
+    'CLEANUP_AUTO_EXECUTE_ENABLED=false' \
+    'CLEANUP_AUTO_DELETE_SOURCE=false' \
+    'CLEANUP_POLICY=quality_first' \
+    'NAMING_ENABLED=true' \
+    'MEDIALIB_HARDLINK_ENABLED=true' \
+    'ALLOW_INSECURE_LAN=false'
+  printf 'DOWNLOADS_BASE_PATH=%s/Downloads\n' "$media_root"
+  printf 'DOWNLOAD_MOVIE_PATH=%s/Downloads/Movie\n' "$media_root"
+  printf 'DOWNLOAD_TV_PATH=%s/Downloads/TV\n' "$media_root"
+  printf 'DOWNLOAD_ANIME_PATH=%s/Downloads/Anime\n' "$media_root"
+  printf 'DOWNLOAD_CUSTOM_PATH=%s/Downloads/Custom\n' "$media_root"
+  printf 'MEDIALIB_BASE_PATH=%s\n' "$media_root"
+  printf 'MEDIALIB_MOVIE_PATH=%s/Library/Movies\n' "$media_root"
+  printf 'MEDIALIB_TV_PATH=%s/Library/TV\n' "$media_root"
+  printf 'MEDIALIB_ANIME_PATH=%s/Library/Anime\n' "$media_root"
+  printf 'MEDIALIB_CUSTOM_PATH=%s/Library/Custom\n' "$media_root"
+  printf 'API_KEY=%s\n' "$api_key"
+} > "$temp_file"
+
+chmod 0600 "$temp_file"
+mv -f "$temp_file" "$env_file"
+trap - EXIT

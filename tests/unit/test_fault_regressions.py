@@ -26,6 +26,7 @@ class BindingQB:
         self.reconcile_calls: list[dict] = []
         self.rename_calls: list[tuple[str, str]] = []
         self.released: list[tuple[str, str]] = []
+        self.file_values = [{"name": "Movie.2024.mkv", "size": 1, "progress": 1.0, "priority": 1}]
 
     def add_download(self, *args, **kwargs):
         return {"qb_task_id": None, "category": args[1]}
@@ -38,10 +39,14 @@ class BindingQB:
         return {"hash": hash_value, "progress": 1.0}
 
     def files(self, hash_value):
-        return [{"name": "Movie.2024.mkv", "size": 1, "progress": 1.0, "priority": 1}]
+        return self.file_values
 
     def rename_file(self, hash_value, old_path, new_path):
         self.rename_calls.append((old_path, new_path))
+        if hasattr(self, "file_values"):
+            for item in self.file_values:
+                if item.get("name") == old_path:
+                    item["name"] = new_path
 
     def rename_folder(self, *args):
         pass
@@ -78,7 +83,7 @@ def test_http_torrent_submission_stays_pending_until_a_unique_binding_is_found(t
     assert updated["status"] == "completed"
     assert len(qb.reconcile_calls) == 2
     assert qb.reconcile_calls[-1]["category"] == service.settings.qb_naming_category
-    assert qb.reconcile_calls[-1]["root_name"] == "测试电影 (2024)"
+    assert qb.reconcile_calls[-1]["root_name"] == ""
 
 
 def test_unbound_http_torrent_becomes_missing_in_downloader_after_bounded_checks(tmp_path):
@@ -118,6 +123,9 @@ class RetryRenameQB(BindingQB):
             self.failed = True
             from ainas.errors import UpstreamError
             raise UpstreamError("qBittorrent", "temporary rename failure")
+        for item in self.file_values:
+            if item.get("name") == old_path:
+                item["name"] = new_path
 
 
 def test_partial_rename_retries_from_persisted_checkpoint_without_repeating_prior_operations(tmp_path):

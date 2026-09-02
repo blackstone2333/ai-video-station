@@ -3,8 +3,10 @@ info:
   title: AI Video Station API
   version: 2.2.0
   description: >-
-    Media search, downloads, watchlists, naming, hardlinks, duplicate cleanup, path rules and Agent access.
-    Unless an operation says otherwise, an Agent token needs the documented x-agent-scope.
+    Player-neutral media search, downloads, watchlists, media-library-compatible naming, hardlinks,
+    duplicate cleanup, path rules and Agent access. Standard output directories can be scanned by
+    fnOS Video, Emby, Jellyfin and other compatible media software. Unless an operation says otherwise,
+    an Agent token needs the documented x-agent-scope.
 servers:
   - url: http://localhost:16666
 components:
@@ -204,6 +206,11 @@ components:
     HardlinkStatus:
       type: [string, 'null']
       enum: [pending, waiting_download, retrying, done, partial, conflict, failed, disabled, null]
+    DirectorySyncScanRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        path_rule_id: {type: [string, 'null'], minLength: 8, maxLength: 64}
     Pagination:
       type: object
       required: [page, per_page, total, total_pages]
@@ -448,6 +455,9 @@ components:
       additionalProperties: false
       properties:
         watchlist_check_hours: {type: integer, minimum: 3, maximum: 168}
+        directory_sync_enabled: {type: boolean, description: Enables scheduled scans; manual scans remain available.}
+        directory_sync_minutes: {type: integer, minimum: 1, maximum: 1440}
+        directory_sync_settle_seconds: {type: integer, minimum: 0, maximum: 86400}
         cleanup_auto_scan_enabled: {type: boolean}
         cleanup_auto_execute_enabled: {type: boolean}
         cleanup_auto_delete_source: {type: boolean}
@@ -747,6 +757,16 @@ paths:
       security: [{ApiKey: []}, {AgentToken: []}]
       parameters: [{$ref: '#/components/parameters/Page'}, {$ref: '#/components/parameters/PerPage'}, {in: query, name: status, schema: {type: string, default: done}}]
       responses: {'200': {description: Items and pagination}, default: {$ref: '#/components/responses/Problem'}}
+  /api/directory-sync/scan:
+    post:
+      summary: Scan enabled download-directory mappings and hardlink stable video files
+      description: >-
+        Works for AVS downloads and external files such as Ani-RSS output. Active downloads, fresh files,
+        symbolic links, samples and conflicting targets are skipped. Existing targets are never overwritten.
+      x-agent-scope: naming
+      security: [{ApiKey: []}, {AgentToken: []}]
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DirectorySyncScanRequest'}}}}
+      responses: {'200': {description: Per-rule synchronization runs and totals}, '404': {$ref: '#/components/responses/NotFound'}, default: {$ref: '#/components/responses/Problem'}}
   /api/logs:
     get:
       summary: List redacted structured logs
@@ -867,7 +887,7 @@ paths:
       security: [{ApiKey: []}, {AgentToken: []}]
       responses: {'200': {description: System settings}, default: {$ref: '#/components/responses/Problem'}}
     patch:
-      summary: Update watchlist and duplicate-cleanup scheduler settings
+      summary: Update watchlist, directory-sync and duplicate-cleanup scheduler settings
       x-agent-scope: settings
       security: [{ApiKey: []}, {AgentToken: []}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/SystemSettingsPatchRequest'}}}}

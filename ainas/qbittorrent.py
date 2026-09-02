@@ -187,7 +187,7 @@ class QBittorrentClient:
             item for item in (response.json() or [])
             if str(item.get("category") or "") == category
             and str(item.get("save_path") or "").rstrip("/") == wanted_path
-            and str(item.get("name") or "") == root_name
+            and (not root_name or str(item.get("name") or "") == root_name)
         ]
         return matches[0] if len(matches) == 1 else None
 

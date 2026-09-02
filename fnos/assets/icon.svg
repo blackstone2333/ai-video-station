@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AI Video Station">
+  <rect x="0" y="0" width="512" height="512" rx="116" fill="#0B1528"/>
+  <rect x="88" y="88" width="336" height="260" rx="58" fill="#49DFC7"/>
+  <rect x="112" y="112" width="288" height="212" rx="38" fill="#142A46"/>
+  <polygon points="220,164 220,276 316,220" fill="#F5FBFF"/>
+  <rect x="118" y="366" width="166" height="84" rx="42" fill="#5598FF"/>
+  <rect x="140" y="388" width="122" height="40" rx="20" fill="#0B1528"/>
+  <rect x="228" y="366" width="166" height="84" rx="42" fill="#49DFC7"/>
+  <rect x="250" y="388" width="122" height="40" rx="20" fill="#0B1528"/>
+  <rect x="224" y="397" width="64" height="22" rx="11" fill="#F5FBFF"/>
+</svg>

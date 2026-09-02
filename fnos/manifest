@@ -1,0 +1,12 @@
+appname               = ai-video-station
+version               = 2.2.0
+display_name          = AI Video Station
+desc                  = 自动搜索、订阅、下载、规范命名并硬链接到标准媒体目录，兼容主流媒体软件。
+platform              = all
+source                = thirdparty
+maintainer            = blackstone2333
+maintainer_url        = https://github.com/blackstone2333/ai-video-station
+os_min_version        = 1.2.0
+service_port          = 16666
+desktop_uidir         = ui
+desktop_applaunchname = ai-video-station.Application

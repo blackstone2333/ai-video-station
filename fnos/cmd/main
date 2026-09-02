@@ -1,0 +1,25 @@
+#!/bin/bash
+
+container_name="fnos-ai-video-station"
+
+is_running() {
+  docker inspect "$container_name" 2>/dev/null | grep -q '"Status": "running"'
+}
+
+case "${1:-}" in
+  start|stop)
+    exit 0
+    ;;
+  status)
+    if is_running; then
+      exit 0
+    fi
+    exit 3
+    ;;
+  *)
+    if [ -n "${TRIM_TEMP_LOGFILE:-}" ]; then
+      printf '不支持的生命周期命令。\n' > "$TRIM_TEMP_LOGFILE"
+    fi
+    exit 1
+    ;;
+esac

@@ -253,12 +253,14 @@ function renderHardlinks() {
     <td><button class="target-button" data-copy-target="${escapeHTML(item.target || "")}" title="点击复制目录：${escapeHTML(item.target || "")}" type="button">${escapeHTML(item.target || "—")}</button></td>
     <td>${Number(item.linked || 0)} 链接 / ${Number(item.skipped || 0)} 跳过</td><td>${chip(item.status)}</td>
     <td class="error-text" title="${escapeHTML(item.error || "")}">${escapeHTML(item.error || "—")}</td><td>${formatDate(item.completed_at)}</td>
-    <td>${jobActionMarkup(
-      item.id,
-      ["failed","retrying","waiting_download","partial","conflict"].includes(item.status),
-      ["failed","partial","conflict"].includes(item.status),
-      false,
-    )}</td>
+    <td>${item.source_kind === "directory_sync"
+      ? `<div class="job-actions"><button class="quiet-button" data-sync-rule="${escapeHTML(item.path_rule_id || "")}" type="button">重新同步此目录</button></div>`
+      : jobActionMarkup(
+          item.id,
+          ["failed","retrying","waiting_download","partial","conflict"].includes(item.status),
+          ["failed","partial","conflict"].includes(item.status),
+          false,
+        )}</td>
   </tr>`).join("") : '<tr><td colspan="8"><div class="empty">暂无符合条件的硬链接任务</div></td></tr>';
   const recent = state.hardlinks.slice(0,4);
   $("#overview-hardlinks").innerHTML = recent.length ? recent.map((item) => `<button class="activity hardlink-activity" data-go="hardlinks" type="button">${chip(item.status)}<strong title="${escapeHTML(item.name)}">${escapeHTML(item.name || "未命名")}</strong><small>${Number(item.linked || 0)} 个文件 · ${formatDate(item.completed_at)}</small></button>`).join("") : '<div class="empty">尚无硬链接记录</div>';
@@ -424,11 +426,15 @@ function renderAutomation() {
   const cleanupMode = state.systemSettings?.cleanup_auto_scan_enabled
     ? (state.systemSettings.cleanup_auto_execute_enabled ? "自动扫描并执行" : "只自动扫描")
     : "手动扫描";
+  const syncMode = state.systemSettings?.directory_sync_enabled
+    ? `每 ${state.systemSettings.directory_sync_minutes || 5} 分钟`
+    : "仅手动";
   $("#automation-status").innerHTML = `
     <div class="status-row ${online ? "" : "error"}"><i></i><span>${downloader} 连接</span><small>${online ? escapeHTML(state.qb.version) : "不可用"}</small></div>
     <div class="status-row ${waiting ? "warn" : ""}"><i></i><span>等待命名或入库</span><small>${waiting} 项</small></div>
     <div class="status-row ${failed ? "error" : ""}"><i></i><span>命名或入库失败</span><small>${failed} 项</small></div>
     <div class="status-row"><i></i><span>订阅定时检查</span><small>每 ${hours} 小时</small></div>
+    <div class="status-row"><i></i><span>下载目录同步</span><small>${syncMode}</small></div>
     <div class="status-row ${state.systemSettings?.cleanup_auto_delete_source ? "warn" : ""}"><i></i><span>重复清理</span><small>${cleanupMode}</small></div>`;
 }
 
@@ -463,6 +469,9 @@ function renderPaths() {
 function renderSystemSettings() {
   if (state.systemSettings && !state.systemDirty) {
     $("#watchlist-hours").value = state.systemSettings.watchlist_check_hours;
+    $("#directory-sync-enabled").checked = Boolean(state.systemSettings.directory_sync_enabled);
+    $("#directory-sync-minutes").value = state.systemSettings.directory_sync_minutes || 5;
+    $("#directory-sync-settle-seconds").value = state.systemSettings.directory_sync_settle_seconds ?? 120;
     $("#cleanup-auto-scan").checked = Boolean(state.systemSettings.cleanup_auto_scan_enabled);
     $("#cleanup-auto-execute").checked = Boolean(state.systemSettings.cleanup_auto_execute_enabled);
     $("#cleanup-auto-delete-source").checked = Boolean(state.systemSettings.cleanup_auto_delete_source);
@@ -486,19 +495,20 @@ function cleanupVersionName(version) {
   return String(path).split("/").filter(Boolean).at(-1) || version.id;
 }
 
-function cleanupVersionMarkup(plan, group, version) {
+function cleanupVersionMarkup(plan, group, version, keepId) {
   const recommended = version.id === group.recommended_keep_id;
-  const selectable = plan.status === "ready" && version.managed && version.safe;
+  const selectable = plan.status === "ready";
   const completed = (plan.results || []).some((item) => item.version_id === version.id && item.status === "completed");
-  const checked = selectable && !recommended && !completed;
+  const checked = version.id === keepId;
   const paths = [
     ...(version.source_paths || []).map((path) => `<span>源 · ${escapeHTML(path)}</span>`),
     ...(version.target_paths || []).map((path) => `<span>库 · ${escapeHTML(path)}</span>`),
   ].join("");
   const quality = [version.resolution, version.source, version.hdr, version.audio, version.codec].filter(Boolean);
-  const safety = !version.managed ? "非 AVS 管理，禁止清理" : !version.safe ? `需要人工处理：${version.safety_reason || "无法可靠识别"}` : completed ? "已完成清理" : "已通过基础识别";
-  return `<label class="cleanup-version ${recommended ? "recommended" : ""} ${selectable ? "" : "unsafe"}">
-    <input type="checkbox" data-cleanup-version="${escapeHTML(version.id)}" data-cleanup-group="${escapeHTML(group.id)}" data-cleanup-plan="${escapeHTML(plan.id)}" ${checked ? "checked" : ""} ${selectable && !completed ? "" : "disabled"} aria-label="选择清理 ${escapeHTML(cleanupVersionName(version))}">
+  const removable = version.managed && version.safe && !completed;
+  const safety = !version.managed ? "可以保留；非 AVS 管理，系统不会自动删除" : !version.safe ? `可以保留；其他操作需人工处理：${version.safety_reason || "无法可靠识别"}` : completed ? "这个版本已完成清理" : "不保留时将作为安全版本清理";
+  return `<label class="cleanup-version ${recommended ? "recommended" : ""} ${removable ? "" : "unsafe"}">
+    <input type="radio" name="cleanup-keep-${escapeHTML(plan.id)}-${escapeHTML(group.id)}" data-cleanup-keep="${escapeHTML(version.id)}" data-cleanup-group="${escapeHTML(group.id)}" data-cleanup-plan="${escapeHTML(plan.id)}" ${checked ? "checked" : ""} ${selectable ? "" : "disabled"} aria-label="保留 ${escapeHTML(cleanupVersionName(version))}">
     <span class="cleanup-version-main"><span class="cleanup-version-title"><strong>${escapeHTML(cleanupVersionName(version))}</strong><small>${formatBytes(version.size)}</small></span>
     <span class="cleanup-quality">${recommended ? '<i class="quality-pill keep">建议保留</i>' : ""}${quality.map((item) => `<i class="quality-pill">${escapeHTML(item)}</i>`).join("")}<i class="quality-pill warn">inode ${escapeHTML(version.inode)} · ${Number(version.link_count || 0)} 链接</i></span>
     <span class="cleanup-paths">${paths || "<span>未记录路径</span>"}<span>${escapeHTML(safety)}</span></span></span>
@@ -513,13 +523,17 @@ function renderCleanupPlans() {
     const summary = plan.summary || {};
     const groups = plan.groups || [];
     const failed = (plan.results || []).filter((item) => item.status === "failed");
-    const groupMarkup = groups.length ? groups.map((group) => `<section class="cleanup-group"><div class="cleanup-group-head"><strong>${escapeHTML(group.identity || group.id)}</strong><small>${escapeHTML(mediaTypeLabel(group.media_type))} · ${group.versions?.length || 0} 个版本</small></div>${(group.versions || []).map((version) => cleanupVersionMarkup(plan, group, version)).join("")}</section>`).join("") : '<div class="empty">本次扫描没有发现可比较的重复版本</div>';
+    const groupMarkup = groups.length ? groups.map((group) => {
+      const versions = group.versions || [];
+      const keepId = versions.some((item) => item.id === group.recommended_keep_id) ? group.recommended_keep_id : versions[0]?.id;
+      return `<section class="cleanup-group"><div class="cleanup-group-head"><strong>${escapeHTML(group.identity || group.id)}</strong><small>${escapeHTML(mediaTypeLabel(group.media_type))} · 请选择保留 1 个版本</small></div>${versions.map((version) => cleanupVersionMarkup(plan, group, version, keepId)).join("")}</section>`;
+    }).join("") : '<div class="empty">本次扫描没有发现可比较的重复版本</div>';
     const retry = plan.status === "partial" ? `<button class="quiet-button" data-cleanup-retry="${escapeHTML(plan.id)}" type="button">重试失败项</button>` : "";
-    const execute = plan.status === "ready" && groups.length ? `<button class="primary-button" data-cleanup-execute="${escapeHTML(plan.id)}" type="button">核对并执行所选项</button>` : "";
+    const execute = plan.status === "ready" && groups.length ? `<button class="primary-button" data-cleanup-execute="${escapeHTML(plan.id)}" type="button">核对并清理多余版本</button>` : "";
     return `<details class="cleanup-plan" ${index === 0 ? "open" : ""}><summary><span class="cleanup-plan-title">${cleanupPlanChip(plan.status)}<strong>${plan.policy === "space_first" ? "空间优先" : "质量优先"}扫描</strong></span><small>${formatDate(plan.created_at)} · ${groups.length} 组重复</small></summary><div class="cleanup-plan-body">
       <div class="cleanup-summary-strip"><div><span>重复组</span><strong>${Number(summary.groups || groups.length)}</strong></div><div><span>逻辑重复体积</span><strong>${formatBytes(summary.logical_duplicate_size)}</strong></div><div><span>删源后预计释放</span><strong>${formatBytes(summary.reclaimable_if_source_deleted || summary.estimated_reclaimable)}</strong></div></div>
       ${groupMarkup}${failed.length ? `<div class="cleanup-result-error">${failed.map((item) => `${escapeHTML(item.version_id)}：${escapeHTML(item.error || "未知错误")}`).join("<br>")}</div>` : ""}
-      <div class="cleanup-plan-actions"><small>可改选任意安全版本，但每组必须至少保留一个版本。清理前 AVS 会重新核对所有文件。</small><div class="head-actions">${retry}${execute}</div></div>
+      <div class="cleanup-plan-actions"><small>每组只需选择“保留哪个”；其他可验证的安全版本会自动列入清理，执行前仍会再次确认路径。</small><div class="head-actions">${retry}${execute}</div></div>
     </div></details>`;
   }).join("") : '<div class="empty">还没有符合条件的清理计划。先执行一次只读扫描。</div>';
 }
@@ -529,18 +543,23 @@ function prepareCleanupExecution(planId, trigger) {
   if (!plan) { toast("找不到清理计划，请刷新后重试", true); return; }
   const selections = [];
   const selectedVersions = [];
+  const keptVersions = [];
   for (const group of plan.groups || []) {
-    const inputs = $$(`[data-cleanup-plan="${CSS.escape(planId)}"][data-cleanup-group="${CSS.escape(group.id)}"]`);
-    const ids = inputs.filter((input) => input.checked).map((input) => input.dataset.cleanupVersion);
-    if (ids.length === (group.versions || []).length) { toast(`「${group.identity}」不能删除全部版本`, true); return; }
-    if (ids.length) {
-      selections.push({group_id: group.id, delete_version_ids: ids});
-      selectedVersions.push(...(group.versions || []).filter((item) => ids.includes(item.id)));
+    const keep = document.querySelector(`[data-cleanup-plan="${CSS.escape(planId)}"][data-cleanup-group="${CSS.escape(group.id)}"][data-cleanup-keep]:checked`);
+    if (!keep) { toast(`请为「${group.identity}」选择一个保留版本`, true); return; }
+    const completedIds = new Set((plan.results || []).filter((item) => item.status === "completed").map((item) => item.version_id));
+    const deletable = (group.versions || []).filter((item) => item.id !== keep.dataset.cleanupKeep && item.managed && item.safe && !completedIds.has(item.id));
+    if (deletable.length) {
+      selections.push({group_id: group.id, delete_version_ids: deletable.map((item) => item.id)});
+      selectedVersions.push(...deletable);
+      const kept = (group.versions || []).find((item) => item.id === keep.dataset.cleanupKeep);
+      if (kept) keptVersions.push(kept);
     }
   }
-  if (!selections.length) { toast("请至少勾选一个要清理的安全版本", true); return; }
-  state.cleanupExecution = {planId, selections, selectedVersions};
-  $("#cleanup-confirm-summary").textContent = `将处理 ${selectedVersions.length} 个版本，共 ${formatBytes(selectedVersions.reduce((sum, item) => sum + Number(item.size || 0), 0))}。默认只删除媒体库中的所选硬链接。`;
+  if (!selections.length) { toast("当前选择下没有可安全清理的多余版本", true); return; }
+  state.cleanupExecution = {planId, selections, selectedVersions, keptVersions};
+  $("#cleanup-confirm-summary").textContent = `将保留 ${keptVersions.length} 个版本，清理 ${selectedVersions.length} 个多余版本（${formatBytes(selectedVersions.reduce((sum, item) => sum + Number(item.size || 0), 0))}）。默认只删除媒体库硬链接。`;
+  $("#cleanup-confirm-kept").innerHTML = `<strong>保留：</strong>${keptVersions.map((item) => escapeHTML(cleanupVersionName(item))).join("；")}`;
   $("#cleanup-confirm-paths").innerHTML = selectedVersions.map((item) => `<div class="cleanup-confirm-item"><strong>${escapeHTML(cleanupVersionName(item))}</strong><small>${[...(item.target_paths || []), ...(item.source_paths || [])].map(escapeHTML).join("<br>")}</small></div>`).join("");
   $("#cleanup-delete-source").checked = false; $("#cleanup-understand").checked = false;
   openModal("#cleanup-confirm-modal", trigger);
@@ -808,6 +827,15 @@ function bindEvents() {
   $("#job-detail-logs").addEventListener("click", (event) => showJobLogs(event.currentTarget.dataset.jobId));
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
+  $("#directory-sync-now").addEventListener("click", (event) => runAction(event.currentTarget, "/api/directory-sync/scan", "下载目录同步已完成"));
+  $("#directory-sync-settings-form").addEventListener("input", () => { state.systemDirty = true; });
+  $("#directory-sync-settings-form").addEventListener("submit", async (event) => {
+    event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+    try {
+      const payload = {directory_sync_enabled:$("#directory-sync-enabled").checked,directory_sync_minutes:Number($("#directory-sync-minutes").value),directory_sync_settle_seconds:Number($("#directory-sync-settle-seconds").value)};
+      const result = await api("/api/settings/system", {method:"PATCH",body:JSON.stringify(payload)}); state.systemSettings = result.settings; state.systemDirty = false; toast("目录同步设置已保存"); renderSystemSettings(); renderAutomation();
+    } catch (error) { showError(error); } finally { button.disabled = false; }
+  });
   $("#cleanup-scan-form").addEventListener("submit", async (event) => {
     event.preventDefault(); const button = $("#cleanup-scan"); button.disabled = true;
     try {
@@ -854,6 +882,8 @@ function bindEvents() {
     try { await api(`/api/watchlist/${button.dataset.deleteWatch}`, {method:"DELETE"}); toast("监听已移除"); await loadAll(true); } catch (error) { toast(error.message, true); }
   });
   $("#hardlinks-body").addEventListener("click", async (event) => {
+    const sync = event.target.closest("[data-sync-rule]");
+    if (sync) { await runAction(sync, "/api/directory-sync/scan", "目录已重新同步", {path_rule_id:sync.dataset.syncRule}); return; }
     const button = event.target.closest("[data-copy-target]"); if (!button || !button.dataset.copyTarget) return;
     await copyText(button.dataset.copyTarget); toast("目标目录已复制，可在 NAS 文件管理器中打开");
   });

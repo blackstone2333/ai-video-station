@@ -73,9 +73,9 @@ def test_movie_plan_corrects_obfuscated_link_name_and_subtitle():
         plan,
     )
     renamed = {item["old_path"]: item["new_path"] for item in preview["operations"]}
-    assert renamed["DHF.2018.1080p.mp4"] == "大黄蜂 (2018) - 1080p.mp4"
-    assert renamed["DHF.2018.1080p.chs.srt"] == "大黄蜂 (2018) - 1080p.zh-CN.srt"
-    assert renamed["sample.mp4"] == "大黄蜂-Sample (2018) - 1080p.mp4"
+    assert renamed["DHF.2018.1080p.mp4"] == "大黄蜂 (2018).1080p.mp4"
+    assert renamed["DHF.2018.1080p.chs.srt"] == "大黄蜂 (2018).1080p.zh-CN.srt"
+    assert renamed["sample.mp4"] == "大黄蜂.Sample (2018).1080p.mp4"
 
 
 def test_movie_plan_drops_nested_advertising_folder_but_keeps_torrent_root():
@@ -105,10 +105,10 @@ def test_movie_plan_drops_nested_advertising_folder_but_keeps_torrent_root():
     renamed = {item["old_path"]: item["new_path"] for item in preview["operations"]}
     assert renamed[
         "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.mkv"
-    ] == "抓特务/抓特务 (2026) - 1080p.mkv"
+    ] == "抓特务/抓特务 (2026).1080p.mkv"
     assert renamed[
         "抓特务/ztw.电影港 地址发布页 www.dygang.me 收藏不迷路/ztw.1080p.chs.srt"
-    ] == "抓特务/抓特务 (2026) - 1080p.zh-CN.srt"
+    ] == "抓特务/抓特务 (2026).1080p.zh-CN.srt"
     assert preview["folder_operations"] == []
 
 
@@ -123,7 +123,7 @@ def test_movie_plan_drops_obfuscated_torrent_root_when_qb_reports_paths_relative
         {
             "kind": "file",
             "old_path": "ztw.电影港 地址发布页/ztw.1080p.mkv",
-            "new_path": "大黄蜂 (2018) - 1080p.mkv",
+            "new_path": "大黄蜂 (2018).1080p.mkv",
         }
     ]
 
@@ -142,9 +142,9 @@ def test_tv_plan_turns_bare_numbers_into_emby_episode_names():
         plan,
     )
     renamed = {item["old_path"]: item["new_path"] for item in preview["operations"]}
-    assert renamed["第2季/01.mp4"] == "第2季/漫长的季节 - S02E01.mp4"
-    assert renamed["第2季/02.mkv"] == "第2季/漫长的季节 - S02E02.mkv"
-    assert renamed["第2季/02.chs.ass"] == "第2季/漫长的季节 - S02E02.zh-CN.ass"
+    assert renamed["第2季/01.mp4"] == "第2季/漫长的季节.S02E01.mp4"
+    assert renamed["第2季/02.mkv"] == "第2季/漫长的季节.S02E02.mkv"
+    assert renamed["第2季/02.chs.ass"] == "第2季/漫长的季节.S02E02.zh-CN.ass"
     assert preview["folder_operations"] == [{"kind": "folder", "old_path": "第2季", "new_path": "Season 02"}]
 
 
@@ -178,12 +178,12 @@ def test_tv_plan_normalizes_real_sixv_numeric_episode_pack():
         {
             "kind": "file",
             "old_path": "重器.2160p/01.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
-            "new_path": "重器.2160p/重器 - S01E01 - 2160p.HD.mkv",
+                "new_path": "重器.2160p/重器.S01E01.2160p.HD.mkv",
         },
         {
             "kind": "file",
             "old_path": "重器.2160p/02.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv",
-            "new_path": "重器.2160p/重器 - S01E02 - 2160p.HD.mkv",
+                "new_path": "重器.2160p/重器.S01E02.2160p.HD.mkv",
         },
     ]
     assert preview["folder_operations"] == [
@@ -197,7 +197,7 @@ def test_anime_uses_tv_style_emby_naming():
     preview = EmbyNamingPlanner().plan_files([{"name": "01.mkv", "size": 100}], plan)
     assert plan.media_type == "anime"
     assert plan.root_name == "Rick and Morty (2026)"
-    assert preview["operations"][0]["new_path"] == "Rick and Morty - S07E01.mkv"
+    assert preview["operations"][0]["new_path"] == "Rick and Morty.S07E01.mkv"
 
 
 def test_optional_template_fields_render_without_empty_separators():
@@ -209,7 +209,7 @@ def test_optional_template_fields_render_without_empty_separators():
         video_format="1080p.BluRay.x265",
     )
     movie = EmbyNamingPlanner().plan_files([{"name": "DHF.2160p.mkv", "size": 100}], movie_plan)
-    assert movie["operations"][0]["new_path"] == "大黄蜂.Bumblebee-Part1 (2018) - IMAX - 2160p.BluRay.x265.mkv"
+    assert movie["operations"][0]["new_path"] == "大黄蜂.Bumblebee.Part1 (2018).IMAX.2160p.BluRay.x265.mkv"
 
     episode_plan = replace(
         EmbyNamingPlanner.from_release(tv_release()),
@@ -218,7 +218,7 @@ def test_optional_template_fields_render_without_empty_separators():
         video_format="1080p.WEB-DL",
     )
     episode = EmbyNamingPlanner().plan_files([{"name": "02.mkv", "size": 100}], episode_plan)
-    assert episode["operations"][0]["new_path"] == "漫长的季节.The Long Season - S02E02 - 重逢 - 1080p.WEB-DL.mkv"
+    assert episode["operations"][0]["new_path"] == "漫长的季节.The Long Season.S02E02.重逢.1080p.WEB-DL.mkv"
 
 
 def test_custom_plan_does_not_rename_files_or_folders():
@@ -244,9 +244,9 @@ def test_movie_multiversion_and_safe_name_rules():
         plan,
     )
     targets = [item["new_path"] for item in preview["operations"]]
-    assert "大黄蜂-Part1 (2018) - 2160p.mkv" in targets
-    assert "大黄蜂-Part2 (2018) - 1080p.mkv" in targets
-    assert "大黄蜂-Trailer (2018) - 1080p.mkv" in targets
+    assert "大黄蜂.Part1 (2018).2160p.mkv" in targets
+    assert "大黄蜂.Part2 (2018).1080p.mkv" in targets
+    assert "大黄蜂.Trailer (2018).1080p.mkv" in targets
     assert safe_name('A/B:C*D?"E<>|') == "A B C D E"
 
 
@@ -352,9 +352,17 @@ class FakeQB:
         self.calls.append(("rename_file", old_path, new_path))
         if self.fail_rename:
             raise UpstreamError("qBittorrent", "rename failed")
+        for item in self.file_values:
+            if item.get("name") == old_path:
+                item["name"] = new_path
 
     def rename_folder(self, hash_value, old_path, new_path):
         self.calls.append(("rename_folder", old_path, new_path))
+        old_prefix = old_path.rstrip("/") + "/"
+        for item in self.file_values:
+            name = str(item.get("name") or "")
+            if name == old_path or name.startswith(old_prefix):
+                item["name"] = new_path.rstrip("/") + name[len(old_path):]
 
     def rename_torrent(self, hash_value, name):
         self.calls.append(("rename_torrent", name))
@@ -383,6 +391,19 @@ class FakeHardlinker:
         if self.fail:
             raise UpstreamError("media library", "link failed")
         return {"status": "done", "linked": 1, "skipped": 0, "files": []}
+
+
+class FirstRenameNoopQB(FakeQB):
+    def __init__(self):
+        super().__init__()
+        self.rename_attempts = 0
+
+    def rename_file(self, hash_value, old_path, new_path):
+        self.rename_attempts += 1
+        if self.rename_attempts == 1:
+            self.calls.append(("rename_file", old_path, new_path))
+            return
+        super().rename_file(hash_value, old_path, new_path)
 
 
 class BatchHardlinker(FakeHardlinker):
@@ -487,6 +508,7 @@ def test_naming_service_stages_renames_and_releases_torrent(tmp_path):
     assert report["completed"] == 1
     assert ("category", "sixv-movie") in qb.calls
     assert any(call[0] == "rename_file" for call in qb.calls)
+    assert not any(call[0] == "rename_torrent" for call in qb.calls)
 
 
 def test_bundle_is_paused_then_only_missing_episode_files_are_selected(tmp_path):
@@ -506,7 +528,7 @@ def test_bundle_is_paused_then_only_missing_episode_files_are_selected(tmp_path)
     first = service.check(result["naming_job_id"])
     job = repository.get(result["naming_job_id"])
 
-    assert ("add", settings.qb_naming_category, "漫长的季节 (2026)", True) in qb.calls
+    assert ("add", settings.qb_naming_category, None, True) in qb.calls
     assert ("priorities", [1], [0, 2]) in qb.calls
     assert ("resume", HASH) in qb.calls
     assert first["completed"] == 0
@@ -571,6 +593,29 @@ def test_naming_verifies_realized_paths_before_marking_job_complete(tmp_path):
 
     assert report["completed"] == 1
     assert hardlinker.verify_calls == 2
+
+
+def test_unverified_downloader_rename_is_retryable_and_never_hardlinks_stale_path(tmp_path):
+    settings = naming_settings(tmp_path, naming_max_attempts=3)
+    qb = FirstRenameNoopQB()
+    hardlinker = FakeHardlinker()
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    service = NamingService(settings, repository, qb, hardlinker=hardlinker)
+
+    result = service.add_download(movie_release(), settings.qb_movie_category)
+    service.check(result["naming_job_id"])
+    waiting = repository.get(result["naming_job_id"])
+
+    assert waiting["status"] == "retrying"
+    assert "未确认实际文件改名" in waiting["last_error"]
+    assert waiting["rename_checkpoint"]["files"] == 0
+    assert not hardlinker.calls
+
+    service.check(result["naming_job_id"])
+    completed = repository.get(result["naming_job_id"])
+    assert completed["status"] == "completed"
+    assert qb.rename_attempts == 2
+    assert len(hardlinker.calls) == 1
     assert repository.get(result["naming_job_id"])["status"] == "completed"
 
 
@@ -613,7 +658,7 @@ def test_download_to_named_file_to_hardlink_chain_uses_only_avs_state(tmp_path):
         / "TV"
         / "漫长的季节 (2026)"
         / "Season 02"
-        / "漫长的季节 - S02E02.mp4"
+        / "漫长的季节.S02E02.mp4"
     )
     target = mount / "video" / "tv" / "漫长的季节 (2026)" / "Season 02" / source.name
 
@@ -825,7 +870,7 @@ def test_pending_legacy_bundle_plan_is_canonicalized_before_rename(tmp_path):
     assert updated["status"] == "completed"
     assert updated["plan"]["media_name"] == "重器"
     assert updated["plan"]["root_name"] == "重器 (2026)"
-    assert ("rename_file", "重器.2160p/27.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv", "重器.2160p/重器 - S01E27 - 2160p.HD.mkv") in qb.calls
+    assert ("rename_file", "重器.2160p/27.2160p.HD国语中字无水印[最新电影www.dyg7.com].mkv", "重器.2160p/重器.S01E27.2160p.HD.mkv") in qb.calls
     assert ("rename_folder", "重器.2160p", "Season 01") in qb.calls
 
 

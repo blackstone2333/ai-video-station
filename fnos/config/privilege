@@ -1,0 +1,7 @@
+{
+  "defaults": {
+    "run-as": "package"
+  },
+  "username": "ai-video-station",
+  "groupname": "ai-video-station"
+}

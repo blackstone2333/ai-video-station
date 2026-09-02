@@ -1,20 +1,21 @@
 # AI Video Station
 
-AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量媒体下载与整理服务。它负责站点搜索、订阅监听、下载、Emby 规范命名和同盘硬链接入库，不承担播放器或完整媒体中心的职责。
+AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量媒体下载与整理服务。它负责站点搜索、订阅监听、下载、媒体库兼容命名和同盘硬链接入库，不承担播放器或完整媒体中心的职责。整理结果使用标准媒体目录，可供飞牛影视、Emby、Jellyfin 等主流媒体软件扫描。
 
 当前内置 6v 适配器，也能在后台添加没有复杂反爬的普通 HTML 资源站。下载器支持 qBittorrent 与 Transmission，后台端口默认是 `16666`。
 
 ## v2.2.0 更新说明
 
 - 新增“重复与洗版”中心：扫描已启用的下载目录和媒体库目录，先按设备号与 inode 合并正常硬链接，再识别同一电影或同一集的不同物理版本，避免把 AVS 自己创建的硬链接误报为重复占用。
-- 支持质量优先、空间优先和逐项手动选择。质量优先默认保留综合质量更好的版本；空间优先可以保留满足观看要求的较小版本并清理 4K 等大体积版本，执行前会显示预计真实释放空间。
+- 支持质量优先、空间优先和逐组选择“保留哪个”。质量优先默认保留综合质量更好的版本；空间优先可以保留满足观看要求的较小版本，系统只把其余可验证的安全版本列入清理，执行前会分别列出保留项、待删路径和预计真实释放空间。
 - 清理采用“生成计划 → 明确确认 → 执行”的两段式流程；执行前重新核对路径、inode、文件大小、下载器状态和保留版本，陈旧计划、符号链接、路径逃逸及多文件 torrent 的部分源删除会在任何文件变化前被拒绝。
 - 整个 torrent 都可淘汰时，AVS 只通过下载器正常 API 暂停并删除任务与源数据；下载器任务已不存在或文件不受下载器管理时，AVS 可以在已配置下载根目录内直接删除。媒体库硬链接先移除，源数据后处理，不修改 qBittorrent 源码、系统或全局配置。
 - 后台、REST/OpenAPI、CLI 和 MCP 均可扫描、查看、执行与重试洗版计划。Agent 需要单独授予 `cleanup` 权限；自动扫描、自动执行和自动删源分级控制，升级后全部默认关闭。
+- 独立目录同步会扫描全部启用的“下载源目录 → 媒体库目录”映射，因此 Ani-RSS、手工复制和其他下载工具生成的稳定视频文件也能硬链接入库；活动下载、刚写入文件、样片、符号链接和同名冲突都会跳过，绝不覆盖目标文件。
 
 ## v2.1.2 更新说明
 
-- 多文件 torrent 改为逐文件后处理：单集下载完成后立即执行规范命名和硬链接，不再等待整包全部完成。
+- 多文件 torrent 改为逐文件后处理：单集下载完成后立即执行规范命名和硬链接，不再等待整包全部完成；qB/Transmission 中保留发布者的原任务名，不会为了改名而暂停或中断正在下载的任务，也不会用文件夹名称冒充文件改名。
 - 增量任务按 qB 文件索引保存检查点，定时检查和失败重试不会重复改名或重复创建硬链接。
 - Season 文件夹、torrent 显示名和最终分类仍在全部选中文件完成后统一收尾，避免移动仍在写入的目录。
 - 已开始增量处理的任务会锁定命名方案，防止中途修改标题导致同一资源分散到不同媒体目录。
@@ -22,7 +23,7 @@ AI Video Station 是一个可独立部署、也可由 AI Agent 调用的轻量�
 ## v2.1.1 更新说明
 
 - 修复国产电视剧全集包中 `01.mkv`、`01.2160p.HD.mkv` 等纯数字前缀文件无法识别集号的问题，同时避免把 `720p`、`1080p` 等分辨率误当成集号。
-- 全集标题会去掉 `[全集]` 等发布标记并按 `片名 (年份)/Season 01/片名 - S01E01 - 画质.ext` 规范整理；无法可靠识别集号的电视剧或动漫会停止入库并显示可诊断错误，避免污染 Emby 媒体库。
+- 全集标题会去掉 `[全集]` 等发布标记并按 `片名 (年份)/Season 01/片名.S01E01.画质.ext` 规范整理；无法可靠识别集号的电视剧或动漫会停止入库并显示可诊断错误，避免污染媒体库。
 - 未开始改名的旧任务和硬链接重试都会重新执行安全检查；可识别的全集包缺集选择支持纯数字前缀文件名。
 
 ## v2.1.0 更新说明
@@ -86,7 +87,7 @@ v2.1 不执行洗版清理，也不会删除旧下载、下载器任务或媒体
 - 电影、电视剧、动漫和自定义资源都会在所选下载目录下创建独立的规范资源根目录，电视剧/动漫继续保留 `Season XX` 层级。
 - AVS 复用已存在的 qB 分类，不再自动改写分类保存路径；只有分类不存在时才创建，并始终用本次任务的显式下载目录关闭自动路径管理。
 - qB 返回模糊结果时，AVS 会按 torrent hash 只读确认任务是否已经登记，避免“实际已添加、订阅却记录失败”。
-- 硬链接源文件定位支持规范路径、原始路径、文件夹部分改名和“qB 保存目录本身已是 Season 目录”等情况；目标文件仍使用 Emby 规范名称。
+- 硬链接源文件定位支持规范路径、原始路径、文件夹部分改名和“qB 保存目录本身已是 Season 目录”等情况；目标文件仍使用媒体库兼容名称。
 - 已确认源文件缺失的历史任务不会凭空恢复；应先确认下载器重新具备完整源文件，再在 AVS 中处理命名和硬链接。
 
 ## v1.5.2 更新说明
@@ -113,7 +114,7 @@ docker compose up -d --build --remove-orphans
 - 资源偏好：按日常观看、收藏、省空间三种模式排序版本；枪版始终禁止
 - 全集缺集：能按文件识别集数时只下载缺失集，不能安全拆分时保持暂停待确认
 - 自动分类：电影、电视剧、动漫、自定义四类；结合栏目、季集标记和关键词判断
-- 规范命名：从资源页/链接名称还原片名，避免 `DHF`、`大H蜂`、`01.mkv` 被 Emby 误识别
+- 规范命名：从资源页/链接名称还原片名，避免 `DHF`、`大H蜂`、`01.mkv` 被媒体软件误识别
 - 多目录映射：每类可配置多个下载源目录，每个源目录独立对应一个硬链接目标目录
 - 下载器切换：在后台配置并切换 qBittorrent / Transmission
 - 同盘硬链接：基于 `os.link` 入库，不复制媒体内容，不覆盖目标同名文件
@@ -129,7 +130,7 @@ docker compose up -d --build --remove-orphans
 
 ```text
 {title} ({year})/
-{title}.{original_title}-{part} ({year}) - {edition} - {videoFormat}.ext
+{title}.{original_title}.{part} ({year}).{edition}.{videoFormat}.ext
 ```
 
 电视剧与动漫：
@@ -137,10 +138,10 @@ docker compose up -d --build --remove-orphans
 ```text
 {title} ({year})/
 Season {season}/
-{title}.{original_title}-{part} - {season_episode} - {episode_title} - {videoFormat}.ext
+{title}.{original_title}.{part}.{season_episode}.{episode_title}.{videoFormat}.ext
 ```
 
-`original_title`、`part`、`year`、`edition`、`episode_title` 和 `videoFormat` 缺失时，会连同对应的点、横线或括号整段省略，不会留下空占位符。电视剧/动漫只有文件名明确含有 `CD`、`Disc`、`Part` 时才增加分段，不会把 01、02 两集误写成 Part1、Part2。每个视频优先采用自身文件名中的 2160p/1080p 等画质信息。
+`original_title`、`part`、`year`、`edition`、`episode_title` 和 `videoFormat` 缺失时，会连同对应的点或括号整段省略，不会留下空占位符。电视剧/动漫只有文件名明确含有 `CD`、`Disc`、`Part` 时才增加分段，不会把 01、02 两集误写成 Part1、Part2。每个视频优先采用自身文件名中的 2160p/1080p 等画质信息。
 
 自定义内容不重命名内部文件；入库根目录使用资源链接名称或 BT 种子名称，而不是下载器返回的混乱名称。
 
@@ -167,7 +168,7 @@ DOWNLOADER_TYPE=qbittorrent
 QB_HOST=192.168.31.10
 QB_PORT=8080
 QB_USERNAME=admin
-QB_PASSWORD=你的密码
+QB_PASSWORD=your_qb_password
 
 MEDIALIB_BASE_PATH=/volume1/video
 DOWNLOADS_BASE_PATH=/volume1/video/Downloads
@@ -180,6 +181,9 @@ MEDIALIB_TV_PATH=/volume1/video/video/tv
 MEDIALIB_ANIME_PATH=/volume1/video/video/anime
 MEDIALIB_CUSTOM_PATH=/volume1/video/video/custom
 MEDIALIB_HARDLINK_ENABLED=true
+DIRECTORY_SYNC_ENABLED=true
+DIRECTORY_SYNC_MINUTES=5
+DIRECTORY_SYNC_SETTLE_SECONDS=120
 ```
 
 Transmission 配置示例：
@@ -217,6 +221,21 @@ Docker 只把 `${MEDIALIB_BASE_PATH}` 挂载到容器 `/medialib` 一次。下�
 - 是否作为该类型的默认下载目录
 
 运行时配置保存在 `data/state.db`，日志和兼容迁移文件也位于 `data/`，重建容器不会丢失。首次升级会一次性导入旧 JSON，导入后不会再用旧 JSON 覆盖 SQLite。`MEDIALIB_BASE_PATH` 是 Docker 根挂载，不能在后台运行时修改；更换它需要修改 `.env` 后重建容器。
+
+## 飞牛 fnOS 安装
+
+仓库提供官方 FPK 目录，可在飞牛 fnOS 应用中心通过“手动安装”选择 `ai-video-station-2.2.0.fpk`。安装向导只要求设置一条 32–128 位后台管理密钥；下载器、站点、订阅周期和目录映射在安装后进入 AVS 管理后台配置。
+
+FPK 会申请一个 `ai-video-station/media` 共享根目录，并在其中创建：
+
+```text
+Downloads/{Movie,TV,Anime,Custom}
+Library/{Movies,TV,Anime,Custom}
+```
+
+下载目录和媒体库目录位于同一共享根，适合使用硬链接。AVS 不指定播放器：飞牛影视、Emby、Jellyfin 或其他支持标准媒体目录的软件，都可以按类型扫描 `Library` 下的目录。需要注意，qBittorrent 或 Transmission 若运行在另一个容器中，要把同一共享根挂载给下载器，并在 AVS“路径设置”里把每条规则的“下载器容器目录”填写成下载器实际看到的挂载路径。还应在 fnOS 权限设置中给下载器授予 `Downloads` 写权限，给所用媒体软件授予 `Library` 读权限；AVS 不会改动其他应用的权限或配置。
+
+开发者构建与上架材料说明见 [fnos/README.md](fnos/README.md)。
 
 ## 让 AI 读取 README 一键安装
 
@@ -419,6 +438,7 @@ NAS 根挂载：宿主机路径 → /medialib
 | `POST /api/naming/jobs/{job_id}/retry` | 单独重试一个命名或硬链接任务 |
 | `DELETE /api/naming/jobs/{job_id}` | 只删除失败的 AVS 记录，不删除下载或文件 |
 | `GET /api/hardlinks` | 硬链接入库记录 |
+| `POST /api/directory-sync/scan` | 扫描全部或指定下载目录并硬链接稳定文件 |
 | `GET /api/logs` | 脱敏后的结构化运行日志 |
 | `GET /api/settings/path-rules` | 多目录映射 |
 | `GET /api/settings/downloader` | 下载器运行时设置 |

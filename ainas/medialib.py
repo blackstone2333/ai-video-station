@@ -234,13 +234,23 @@ class MediaLibraryService:
                 old_path = self._safe_relative(operation.get("old_path"))
                 new_path = self._safe_relative(operation.get("new_path"))
                 if relative in {old_path, new_path, self._apply_folder_operations(old_path, folder_operations)}:
-                    variants.extend(
-                        [
-                            self._apply_folder_operations(old_path, folder_operations),
-                            new_path,
-                            old_path,
-                        ]
-                    )
+                    # New jobs must use the actual renamed file.  The
+                    # pre-folder-rename path remains valid while a season pack
+                    # is still downloading, but the original filename is not
+                    # an acceptable fallback. Historical jobs retain the
+                    # broader compatibility search.
+                    if naming_result.get("strict_source_paths"):
+                        variants.append(new_path)
+                    else:
+                        variants.extend(
+                            [
+                                self._apply_folder_operations(old_path, folder_operations),
+                                new_path,
+                                old_path,
+                            ]
+                        )
+        if naming_result and naming_result.get("strict_source_paths"):
+            return list(dict.fromkeys(variants))
         variants.append(relative)
         return list(dict.fromkeys(variants))
 

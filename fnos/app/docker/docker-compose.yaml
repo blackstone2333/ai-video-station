@@ -1,0 +1,28 @@
+services:
+  ai-video-station:
+    image: ghcr.io/blackstone2333/ai-video-station@sha256:2a79686112045f2cb3e43a9ad7c7b588808a90ea54d772743b16121e2d2bc541
+    container_name: fnos-ai-video-station
+    restart: unless-stopped
+    user: "${TRIM_UID}:${TRIM_GID}"
+    env_file:
+      - "${TRIM_PKGVAR}/avs.env"
+    ports:
+      - "${TRIM_SERVICE_PORT}:16666"
+    volumes:
+      - "${TRIM_PKGVAR}:/data:rw"
+      - "${TRIM_DATA_SHARE_PATHS}:/medialib:rw"
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:16666/health', timeout=3)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s

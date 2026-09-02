@@ -34,6 +34,7 @@ from .models import (
     SearchRequest,
     SitePatchRequest,
     SystemSettingsPatchRequest,
+    DirectorySyncScanRequest,
     CleanupScanRequest,
     CleanupExecuteRequest,
     WatchlistAddRequest,
@@ -163,6 +164,31 @@ def _start_scheduler(app: Flask, settings: Settings, services: AppServices) -> O
             max_instances=1,
             coalesce=True,
         )
+    if services.directory_sync:
+        def sync_download_directories() -> None:
+            if not settings.directory_sync_enabled:
+                return
+            with app.app_context():
+                report = services.directory_sync.scan()
+                if report.get("linked") or report.get("conflicts"):
+                    logger.info(
+                        "scheduled_directory_sync_completed",
+                        extra={
+                            "linked": report.get("linked", 0),
+                            "waiting": report.get("waiting", 0),
+                            "conflicts": report.get("conflicts", 0),
+                        },
+                    )
+
+        scheduler.add_job(
+            sync_download_directories,
+            "interval",
+            minutes=settings.directory_sync_minutes,
+            id="directory-sync",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
     scheduler.start()
     atexit.register(lambda: scheduler.shutdown(wait=False) if scheduler.running else None)
     return scheduler
@@ -218,6 +244,7 @@ def create_app(
         "naming_check": "naming",
         "naming_plan_preview": "naming",
         "naming_plan_update": "naming",
+        "directory_sync_scan": "naming",
         "sites_preview": "search",
         "sites_add": "settings",
         "sites_update": "settings",
@@ -692,7 +719,7 @@ def create_app(
 
     @app.get("/api/hardlinks")
     def hardlinks():
-        if not services.naming_jobs:
+        if not services.naming_jobs and not services.directory_sync:
             raise ServiceUnavailableError("hardlink history is not initialized")
         try:
             page = max(1, int(request.args.get("page", "1")))
@@ -700,13 +727,14 @@ def create_app(
         except ValueError as exc:
             raise ValidationAppError("page and per_page must be integers") from exc
         status = request.args.get("status", "done")
-        jobs = [item for item in services.naming_jobs.list() if item.get("hardlink_status")]
-        if status != "all":
-            jobs = [item for item in jobs if item.get("hardlink_status") == status]
-        jobs.sort(key=lambda item: item.get("updated_at", ""), reverse=True)
+        jobs = [
+            item for item in (services.naming_jobs.list() if services.naming_jobs else [])
+            if item.get("hardlink_status")
+        ]
         values = [
             {
                 "id": item["id"],
+                "source_kind": "naming",
                 "name": item.get("plan", {}).get("root_name"),
                 "type": item.get("plan", {}).get("media_type"),
                 "status": item.get("hardlink_status"),
@@ -722,6 +750,11 @@ def create_app(
             }
             for item in jobs
         ]
+        if services.directory_sync:
+            values.extend(services.directory_sync.repository.list())
+        if status != "all":
+            values = [item for item in values if item.get("status") == status]
+        values.sort(key=lambda item: item.get("completed_at", ""), reverse=True)
         start = (page - 1) * per_page
         return jsonify(
             {
@@ -735,6 +768,23 @@ def create_app(
                 },
             }
         )
+
+    @app.post("/api/directory-sync/scan")
+    def directory_sync_scan():
+        if not services.directory_sync:
+            raise ServiceUnavailableError("directory synchronization is not initialized")
+        body = _parse_json(DirectorySyncScanRequest)
+        report = services.directory_sync.scan(body.path_rule_id)
+        logger.info(
+            "directory_sync_requested",
+            extra={
+                "path_rule_id": body.path_rule_id,
+                "linked": report.get("linked", 0),
+                "waiting": report.get("waiting", 0),
+                "conflicts": report.get("conflicts", 0),
+            },
+        )
+        return jsonify({"success": True, **report})
 
     @app.get("/api/logs")
     def logs():
@@ -900,6 +950,12 @@ def create_app(
         scheduler = app.extensions.get("video_station_scheduler")
         if scheduler and scheduler.get_job("watchlist-check"):
             scheduler.reschedule_job("watchlist-check", trigger="interval", hours=values["watchlist_check_hours"])
+        if scheduler and scheduler.get_job("directory-sync"):
+            scheduler.reschedule_job(
+                "directory-sync",
+                trigger="interval",
+                minutes=values["directory_sync_minutes"],
+            )
         return jsonify({"success": True, "settings": values, "message": "系统定时设置已更新"})
 
     @app.get("/api/agents")

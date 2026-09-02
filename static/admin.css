@@ -280,9 +280,10 @@ footer { width: min(1460px,calc(100% - 44px)); margin: 0 auto; padding: 24px 0 3
 .cleanup-group-head small { flex: 0 0 auto; color: var(--muted); font-size: 9px; }
 .cleanup-version { display: grid; grid-template-columns: auto minmax(0,1fr); gap: 11px; padding: 13px; border-bottom: 1px solid var(--line); }
 .cleanup-version:last-child { border-bottom: 0; }
-.cleanup-version.recommended { box-shadow: inset 2px 0 0 var(--green); }
+.cleanup-version.recommended { box-shadow: inset 2px 0 0 color-mix(in srgb,var(--green) 42%,transparent); }
+.cleanup-version:has(> input:checked) { background: color-mix(in srgb,var(--green) 7%,transparent); box-shadow: inset 3px 0 0 var(--green); }
 .cleanup-version.unsafe { opacity: .62; }
-.cleanup-version > input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--red); }
+.cleanup-version > input { width: 17px; height: 17px; margin-top: 2px; accent-color: var(--green); }
 .cleanup-version-main { min-width: 0; display: grid; gap: 8px; }
 .cleanup-version-title { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
 .cleanup-version-title strong { color: var(--paper); font: 700 11px/1.4 var(--display); }
@@ -298,6 +299,7 @@ footer { width: min(1460px,calc(100% - 44px)); margin: 0 auto; padding: 24px 0 3
 .cleanup-result-error { margin-top: 12px; padding: 10px; color: var(--red); border: 1px solid color-mix(in srgb,var(--red) 35%,var(--line)); font: 9px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap: anywhere; }
 .cleanup-confirm-card { width: min(760px,100%); }
 .cleanup-confirm-paths { max-height: 260px; overflow: auto; display: grid; gap: 8px; }
+.cleanup-confirm-kept { margin-bottom: 10px; padding: 10px; color: var(--green); border: 1px solid color-mix(in srgb,var(--green) 35%,var(--line)); font-size: 9px; line-height: 1.6; }
 .cleanup-confirm-item { padding: 10px; border: 1px solid var(--line); background: var(--ink-2); }
 .cleanup-confirm-item strong { display: block; margin-bottom: 6px; font-size: 10px; }
 .cleanup-confirm-item small { display: block; color: var(--muted); font: 8px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; overflow-wrap: anywhere; }
@@ -307,6 +309,9 @@ footer { width: min(1460px,calc(100% - 44px)); margin: 0 auto; padding: 24px 0 3
 .downloader-form > .wide { grid-column: 1 / -1; }
 .downloader-fields { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 12px; padding: 15px; border: 1px solid var(--line); }
 .toggle-row.compact { min-height: 40px; }
+.directory-sync-settings { display: grid; grid-template-columns: minmax(220px,1fr) repeat(2,minmax(150px,.55fr)) auto; gap: 12px; align-items: end; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+.directory-sync-settings > label:not(.toggle-row) { display: grid; gap: 6px; color: var(--muted); font-size: 9px; }
+.directory-sync-settings input[type="number"] { width: 100%; }
 .agent-card { width: min(720px,100%); }
 .agent-card #agent-config-wrap { display: grid; gap: 8px; }
 .agent-list-head { display: flex; justify-content: space-between; margin-top: 5px; padding-top: 16px; border-top: 1px solid var(--line); font-size: 11px; }
@@ -358,6 +363,7 @@ html[data-theme="light"] .modal { background: rgba(229,225,214,.88); }
   .log-entry { grid-template-columns: 128px 70px 1fr; }.log-message { grid-column: 1 / -1; }.log-detail { grid-column: 1 / -1; }
   .job-detail-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
   .cleanup-console { position: static; }
+  .directory-sync-settings { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
 
 @media (max-width: 680px) {
@@ -380,6 +386,7 @@ html[data-theme="light"] .modal { background: rgba(229,225,214,.88); }
   .job-detail-grid { grid-template-columns: 1fr; }
   .cleanup-summary-strip { grid-template-columns: 1fr; }.cleanup-summary-strip div { border-right: 0; border-bottom: 1px solid var(--line); }.cleanup-summary-strip div:last-child { border-bottom: 0; }
   .cleanup-plan > summary,.cleanup-plan-body { padding-left: 16px; padding-right: 16px; }.cleanup-plan-actions { align-items: stretch; flex-direction: column; }.cleanup-plan-actions button { width: 100%; }
+  .directory-sync-settings { grid-template-columns: 1fr; }
 }
 
 @media (prefers-reduced-motion: reduce) { *,*::before,*::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }

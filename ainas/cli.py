@@ -200,6 +200,8 @@ def _parser(environment: Mapping[str, str]) -> argparse.ArgumentParser:
     naming_retry.add_argument("job_id")
     naming_check = subparsers.add_parser("naming-check", help="检查一个或全部命名任务")
     naming_check.add_argument("--job-id")
+    directory_sync = subparsers.add_parser("directory-sync", help="立即扫描下载目录并硬链接入库")
+    directory_sync.add_argument("--path-rule-id")
     cleanup_scan = subparsers.add_parser("cleanup-scan", help="只读扫描重复版本并生成清理计划")
     cleanup_scan.add_argument("--policy", choices=("quality_first", "space_first"), default="quality_first")
     cleanup_scan.add_argument("--type", choices=("movie", "tv", "anime", "custom"))
@@ -281,6 +283,9 @@ def main(
         elif args.command == "naming-check":
             method, path = "POST", "/api/naming/jobs/check"
             data = {"job_id": args.job_id} if args.job_id else {}
+        elif args.command == "directory-sync":
+            method, path = "POST", "/api/directory-sync/scan"
+            data = {"path_rule_id": args.path_rule_id} if args.path_rule_id else {}
         elif args.command == "cleanup-scan":
             method, path = "POST", "/api/cleanup/scan"
             data = {"policy": args.policy}
