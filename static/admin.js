@@ -904,6 +904,29 @@ function bindEvents() {
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
   $("#directory-sync-now").addEventListener("click", (event) => runAction(event.currentTarget, "/api/directory-sync/scan", "下载目录同步已完成"));
+  $("#dedup-hardlinks-now").addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const preview = await api("/api/directory-sync/deduplicate", { method: "POST", body: JSON.stringify({ dry_run: true }) });
+      if (!preview.found) {
+        toast("媒体库非常整洁，未发现指向同一视频的重复硬链接");
+        return;
+      }
+      const listSummary = (preview.items || []).slice(0, 5).map((item) => `清理：${item.removed.split("/").pop()} → 保留：${item.kept.split("/").pop()}`).join("\n");
+      const more = preview.found > 5 ? `\n... 等共 ${preview.found} 项` : "";
+      if (!confirm(`扫描到媒体库中存在 ${preview.found} 处指向同一物理文件的重复硬链接（例如同时存在于根目录与规范子目录）。\n\n${listSummary}${more}\n\n确定立即清理这些多余的重复链接吗？（完全不影响源文件和保留的规范硬链接）`)) {
+        return;
+      }
+      const executed = await api("/api/directory-sync/deduplicate", { method: "POST", body: JSON.stringify({ dry_run: false }) });
+      toast(`已成功清理 ${executed.unlinked} 个多余硬链接`);
+      await loadAll(true);
+    } catch (error) {
+      showError(error);
+    } finally {
+      button.disabled = false;
+    }
+  });
   $("#directory-sync-settings-form").addEventListener("input", () => { state.systemDirty = true; });
   $("#directory-sync-settings-form").addEventListener("submit", async (event) => {
     event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;

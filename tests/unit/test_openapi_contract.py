@@ -43,6 +43,7 @@ def test_openapi_covers_actual_agent_routes_and_scopes():
         "/api/naming/jobs/check": {"post"},
         "/api/hardlinks": {"get"},
         "/api/directory-sync/scan": {"post"},
+            "/api/directory-sync/deduplicate": {"post"},
         "/api/logs": {"get"},
         "/api/settings/sites": {"get", "post"},
         "/api/settings/sites/preview": {"post"},

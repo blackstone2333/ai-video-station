@@ -202,6 +202,8 @@ def _parser(environment: Mapping[str, str]) -> argparse.ArgumentParser:
     naming_check.add_argument("--job-id")
     directory_sync = subparsers.add_parser("directory-sync", help="立即扫描下载目录并硬链接入库")
     directory_sync.add_argument("--path-rule-id")
+    dedup = subparsers.add_parser("dedup-hardlinks", help="清理媒体库中指向同一 inode 的多余重复硬链接")
+    dedup.add_argument("--execute", action="store_true", help="实际执行删除（默认只读预览）")
     cleanup_scan = subparsers.add_parser("cleanup-scan", help="只读扫描重复版本并生成清理计划")
     cleanup_scan.add_argument("--policy", choices=("quality_first", "space_first"), default="quality_first")
     cleanup_scan.add_argument("--type", choices=("movie", "tv", "anime", "custom"))
@@ -286,6 +288,9 @@ def main(
         elif args.command == "directory-sync":
             method, path = "POST", "/api/directory-sync/scan"
             data = {"path_rule_id": args.path_rule_id} if args.path_rule_id else {}
+        elif args.command == "dedup-hardlinks":
+            method, path = "POST", "/api/directory-sync/deduplicate"
+            data = {"dry_run": not args.execute}
         elif args.command == "cleanup-scan":
             method, path = "POST", "/api/cleanup/scan"
             data = {"policy": args.policy}

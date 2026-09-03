@@ -121,7 +121,7 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>MEDIA LIBRARY</p><h2>硬链接入库记录</h2><small>目录同步也会处理 Ani-RSS、手工复制或其他下载工具写入的文件。</small></div>
-          <div class="head-actions"><select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="directory-sync-now" class="primary-button" type="button">立即同步下载目录</button></div>
+          <div class="head-actions"><select id="hardlink-filter" class="filter-input"><option value="all">全部任务</option><option value="done">成功任务</option><option value="waiting_download">等待下载</option><option value="partial">部分入库</option><option value="conflict">入库冲突</option><option value="retrying">重试中</option><option value="failed">失败</option></select><button id="dedup-hardlinks-now" class="quiet-button" type="button">清理库内重复硬链接</button><button id="directory-sync-now" class="primary-button" type="button">立即同步下载目录</button></div>
         </header>
         <form id="directory-sync-settings-form" class="directory-sync-settings">
           <label class="toggle-row compact"><span><b>自动目录同步</b><small>监听下载源目录变动自动硬链接</small></span><input id="directory-sync-enabled" type="checkbox" role="switch"></label>

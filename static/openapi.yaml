@@ -766,6 +766,20 @@ paths:
       security: [{ApiKey: []}, {AgentToken: []}]
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/DirectorySyncScanRequest'}}}}
       responses: {'200': {description: Per-rule synchronization runs and totals}, '404': {$ref: '#/components/responses/NotFound'}, default: {$ref: '#/components/responses/Problem'}}
+  /api/directory-sync/deduplicate:
+    post:
+      summary: Detect and remove redundant hardlinks pointing to the same inode in media libraries
+      x-agent-scope: naming
+      security: [{ApiKey: []}, {AgentToken: []}]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                dry_run: {type: boolean, default: true}
+      responses: {'200': {description: Deduplication report}, default: {$ref: '#/components/responses/Problem'}}
   /api/logs:
     get:
       summary: List redacted structured logs

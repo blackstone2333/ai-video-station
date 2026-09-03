@@ -214,6 +214,9 @@ class StubDirectorySync:
         self.items = [item]
         return {"running": False, "enabled": True, "runs": [item], "linked": 1, "waiting": 0, "conflicts": 0}
 
+    def deduplicate_library_links(self, dry_run=True):
+        return {"dry_run": dry_run, "found": 0, "unlinked": 0, "items": []}
+
 
 def build_test_app(tmp_path: Path):
     settings = Settings(
@@ -521,6 +524,13 @@ def test_hardlink_history_and_site_settings_api(tmp_path):
     )
     assert synchronized.status_code == 200
     assert synchronized.json["linked"] == 1
+    dedup = client.post(
+        "/api/directory-sync/deduplicate",
+        json={"dry_run": True},
+        headers=headers,
+    )
+    assert dedup.status_code == 200
+    assert dedup.json["success"] is True
     combined = client.get("/api/hardlinks?status=all", headers=headers).json["items"]
     assert {item["source_kind"] for item in combined} == {"naming", "directory_sync"}
 

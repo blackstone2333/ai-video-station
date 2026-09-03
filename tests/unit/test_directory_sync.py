@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import time
 from pathlib import Path
 
@@ -354,3 +356,53 @@ def test_directory_sync_watcher_edge_cases(tmp_path):
     # Queue event while not running does nothing
     watcher.queue_event(rule["id"], source / "test.mp4")
     assert len(watcher._pending_paths) == 0
+
+
+def test_directory_sync_skips_when_inode_already_in_target_library(tmp_path):
+    service, rule, source, target, _, settings, rules, repo = sync_env(tmp_path)
+    source_file = source / "MyShow.mp4"
+    source_file.write_bytes(b"content")
+
+    # Suppose AVS naming or user already linked it into a structured subfolder
+    structured = target / "MyShow (2024)" / "MyShow.S01E01.mp4"
+    structured.parent.mkdir(parents=True, exist_ok=True)
+    os.link(source_file, structured)
+
+    # Now directory sync runs on source_file
+    report = service.scan(rule["id"])
+
+    assert report["linked"] == 0
+    assert report["runs"][0]["already_linked"] == 1
+    # Flat duplicate was NOT created in target root
+    assert not (target / "MyShow.mp4").exists()
+    assert structured.exists()
+
+
+def test_deduplicate_library_links_removes_shallow_duplicate_retaining_structured(tmp_path):
+    service, rule, source, target, _, settings, rules, repo = sync_env(tmp_path)
+    source_file = source / "MyMovie.mp4"
+    source_file.write_bytes(b"movie-bytes")
+
+    # Structured link in movie subfolder
+    structured = target / "MyMovie (2024)" / "MyMovie.2160p.mp4"
+    structured.parent.mkdir(parents=True, exist_ok=True)
+    os.link(source_file, structured)
+
+    # Accidental duplicate flat link in target root
+    flat = target / "MyMovie.mp4"
+    os.link(source_file, flat)
+
+    # Dry run
+    dry_res = service.deduplicate_library_links(dry_run=True)
+    assert dry_res["found"] == 1
+    assert dry_res["unlinked"] == 0
+    assert structured.exists()
+    assert flat.exists()
+
+    # Execute
+    exec_res = service.deduplicate_library_links(dry_run=False)
+    assert exec_res["found"] == 1
+    assert exec_res["unlinked"] == 1
+    assert structured.exists()
+    assert not flat.exists()
+    assert source_file.exists()

@@ -279,6 +279,14 @@ class DirectorySyncService:
             else:
                 settle_seconds = int(getattr(self.settings, "directory_sync_settle_seconds", 120))
                 current_time = time.time()
+                target_inodes: Optional[Dict[tuple[int, int], Path]] = None
+
+                def get_target_inodes() -> Dict[tuple[int, int], Path]:
+                    nonlocal target_inodes
+                    if target_inodes is None:
+                        target_inodes = self._target_inodes_map(target_roots)
+                    return target_inodes
+
                 candidates = (
                     self._candidate_files_for_paths(changed_paths, source_root, target_roots)
                     if changed_paths is not None
@@ -307,9 +315,17 @@ class DirectorySyncService:
                                 conflicts += 1
                                 results.append(self._result("conflict", source, target, size=stat.st_size))
                             continue
+                        if stat.st_nlink > 1:
+                            existing_target = get_target_inodes().get((stat.st_dev, stat.st_ino))
+                            if existing_target:
+                                already_linked += 1
+                                results.append(self._result("already-linked", source, existing_target, size=stat.st_size))
+                                continue
                         os.link(source, target)
                         linked += 1
                         results.append(self._result("linked", source, target, size=stat.st_size))
+                        if target_inodes is not None:
+                            target_inodes[(stat.st_dev, stat.st_ino)] = target
                     except (OSError, ConflictError) as exc:
                         errors.append(f"{source}: {exc}")
                         results.append(self._result("failed", source, target_root, error=str(exc)))
@@ -397,6 +413,90 @@ class DirectorySyncService:
             }
         finally:
             self._lock.release()
+
+    def _target_inodes_map(self, target_roots: Sequence[Path]) -> Dict[tuple[int, int], Path]:
+        inodes: Dict[tuple[int, int], Path] = {}
+        for root in target_roots:
+            if not root.exists() or root.is_symlink():
+                continue
+            for p in root.rglob("*"):
+                if p.is_file() and not p.is_symlink() and p.suffix.casefold() in VIDEO_EXTENSIONS:
+                    try:
+                        st = p.stat()
+                        key = (st.st_dev, st.st_ino)
+                        if key not in inodes or len(p.parts) > len(inodes[key].parts):
+                            inodes[key] = p
+                    except OSError:
+                        continue
+        return inodes
+
+    def deduplicate_library_links(self, dry_run: bool = False) -> Dict[str, Any]:
+        """Find and remove redundant multiple hardlinks pointing to the same inode in media libraries."""
+        if not self.enabled:
+            return {"dry_run": dry_run, "found": 0, "unlinked": 0, "items": []}
+        rules = [item for item in self.path_rules.list() if item.get("enabled")]
+        target_roots = [
+            self._container_path(rule["target_path"]).resolve(strict=False) for rule in rules
+        ]
+        unique_roots = list(dict.fromkeys(target_roots))
+
+        inode_groups: Dict[tuple[int, int], List[tuple[Path, Path]]] = {}
+        for root in unique_roots:
+            if not root.exists() or root.is_symlink():
+                continue
+            for p in root.rglob("*"):
+                if p.is_file() and not p.is_symlink() and p.suffix.casefold() in VIDEO_EXTENSIONS:
+                    try:
+                        st = p.stat()
+                        inode_groups.setdefault((st.st_dev, st.st_ino), []).append((p, root))
+                    except OSError:
+                        continue
+
+        redundant: List[Dict[str, Any]] = []
+        for (dev, ino), items in inode_groups.items():
+            if len(items) <= 1:
+                continue
+
+            def score(pair: tuple[Path, Path]) -> tuple[int, int, int]:
+                p, r = pair
+                try:
+                    rel = p.relative_to(r)
+                    depth = len(rel.parts)
+                except ValueError:
+                    depth = 1
+                return (depth, len(p.name), len(str(p)))
+
+            sorted_items = sorted(items, key=score, reverse=True)
+            kept_path, _ = sorted_items[0]
+            for extra_path, _ in sorted_items[1:]:
+                size = 0
+                try:
+                    size = extra_path.stat().st_size
+                except OSError:
+                    pass
+                item_info = {
+                    "kept": str(kept_path),
+                    "removed": str(extra_path),
+                    "size": size,
+                    "inode": ino,
+                }
+                if not dry_run:
+                    try:
+                        extra_path.unlink()
+                        item_info["unlinked"] = True
+                    except OSError as exc:
+                        item_info["unlinked"] = False
+                        item_info["error"] = str(exc)
+                else:
+                    item_info["unlinked"] = False
+                redundant.append(item_info)
+
+        return {
+            "dry_run": dry_run,
+            "found": len(redundant),
+            "unlinked": sum(1 for item in redundant if item.get("unlinked")),
+            "items": redundant,
+        }
 
     def scan_changed(
         self,

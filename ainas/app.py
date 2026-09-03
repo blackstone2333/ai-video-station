@@ -221,6 +221,7 @@ def create_app(
         "naming_plan_preview": "naming",
         "naming_plan_update": "naming",
         "directory_sync_scan": "naming",
+        "directory_sync_deduplicate": "naming",
         "sites_preview": "search",
         "sites_add": "settings",
         "sites_update": "settings",
@@ -759,6 +760,20 @@ def create_app(
                 "waiting": report.get("waiting", 0),
                 "conflicts": report.get("conflicts", 0),
             },
+        )
+        return jsonify({"success": True, **report})
+
+    @app.post("/api/directory-sync/deduplicate")
+    def directory_sync_deduplicate():
+        if not services.directory_sync:
+            raise ServiceUnavailableError("directory synchronization is not initialized")
+        dry_run = True
+        if request.is_json and request.json:
+            dry_run = bool(request.json.get("dry_run", True))
+        report = services.directory_sync.deduplicate_library_links(dry_run=dry_run)
+        logger.info(
+            "directory_sync_deduplicate_requested",
+            extra={"dry_run": dry_run, "found": report["found"], "unlinked": report["unlinked"]},
         )
         return jsonify({"success": True, **report})
 
