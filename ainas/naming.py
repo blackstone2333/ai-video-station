@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 from .config import Settings
 from .errors import AppError, ConflictError, NotFoundError
 from .media_policies import policy_for
-from .qbittorrent import QBittorrentClient, torrent_hash
+from .qbittorrent import QBittorrentClient, normalized_task_progress, torrent_hash
 from .quality import Release, canonical_media_name, detect_episode, detect_season
 from .resource_preferences import select_episode_files
 from .watchlist import utc_now_iso
@@ -911,10 +911,25 @@ class NamingService:
 
     def _release_staging_job(self, job: Dict[str, Any]) -> None:
         try:
-            self.qb.set_category(job["torrent_hash"], job["final_category"])
+            self._set_final_category(job)
             self.qb.resume(job["torrent_hash"])
         except AppError:
             logger.exception("naming_job_release_failed", extra={"job_id": job["id"]})
+
+    def _set_final_category(self, job: Dict[str, Any]) -> None:
+        """Apply the final label without discarding a user-selected path rule."""
+        submission = job.get("submission") or {}
+        save_path = submission.get("save_path")
+        location = None
+        if save_path:
+            location = str(Path(save_path).parent)
+        setter = getattr(self.qb, "set_category")
+        try:
+            setter(job["torrent_hash"], job["final_category"], location=location)
+        except TypeError:
+            # qBittorrent's adapter has no location argument; its category
+            # mapping already points at the selected route.
+            setter(job["torrent_hash"], job["final_category"])
 
     def _process_job(self, job: Dict[str, Any]) -> Dict[str, Any]:
         now = utc_now_iso()
@@ -1255,7 +1270,7 @@ class NamingService:
 
             if callable(verifier):
                 verifier(torrent, selected, preview)
-            self.qb.set_category(job["torrent_hash"], job["final_category"])
+            self._set_final_category(job)
             self.qb.resume(job["torrent_hash"])
             if hardlink_enabled:
                 hardlink_result = self._merge_hardlink_results(
@@ -1327,7 +1342,11 @@ class NamingService:
                         "last_check": now,
                     },
                 )
-            progress = float(torrent.get("progress", 0))
+            # Downloaders disagree on whether completion is exposed as
+            # ``completion_on``, ``completed`` or a percent value.  Use the
+            # shared normalizer so a completed task with a stale 0% field is
+            # not left in waiting_download forever.
+            progress = normalized_task_progress(dict(torrent))
             if progress < 0.999999:
                 return self.repository.update(
                     job["id"],

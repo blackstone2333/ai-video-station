@@ -23,6 +23,7 @@ STATUS_NAMES = {
     5: "stalledUP",
     6: "uploading",
 }
+_UNSET_LOCATION = object()
 
 
 class TransmissionClient:
@@ -143,13 +144,16 @@ class TransmissionClient:
             return None
         save_path = str(value.get("downloadDir") or "")
         name = str(value.get("name") or "")
-        return {
+        result = {
             **value,
             "hash": value.get("hashString"),
             "progress": value.get("percentDone", 0),
             "save_path": save_path,
             "content_path": str(PurePosixPath(save_path) / name) if save_path and name else save_path,
         }
+        result["progress"] = normalized_task_progress(result)
+        result["completed"] = result["progress"] >= 0.999999
+        return result
 
     def files(self, hash_value: str) -> List[Dict[str, Any]]:
         value = self._get(hash_value, ["files", "fileStats"])
@@ -189,9 +193,12 @@ class TransmissionClient:
     def _rename_path(self, hash_value: str, old_path: str, new_path: str) -> None:
         old = PurePosixPath(old_path)
         new = PurePosixPath(new_path)
-        if old.parent != new.parent:
-            raise UpstreamError("Transmission", "renaming across directories is not supported")
-        self._rpc("torrent-rename-path", {"ids": [hash_value], "path": str(old), "name": new.name})
+        # Transmission accepts a relative path for ``path`` and a relative
+        # destination in ``name``.  Keeping the full destination here allows
+        # season-folder moves used by AVS; older versions that only support a
+        # basename still work for the common same-directory case.
+        destination = new.name if old.parent == new.parent else str(new)
+        self._rpc("torrent-rename-path", {"ids": [hash_value], "path": str(old), "name": destination})
 
     def rename_file(self, hash_value: str, old_path: str, new_path: str) -> None:
         self._rename_path(hash_value, old_path, new_path)
@@ -203,16 +210,15 @@ class TransmissionClient:
         # Files/folders are already renamed explicitly. Transmission has no safe display-name-only RPC.
         return None
 
-    def set_category(self, hash_value: str, category: str) -> None:
+    def set_category(self, hash_value: str, category: str, location: Any = _UNSET_LOCATION) -> None:
         self._rpc("torrent-set", {"ids": [hash_value], "labels": [category]})
-        self._rpc(
-            "torrent-set-location",
-            {
-                "ids": [hash_value],
-                "location": str(self.settings.download_path_for_category(category)),
-                "move": True,
-            },
-        )
+        if location is _UNSET_LOCATION:
+            location = self.settings.download_path_for_category(category)
+        if location is not None:
+            self._rpc(
+                "torrent-set-location",
+                {"ids": [hash_value], "location": str(location), "move": True},
+            )
 
     def resume(self, hash_value: str) -> None:
         self._rpc("torrent-start", {"ids": [hash_value]})

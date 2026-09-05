@@ -240,9 +240,13 @@ class CleanupService:
                 "audio": getattr(release, "language", None),
                 "codec": getattr(release, "encoding", None),
                 "torrent_hash": (job or {}).get("torrent_hash"),
-                "managed": True,
-                "safe": bool(reliable),
-                "safety_reason": None if reliable else "episode-unresolved",
+                # A file is managed only when AVS can tie it to a naming job.
+                # External downloads (Ani-RSS/manual tools) remain visible for
+                # duplicate inspection but are never eligible for source
+                # deletion without an explicit ownership record.
+                "managed": bool(job),
+                "safe": bool(reliable and job),
+                "safety_reason": None if (reliable and job) else ("unmanaged-source" if not job else "episode-unresolved"),
                 "_identity": identity,
                 "_release": release,
                 "_path": path,
@@ -414,6 +418,10 @@ class CleanupService:
             self._validate_version(version, roots, readable=True)
 
         active_chosen = [value for value in chosen if not value.get("_already_completed")]
+        if delete_source:
+            unmanaged = [value for value in active_chosen if not value.get("managed")]
+            if unmanaged:
+                raise ConflictError("cannot delete source files that are not owned by an AVS naming job")
         managed_torrents = self._validate_whole_torrents(active_chosen) if delete_source else set()
         return chosen, roots, managed_torrents
 

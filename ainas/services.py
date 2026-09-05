@@ -143,6 +143,16 @@ class DownloadService:
             link_name=link_display_name(download_link, title),
         )
 
+    @staticmethod
+    def _require_release(release: Optional[Release], *, title: str) -> Release:
+        """Never fall back when the parser deliberately rejected a CAM/TS release."""
+        if release is None:
+            raise ValidationAppError(
+                "已拒绝枪版/TS 资源",
+                [{"field": "download_link", "message": f"资源疑似枪版或 TS：{title}", "code": "CAM_RELEASE_BLOCKED"}],
+            )
+        return release
+
     def download(
         self,
         result_id: str,
@@ -242,9 +252,10 @@ class DownloadService:
             self._manual_type(selected_title, source_name, media_type)
         )
         result_id = release_id("manual", download_link)
-        release = build_release(selected_title, source_name, "", download_link, resolved_type)
-        if release is None:
-            release = self._fallback_release(result_id, download_link, selected_title, resolved_type)
+        release = self._require_release(
+            build_release(selected_title, source_name, "", download_link, resolved_type),
+            title=source_name,
+        )
         release = self._with_manual_metadata(release, original_title, edition, episode_title)
         category = self._category_for(resolved_type)
         route = self._route_for(resolved_type, path_rule_id)
@@ -286,11 +297,10 @@ class DownloadService:
                 "source_name": source_name,
                 "naming": None,
             }
-        release = build_release(selected_title, source_name, "", download_link, resolved_type)
-        if release is None:
-            release = self._fallback_release(
-                release_id("manual", download_link), download_link, selected_title, resolved_type
-            )
+        release = self._require_release(
+            build_release(selected_title, source_name, "", download_link, resolved_type),
+            title=source_name,
+        )
         release = self._with_manual_metadata(release, original_title, edition, episode_title)
         category = self._category_for(resolved_type)
         route = self._route_for(resolved_type, path_rule_id)
@@ -325,14 +335,18 @@ class DownloadService:
         path_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         metadata = parse_torrent_metadata(content)
-        selected_title = (title or metadata.name).strip()
+        selected_title = (title or "").strip()
+        if selected_title.casefold() in {"手动下载", "manual download"}:
+            selected_title = ""
+        selected_title = selected_title or metadata.name.strip()
         resolved_type = self._require_manual_type(
             self._manual_type(selected_title, metadata.name, media_type)
         )
         magnet = f"magnet:?xt=urn:btih:{metadata.info_hash}&dn={quote(metadata.name, safe='')}"
-        release = build_release(selected_title, metadata.name, "", magnet, resolved_type)
-        if release is None:
-            release = self._fallback_release(metadata.info_hash[:16], magnet, selected_title, resolved_type)
+        release = self._require_release(
+            build_release(selected_title, metadata.name, "", magnet, resolved_type),
+            title=metadata.name,
+        )
         release = self._with_manual_metadata(release, original_title, edition, episode_title)
         category = self._category_for(resolved_type)
         route = self._route_for(resolved_type, path_rule_id)
@@ -361,7 +375,10 @@ class DownloadService:
         path_rule_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         metadata = parse_torrent_metadata(content)
-        selected_title = (title or metadata.name).strip()
+        selected_title = (title or "").strip()
+        if selected_title.casefold() in {"手动下载", "manual download"}:
+            selected_title = ""
+        selected_title = selected_title or metadata.name.strip()
         resolved_type = self._manual_type(selected_title, metadata.name, media_type)
         if resolved_type == "auto":
             return {
@@ -373,9 +390,10 @@ class DownloadService:
                 "naming": None,
             }
         magnet = f"magnet:?xt=urn:btih:{metadata.info_hash}&dn={quote(metadata.name, safe='')}"
-        release = build_release(selected_title, metadata.name, "", magnet, resolved_type)
-        if release is None:
-            release = self._fallback_release(metadata.info_hash[:16], magnet, selected_title, resolved_type)
+        release = self._require_release(
+            build_release(selected_title, metadata.name, "", magnet, resolved_type),
+            title=metadata.name,
+        )
         release = self._with_manual_metadata(release, original_title, edition, episode_title)
         category = self._category_for(resolved_type)
         route = self._route_for(resolved_type, path_rule_id)
@@ -493,6 +511,21 @@ class WatchlistService:
         episode_seen = set()
         bundle_selected = False
         for release in releases:
+            # 6V frequently publishes mainland dramas as bare ``01/02/03``
+            # names.  The parser intentionally keeps strict defaults for
+            # generic search, so subscription matching enables the numeric
+            # prefix fallback here where the episodic context is known.
+            if not release.episode and not release.episodes:
+                token = detect_episode(
+                    " ".join(filter(None, (release.link_name, release.title, release.download_link))),
+                    allow_numeric_prefix=True,
+                )
+                if token:
+                    release = replace(
+                        release,
+                        episode=token,
+                        season=release.season or 1,
+                    )
             if release.episodes:
                 missing = [episode for episode in release.episodes if episode not in downloaded_episodes and episode not in episode_seen]
                 if missing and not bundle_selected:

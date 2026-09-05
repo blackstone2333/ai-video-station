@@ -434,17 +434,38 @@ class DirectorySyncService:
         """Find and remove redundant multiple hardlinks pointing to the same inode in media libraries."""
         if not self.enabled:
             return {"dry_run": dry_run, "found": 0, "unlinked": 0, "items": []}
+        # Synchronization and cleanup mutate the same media-library tree.
+        # Serialize them so a cleanup plan cannot race a concurrent hardlink.
+        if not self._lock.acquire(blocking=False):
+            return {"dry_run": dry_run, "found": 0, "unlinked": 0, "items": [], "running": True}
+        try:
+            return self._deduplicate_library_links_locked(dry_run)
+        finally:
+            self._lock.release()
+
+    def _deduplicate_library_links_locked(self, dry_run: bool = False) -> Dict[str, Any]:
         rules = [item for item in self.path_rules.list() if item.get("enabled")]
         target_roots = [
             self._container_path(rule["target_path"]).resolve(strict=False) for rule in rules
         ]
-        unique_roots = list(dict.fromkeys(target_roots))
+        # De-duplicate and collapse nested targets.  A rule such as ``TV`` plus
+        # ``TV/Anime`` must not traverse the same inode twice (which used to
+        # make a perfectly valid link look redundant and eligible for removal).
+        unique_roots = []
+        for root in sorted(set(target_roots), key=lambda value: len(value.parts)):
+            if any(self._inside(root, parent) for parent in unique_roots):
+                continue
+            unique_roots.append(root)
 
         inode_groups: Dict[tuple[int, int], List[tuple[Path, Path]]] = {}
+        seen_paths: Set[Path] = set()
         for root in unique_roots:
             if not root.exists() or root.is_symlink():
                 continue
             for p in root.rglob("*"):
+                if p in seen_paths:
+                    continue
+                seen_paths.add(p)
                 if p.is_file() and not p.is_symlink() and p.suffix.casefold() in VIDEO_EXTENSIONS:
                     try:
                         st = p.stat()
@@ -614,6 +635,15 @@ class DirectorySyncWatcher:
             try:
                 self._observer.start()
                 self._running = True
+                # Compensate for files created while AVS was stopped.  The
+                # targeted scan is still event-driven afterwards; this one
+                # startup pass is intentionally bounded to enabled rules.
+                for rule in self.path_rules.list():
+                    if rule.get("enabled"):
+                        try:
+                            self.queue_event(str(rule.get("id")), self.service._container_path(rule["source_path"]))
+                        except Exception:
+                            continue
                 logger.info("directory_sync_watcher_started", extra={"watches": len(self._watches)})
             except Exception as exc:
                 logger.error("directory_sync_watcher_start_failed", extra={"error": str(exc)})
@@ -742,6 +772,19 @@ class DirectorySyncWatcher:
         if not getattr(self.settings, "directory_sync_enabled", True) or not self.service.enabled:
             return
         try:
-            self.service.scan_changed(path_rule_id=rule_id, changed_paths=list(paths), is_auto=True)
+            result = self.service.scan_changed(path_rule_id=rule_id, changed_paths=list(paths), is_auto=True)
+            # Do not lose events when the downloader is still active, the
+            # settle window has not elapsed, or another sync holds the lock.
+            # Such files often generate no second filesystem event.
+            if result.get("running") or result.get("waiting"):
+                with self._lock:
+                    self._pending_paths.setdefault(rule_id, set()).update(paths)
+                    settle = max(1.0, float(getattr(self.settings, "directory_sync_settle_seconds", 120)))
+                    timer = threading.Timer(settle, self._trigger_sync, args=(rule_id,))
+                    timer.daemon = True
+                    self._timers[rule_id] = timer
+                    timer.start()
         except Exception as exc:  # pragma: no cover
             logger.error("directory_sync_trigger_error", extra={"rule_id": rule_id, "error": str(exc)})
+            with self._lock:
+                self._pending_paths.setdefault(rule_id, set()).update(paths)
