@@ -100,13 +100,14 @@ class DirectorySyncService:
         path_rules: Any,
         naming_jobs: Any = None,
         downloader: Any = None,
+        operation_lock: threading.RLock | None = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
         self.path_rules = path_rules
         self.naming_jobs = naming_jobs
         self.downloader = downloader
-        self._lock = threading.Lock()
+        self._lock = operation_lock or threading.RLock()
 
     @property
     def enabled(self) -> bool:
@@ -273,6 +274,20 @@ class DirectorySyncService:
         if not source_root.exists() or source_root.is_symlink():
             errors.append(f"下载目录不存在或不可安全访问：{source_root}")
         else:
+            if source_root == target_root or self._inside(source_root, target_root) or self._inside(target_root, source_root):
+                errors.append(f"源目录与目标目录不能相同或互相嵌套：{source_root} -> {target_root}")
+                item = {
+                    "id": uuid.uuid4().hex,
+                    "source_kind": "directory_sync",
+                    "name": f"目录同步 · {rule.get('name') or rule.get('id')}",
+                    "type": rule.get("media_type"),
+                    "path_rule_id": rule.get("id"),
+                    "source": str(source_root), "target": str(target_root),
+                    "status": "conflict", "scanned": 0, "linked": 0, "skipped": 0,
+                    "already_linked": 0, "conflicts": 0, "waiting": 0, "files": [],
+                    "error": errors[-1], "attempts": 0, "last_check": now, "completed_at": now,
+                }
+                return self.repository.save(item)
             target_root.mkdir(parents=True, exist_ok=True)
             if source_root.stat().st_dev != target_root.stat().st_dev:
                 errors.append(f"源目录与媒体库不在同一文件系统：{source_root} -> {target_root}")
