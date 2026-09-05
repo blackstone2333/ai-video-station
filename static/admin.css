@@ -37,6 +37,7 @@ body { margin: 0; min-height: 100vh; background:
   var(--ink); }
 button, input, select, textarea { font: inherit; }
 button { color: inherit; }
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, summary:focus-visible, a:focus-visible { outline: 2px solid var(--cyan); outline-offset: 3px; }
 .hidden { display: none !important; }
 html[data-theme="light"] body { background: radial-gradient(circle at 82% -12%, rgba(22,127,123,.09), transparent 32rem), linear-gradient(90deg, transparent 49.8%, rgba(20,28,25,.025) 50%, transparent 50.2%), var(--ink); }
 html[data-theme="light"] .grain { opacity: .025; mix-blend-mode: multiply; }
@@ -107,7 +108,8 @@ h1 em { color: var(--amber); font-style: normal; }
 @keyframes reveal { from { opacity: 0; transform: translateY(8px); } }
 .panel-grid { display: grid; grid-template-columns: repeat(12,1fr); gap: 16px; }
 .span-7 { grid-column: span 7; }.span-6 { grid-column: span 6; }.span-5 { grid-column: span 5; }.span-12 { grid-column: span 12; }
-.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); min-width: 0; box-shadow: 0 12px 32px rgba(0,0,0,.08); }
+html[data-theme="light"] .card { box-shadow: 0 10px 26px rgba(34,42,37,.07); }
 .card-head { min-height: 78px; padding: 19px 22px; display: flex; align-items: center; justify-content: space-between; gap: 20px; border-bottom: 1px solid var(--line); }
 .card-head p { margin-bottom: 7px; font-size: 8px; }
 .card-head h2 { margin: 0; font: 700 20px/1.1 var(--display); letter-spacing: .01em; }
@@ -355,6 +357,13 @@ footer { width: min(1460px,calc(100% - 44px)); margin: 0 auto; padding: 24px 0 3
 .log-detail { grid-column: 4; }
 .log-detail summary { color: var(--muted); cursor: pointer; }
 .log-detail pre { margin: 8px 0 0; padding: 10px; max-height: 220px; overflow: auto; white-space: pre-wrap; color: var(--muted); background: var(--ink-2); border: 1px solid var(--line); }
+
+/* Keep dense operational tables usable on narrow screens without shrinking
+   text to unreadable sizes. */
+.table-wrap { scrollbar-color: var(--muted) transparent; scrollbar-width: thin; }
+.table-wrap table { min-width: 780px; }
+.empty { display: block; min-height: 120px; padding: 34px 22px; color: var(--muted); text-align: center; border: 1px dashed var(--line); background: color-mix(in srgb, var(--ink-2) 32%, transparent); line-height: 1.7; }
+.empty::before { content: "✦"; display: block; margin-bottom: 8px; color: var(--amber); font-size: 18px; opacity: .8; }
 
 html[data-theme="light"] td { border-bottom-color: rgba(20,28,25,.075); }
 html[data-theme="light"] tbody tr:hover { background: rgba(20,28,25,.025); }

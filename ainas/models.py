@@ -180,7 +180,12 @@ class PathRuleDeleteRequest(StrictModel):
 
 class PaginationParams(StrictModel):
     page: int = Field(default=1, ge=1)
-    page_size: int = Field(default=50, ge=1, le=200)
+    page_size: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        validation_alias=AliasChoices("page_size", "per_page"),
+    )
 
 
 class NamingJobFilterRequest(PaginationParams):
@@ -281,6 +286,12 @@ class SystemSettingsPatchRequest(StrictModel):
 
 class DirectorySyncScanRequest(StrictModel):
     path_rule_id: Optional[str] = Field(default=None, min_length=8, max_length=64)
+
+
+class DirectorySyncDeduplicateRequest(StrictModel):
+    """Options for the potentially destructive library deduplication pass."""
+
+    dry_run: bool = True
 
 
 class CleanupScanRequest(StrictModel):

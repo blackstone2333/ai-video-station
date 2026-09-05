@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Type, TypeVar
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -35,6 +36,7 @@ from .models import (
     SitePatchRequest,
     SystemSettingsPatchRequest,
     DirectorySyncScanRequest,
+    DirectorySyncDeduplicateRequest,
     CleanupScanRequest,
     CleanupExecuteRequest,
     WatchlistAddRequest,
@@ -221,7 +223,10 @@ def create_app(
         "naming_plan_preview": "naming",
         "naming_plan_update": "naming",
         "directory_sync_scan": "naming",
-        "directory_sync_deduplicate": "naming",
+        "directory_sync_retry": "naming",
+        # Deduplication can remove media-library links and therefore belongs to
+        # the destructive cleanup scope, not the read/organization naming scope.
+        "directory_sync_deduplicate": CLEANUP_SCOPE,
         "sites_preview": "search",
         "sites_add": "settings",
         "sites_update": "settings",
@@ -363,6 +368,12 @@ def create_app(
         watchlist_item = None
         if request.is_json:
             body = _parse_json(ManualDownloadRequest)
+            # Validate the complete authorization set before touching the
+            # downloader.  Without this preflight an Agent with only the
+            # ``download`` scope could enqueue a torrent and only then fail
+            # while creating the requested subscription.
+            if body.subscribe:
+                require_scope("watchlist")
             result = services.download.manual_link(
                 body.download_link,
                 body.title,
@@ -390,6 +401,8 @@ def create_app(
             if len(content) > settings.max_torrent_upload_bytes:
                 raise ValidationAppError("BT 种子文件过大")
             form = _parse_value(ManualTorrentRequest, request.form.to_dict())
+            if form.subscribe:
+                require_scope("watchlist")
             result = services.download.manual_torrent(
                 content,
                 upload.filename,
@@ -586,12 +599,18 @@ def create_app(
     def cleanup_plans():
         if not services.cleanup: raise ServiceUnavailableError("cleanup is not initialized")
         try:
-            page=max(1,int(request.args.get("page","1"))); per_page=min(100,max(1,int(request.args.get("per_page","20"))))
+            page=max(1,int(request.args.get("page","1")))
+            per_page=min(100,max(1,int(request.args.get("per_page", request.args.get("page_size","20")))))
         except ValueError as exc: raise ValidationAppError("page and per_page must be integers") from exc
         items=services.cleanup.repository.list(); status=request.args.get("status")
         if status: items=[x for x in items if x.get("status")==status]
         items.sort(key=lambda x:x.get("created_at",""),reverse=True); total=len(items)
-        return jsonify({"success":True,"items":items[(page-1)*per_page:page*per_page],"total":total,"page":page,"per_page":per_page})
+        total_pages = (total + per_page - 1) // per_page
+        return jsonify({"success":True,"items":items[(page-1)*per_page:page*per_page],
+                        "total":total,"page":page,"per_page":per_page,"page_size":per_page,
+                        "total_pages": total_pages,
+                        "pagination":{"page":page,"per_page":per_page,"page_size":per_page,
+                                       "total":total,"total_pages":total_pages}})
 
     @app.get("/api/cleanup/plans/<plan_id>")
     def cleanup_plan(plan_id: str):
@@ -617,7 +636,7 @@ def create_app(
             raise ServiceUnavailableError("automatic naming is not initialized")
         try:
             page = max(1, int(request.args.get("page", "1")))
-            per_page = min(100, max(1, int(request.args.get("per_page", "20"))))
+            per_page = min(100, max(1, int(request.args.get("per_page", request.args.get("page_size", "20")))))
         except ValueError as exc:
             raise ValidationAppError("page and per_page must be integers") from exc
         status = request.args.get("status")
@@ -631,9 +650,15 @@ def create_app(
             {
                 "success": True,
                 "items": selected,
+                "page": page,
+                "per_page": per_page,
+                "page_size": per_page,
+                "total": len(items),
+                "total_pages": (len(items) + per_page - 1) // per_page,
                 "pagination": {
                     "page": page,
                     "per_page": per_page,
+                    "page_size": per_page,
                     "total": len(items),
                     "total_pages": (len(items) + per_page - 1) // per_page,
                 },
@@ -700,7 +725,7 @@ def create_app(
             raise ServiceUnavailableError("hardlink history is not initialized")
         try:
             page = max(1, int(request.args.get("page", "1")))
-            per_page = min(100, max(1, int(request.args.get("per_page", "20"))))
+            per_page = min(100, max(1, int(request.args.get("per_page", request.args.get("page_size", "20")))))
         except ValueError as exc:
             raise ValidationAppError("page and per_page must be integers") from exc
         status = request.args.get("status", "done")
@@ -737,9 +762,15 @@ def create_app(
             {
                 "success": True,
                 "items": values[start : start + per_page],
+                "page": page,
+                "per_page": per_page,
+                "page_size": per_page,
+                "total": len(values),
+                "total_pages": (len(values) + per_page - 1) // per_page,
                 "pagination": {
                     "page": page,
                     "per_page": per_page,
+                    "page_size": per_page,
                     "total": len(values),
                     "total_pages": (len(values) + per_page - 1) // per_page,
                 },
@@ -763,13 +794,31 @@ def create_app(
         )
         return jsonify({"success": True, **report})
 
+    @app.post("/api/directory-sync/runs/<run_id>/retry")
+    def directory_sync_retry(run_id: str):
+        """Retry a failed or partial directory-sync run.
+
+        Runs are immutable audit records; retrying creates a fresh scan using
+        the original path-rule selection, so an operator can safely retry
+        without mutating historical diagnostics.
+        """
+        if not services.directory_sync:
+            raise ServiceUnavailableError("directory synchronization is not initialized")
+        previous = services.directory_sync.repository.get(run_id)
+        report = services.directory_sync.scan(previous.get("path_rule_id"))
+        logger.info(
+            "directory_sync_retry_requested",
+            extra={"run_id": run_id, "path_rule_id": previous.get("path_rule_id")},
+        )
+        return jsonify({"success": True, "retried_from": run_id, **report}), 202
+
     @app.post("/api/directory-sync/deduplicate")
     def directory_sync_deduplicate():
         if not services.directory_sync:
             raise ServiceUnavailableError("directory synchronization is not initialized")
         dry_run = True
-        if request.is_json and request.json:
-            dry_run = bool(request.json.get("dry_run", True))
+        if request.is_json:
+            dry_run = _parse_json(DirectorySyncDeduplicateRequest).dry_run
         report = services.directory_sync.deduplicate_library_links(dry_run=dry_run)
         logger.info(
             "directory_sync_deduplicate_requested",
@@ -789,7 +838,36 @@ def create_app(
         query = (request.args.get("query") or "").strip() or None
         if query and len(query) > 200:
             raise ValidationAppError("log query cannot exceed 200 characters")
-        items = read_log_entries(settings.logs_path, limit=limit, level=level, query=query)
+        since_raw = (request.args.get("since") or "").strip() or None
+        since: datetime | None = None
+        if since_raw:
+            try:
+                # Accept the ISO-8601 values emitted by JsonFormatter, plus a
+                # trailing ``Z`` commonly used by API clients.
+                since = datetime.fromisoformat(since_raw.replace("Z", "+00:00"))
+                if since.tzinfo is None:
+                    since = since.replace(tzinfo=timezone.utc)
+                since = since.astimezone(timezone.utc)
+            except ValueError as exc:
+                raise ValidationAppError("since must be an ISO-8601 timestamp") from exc
+        # Read the full bounded window when filtering by time so entries that
+        # predate the requested cursor do not consume the result limit.
+        items = read_log_entries(settings.logs_path, limit=1000 if since else limit, level=level, query=query)
+        if since:
+            filtered = []
+            for item in items:
+                timestamp = item.get("timestamp")
+                if not timestamp:
+                    continue
+                try:
+                    parsed = datetime.fromisoformat(str(timestamp).replace("Z", "+00:00"))
+                    if parsed.tzinfo is None:
+                        parsed = parsed.replace(tzinfo=timezone.utc)
+                    if parsed.astimezone(timezone.utc) >= since:
+                        filtered.append(item)
+                except ValueError:
+                    continue
+            items = filtered[:limit]
         return jsonify({"success": True, "items": items, "count": len(items)})
 
     @app.get("/api/settings/sites")

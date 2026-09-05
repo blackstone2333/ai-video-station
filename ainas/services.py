@@ -752,13 +752,15 @@ def build_services(settings: Settings) -> AppServices:
     naming_jobs = NamingJobRepository(settings.naming_jobs_path, state_store)
     hardlinker = MediaLibraryService(settings, path_rules=path_rules)
     naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker, path_rules=path_rules)
-    cleanup = CleanupService(settings, CleanupPlanRepository(state_store), path_rules, naming_jobs, qb)
+    media_operation_lock = threading.RLock()
+    cleanup = CleanupService(settings, CleanupPlanRepository(state_store), path_rules, naming_jobs, qb, media_operation_lock)
     directory_sync = DirectorySyncService(
         settings,
         DirectorySyncRepository(state_store),
         path_rules,
         naming_jobs,
         qb,
+        operation_lock=media_operation_lock,
     )
     directory_watcher = DirectorySyncWatcher(
         service=directory_sync,

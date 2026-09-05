@@ -831,7 +831,9 @@ def test_unresolved_episode_never_reaches_hardlink(tmp_path):
     service.check(result["naming_job_id"])
     job = repository.get(result["naming_job_id"])
 
-    assert job["status"] == "failed"
+    # An unresolved file is isolated for manual selection; it must not block
+    # the rest of an episodic task, and the job remains retryable.
+    assert job["status"] == "waiting_selection"
     assert job["hardlink_status"] is None
     assert job["result"]["unresolved_episodes"] == ["重器.2160p/幕后花絮.2160p.HD.mkv"]
     assert "无法识别集号" in job["last_error"]

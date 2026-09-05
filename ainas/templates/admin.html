@@ -266,7 +266,7 @@
       <article class="card">
         <header class="card-head action-head">
           <div><p>DIAGNOSTICS</p><h2>系统运行日志</h2></div>
-          <div class="head-actions"><select id="log-level" class="filter-input"><option value="">全部级别</option><option value="debug">DEBUG</option><option value="info">INFO</option><option value="warning">WARNING</option><option value="error">ERROR</option><option value="critical">CRITICAL</option></select><input id="log-query" class="filter-input" type="search" placeholder="搜索消息、任务 ID 或路径"><input id="log-since" class="filter-input time-filter" type="datetime-local" aria-label="起始时间"><span id="log-count" class="count-chip">0 条</span><button id="refresh-logs" class="primary-button" type="button">刷新日志</button></div>
+          <div class="head-actions"><select id="log-level" class="filter-input"><option value="">全部级别</option><option value="debug">DEBUG</option><option value="info">INFO</option><option value="warning">WARNING</option><option value="error">ERROR</option><option value="critical">CRITICAL</option></select><input id="log-query" class="filter-input" type="search" placeholder="搜索消息、任务 ID 或路径"><input id="log-since" class="filter-input time-filter" type="datetime-local" aria-label="起始时间"><span id="log-count" class="count-chip">0 条</span><button id="clear-log-filters" class="quiet-button" type="button">清除筛选</button><button id="refresh-logs" class="primary-button" type="button">刷新日志</button></div>
         </header>
         <div id="log-list" class="log-list"><div class="empty">正在读取日志…</div></div>
       </article>

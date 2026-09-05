@@ -57,13 +57,16 @@ class CleanupPlanRepository:
 class CleanupService:
     """Find physical duplicate versions and execute explicitly confirmed plans."""
 
-    def __init__(self, settings: Any, repository: CleanupPlanRepository, path_rules: Any, naming_jobs: Any, downloader: Any) -> None:
+    def __init__(self, settings: Any, repository: CleanupPlanRepository, path_rules: Any, naming_jobs: Any, downloader: Any, operation_lock: threading.RLock | None = None) -> None:
         self.settings = settings
         self.repository = repository
         self.path_rules = path_rules
         self.naming_jobs = naming_jobs
         self.downloader = downloader
-        self._lock = threading.RLock()
+        # Share this lock with directory synchronization in the application so
+        # cleanup cannot race a concurrent hardlink mutation. Unit callers may
+        # omit it and receive an isolated lock.
+        self._lock = operation_lock or threading.RLock()
 
     def _container_path(self, value: str | Path) -> Path:
         path = Path(value)

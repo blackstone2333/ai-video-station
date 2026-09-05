@@ -303,8 +303,12 @@ function renderNaming() {
 }
 
 function renderPagination(kind, meta = {}) {
-  const total = Number(meta.total ?? meta.total_count ?? meta.count ?? (kind === "naming" ? state.naming.length : state.hardlinks.length));
-  const page = Number(meta.page ?? state[`${kind}Page`] ?? 1); const perPage = Number(meta.per_page ?? meta.page_size ?? 50);
+  // API responses may expose pagination either at the top level or under
+  // `pagination` (the latter is the canonical contract).  Accept both so a
+  // rolling backend upgrade cannot silently render an incorrect page count.
+  const nested = meta?.pagination || meta?.meta?.pagination || meta?.meta || {};
+  const total = Number(nested.total ?? nested.total_count ?? nested.count ?? meta.total ?? meta.total_count ?? meta.count ?? (kind === "naming" ? state.naming.length : state.hardlinks.length));
+  const page = Number(nested.page ?? meta.page ?? state[`${kind}Page`] ?? 1); const perPage = Number(nested.per_page ?? nested.page_size ?? meta.per_page ?? meta.page_size ?? 50);
   const pages = Math.max(1, Math.ceil(total / perPage)); const root = $(`#${kind}-pagination`); if (!root) return;
   root.innerHTML = `<span>共 ${total} 条 · 第 ${page}/${pages} 页</span><div><button class="quiet-button" data-page-kind="${kind}" data-page="${page - 1}" type="button" ${page <= 1 ? "disabled" : ""}>上一页</button><button class="quiet-button" data-page-kind="${kind}" data-page="${page + 1}" type="button" ${page >= pages ? "disabled" : ""}>下一页</button></div>`;
 }
@@ -527,7 +531,8 @@ function cleanupVersionMarkup(plan, group, version, isDeleteChecked) {
 function renderCleanupPlans() {
   const filter = $("#cleanup-status-filter").value;
   const plans = state.cleanupPlans.filter((item) => !filter || item.status === filter);
-  $("#cleanup-plan-count").textContent = `${state.cleanupMeta.total ?? state.cleanupPlans.length} 个计划`;
+  const cleanupPagination = state.cleanupMeta?.pagination || state.cleanupMeta?.meta?.pagination || state.cleanupMeta?.meta || state.cleanupMeta || {};
+  $("#cleanup-plan-count").textContent = `${cleanupPagination.total ?? cleanupPagination.total_count ?? state.cleanupPlans.length} 个计划`;
   $("#cleanup-plans").innerHTML = plans.length ? plans.map((plan, index) => {
     const summary = plan.summary || {};
     const groups = plan.groups || [];
@@ -645,14 +650,24 @@ async function loadAll(silent = false) {
     const requests = await Promise.allSettled(paths.map((path) => api(path)));
     const authFailure = requests.find((item) => item.status === "rejected" && item.reason instanceof AuthError);
     if (authFailure) throw authFailure.reason;
+    // Keep the last known value when an individual endpoint is temporarily
+    // unavailable.  Promise.allSettled is intentionally used here, but a
+    // rejected request must not blank an otherwise healthy panel.
     const value = (index, fallback) => requests[index].status === "fulfilled" ? requests[index].value : fallback;
-    const downloadsResult = value(1, {tasks:[]});
-    state.qb = value(0, {configured:false,connected:false}); state.downloads = downloadsResult.tasks; state.hiddenDownloads = downloadsResult.hidden_tasks || [];
-    state.downloadSyncedAt = downloadsResult.synced_at || new Date().toISOString();
-    state.watchlist = value(2, {items:[]}).items; const namingResult = value(3, {items:[]}); const hardlinksResult = value(4, {items:[]}); state.naming = namingResult.items || []; state.hardlinks = hardlinksResult.items || []; state.namingMeta = namingResult; state.hardlinksMeta = hardlinksResult;
-    state.sites = value(5, {items:[]}).items; state.paths = value(6, {settings:state.paths}).settings; state.pathRules = value(7, {items:[]}).items;
-    state.downloaderSettings = value(8, {settings:state.downloaderSettings}).settings; state.systemSettings = value(9, {settings:state.systemSettings}).settings; state.agents = value(10, {items:[]}).items; state.logs = value(11, {items:[]}).items;
-    const cleanupResult = value(12, {items:[], total:0}); state.cleanupPlans = cleanupResult.items || []; state.cleanupMeta = cleanupResult;
+    const downloadsResult = value(1, {tasks: state.downloads, hidden_tasks: state.hiddenDownloads, synced_at: state.downloadSyncedAt});
+    state.qb = value(0, state.qb || {configured:false,connected:false}); state.downloads = downloadsResult.tasks || state.downloads; state.hiddenDownloads = downloadsResult.hidden_tasks || state.hiddenDownloads;
+    state.downloadSyncedAt = downloadsResult.synced_at || state.downloadSyncedAt || new Date().toISOString();
+    const watchResult = value(2, {items: state.watchlist}); state.watchlist = watchResult.items || state.watchlist;
+    const namingResult = value(3, {items: state.naming, pagination: state.namingMeta?.pagination}); const hardlinksResult = value(4, {items: state.hardlinks, pagination: state.hardlinksMeta?.pagination});
+    state.naming = namingResult.items || state.naming; state.hardlinks = hardlinksResult.items || state.hardlinks; state.namingMeta = namingResult; state.hardlinksMeta = hardlinksResult;
+    const sitesResult = value(5, {items: state.sites}); state.sites = sitesResult.items || state.sites;
+    const pathsResult = value(6, {settings:state.paths}); state.paths = pathsResult.settings || state.paths;
+    const pathRulesResult = value(7, {items: state.pathRules}); state.pathRules = pathRulesResult.items || state.pathRules;
+    const downloaderSettingsResult = value(8, {settings:state.downloaderSettings}); state.downloaderSettings = downloaderSettingsResult.settings || state.downloaderSettings;
+    const systemSettingsResult = value(9, {settings:state.systemSettings}); state.systemSettings = systemSettingsResult.settings || state.systemSettings;
+    const agentsResult = value(10, {items:state.agents}); state.agents = agentsResult.items || state.agents;
+    const logsResult = value(11, {items:state.logs}); state.logs = logsResult.items || state.logs;
+    const cleanupResult = value(12, {items:state.cleanupPlans, pagination:state.cleanupMeta?.pagination}); state.cleanupPlans = cleanupResult.items || state.cleanupPlans; state.cleanupMeta = cleanupResult;
     renderAll(); $("#auth-modal").classList.add("hidden");
     if (!silent && requests.some((item) => item.status === "rejected")) toast("部分数据暂时不可用", true);
   } catch (error) {
@@ -900,6 +915,7 @@ function bindEvents() {
   $("#naming-filter").addEventListener("change", renderNaming); $("#hardlink-filter").addEventListener("change", renderHardlinks); $("#cleanup-status-filter").addEventListener("change", renderCleanupPlans);
   $("#log-level").addEventListener("change", renderLogs); $("#log-query").addEventListener("input", renderLogs); $("#refresh-logs").addEventListener("click", loadLogs);
   $("#log-since").addEventListener("change", loadLogs);
+  $("#clear-log-filters").addEventListener("click", () => { $("#log-level").value = ""; $("#log-query").value = ""; $("#log-since").value = ""; loadLogs(); });
   $("#job-detail-logs").addEventListener("click", (event) => showJobLogs(event.currentTarget.dataset.jobId));
   $("#check-watchlist").addEventListener("click", (event) => runAction(event.currentTarget, "/api/watchlist/check", "监听检查已完成"));
   $("#check-naming").addEventListener("click", (event) => runAction(event.currentTarget, "/api/naming/jobs/check", "命名任务已处理"));
@@ -929,7 +945,7 @@ function bindEvents() {
   });
   $("#directory-sync-settings-form").addEventListener("input", () => { state.systemDirty = true; });
   $("#directory-sync-settings-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+    event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); button.disabled = true;
     try {
       const payload = {directory_sync_enabled:$("#directory-sync-enabled").checked,directory_sync_settle_seconds:Number($("#directory-sync-settle-seconds").value)};
       const result = await api("/api/settings/system", {method:"PATCH",body:JSON.stringify(payload)}); state.systemSettings = result.settings; state.systemDirty = false; toast("目录同步设置已保存"); renderSystemSettings(); renderAutomation();
@@ -988,8 +1004,9 @@ function bindEvents() {
   });
   $("#site-form").addEventListener("submit", async (event) => {
     event.preventDefault();
+    const form = event.currentTarget;
     const payload = {name:$("#site-name").value.trim(),adapter:"generic",enabled:true,base_urls:[$("#site-base").value.trim()],search_url:$("#site-search-url").value.trim(),result_selector:$("#site-result-selector").value.trim(),title_selector:$("#site-title-selector").value.trim(),link_selector:$("#site-link-selector").value.trim(),download_selector:$("#site-download-selector").value.trim(),default_type:$("#site-default-type").value,tv_path_patterns:$("#site-tv-patterns").value.split(",").map((item)=>item.trim()).filter(Boolean),anime_path_patterns:$("#site-anime-patterns").value.split(",").map((item)=>item.trim()).filter(Boolean),allow_private_hosts:$("#site-allow-private").checked};
-    try { await api("/api/settings/sites", {method:"POST",body:JSON.stringify(payload)}); toast("站点已保存"); event.currentTarget.reset(); await loadAll(true); } catch (error) { toast(error.message, true); }
+    try { await api("/api/settings/sites", {method:"POST",body:JSON.stringify(payload)}); toast("站点已保存"); form.reset(); await loadAll(true); } catch (error) { toast(error.message, true); }
   });
   $("#sites-body").addEventListener("click", async (event) => {
     const toggle = event.target.closest("[data-toggle-site]"); const remove = event.target.closest("[data-delete-site]");
@@ -1007,7 +1024,7 @@ function bindEvents() {
   $("#manual-link").addEventListener("input", () => { updateManualLinkName(); resetManualPreview(); });
   $("#manual-download-form").addEventListener("input", (event) => { if (!["manual-subscribe","manual-viewing-mode","manual-link"].includes(event.target.id)) resetManualPreview(); });
   $("#manual-download-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); const button = $("#submit-manual-download"); const source = $('input[name="download-source"]:checked').value;
+    event.preventDefault(); const formElement = event.currentTarget; const button = $("#submit-manual-download"); const source = $('input[name="download-source"]:checked').value;
     const shared = manualSharedPayload(); const file = source === "torrent" ? $("#manual-torrent").files[0] : null;
     button.disabled = true;
     try {
@@ -1026,21 +1043,21 @@ function bindEvents() {
       }
       if (source === "magnet") await api("/api/download/manual", {method:"POST",body:JSON.stringify({...shared,download_link:link})});
       else { const form = new FormData(); form.append("torrent", file); Object.entries(shared).forEach(([key,value]) => { if (value !== undefined) form.append(key,value); }); await api("/api/download/manual", {method:"POST",body:form}); }
-      toast("资源已识别并加入下载队列"); $("#download-modal").classList.add("hidden"); event.currentTarget.reset(); manualSourceChanged(); updateManualLinkName(); await loadAll(true);
+      toast("资源已识别并加入下载队列"); $("#download-modal").classList.add("hidden"); formElement.reset(); manualSourceChanged(); updateManualLinkName(); await loadAll(true);
     } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#watchlist-form").addEventListener("submit", async (event) => {
-    event.preventDefault(); const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+    event.preventDefault(); const form = event.currentTarget; const button = form.querySelector('button[type="submit"]'); button.disabled = true;
     try {
       await api("/api/watchlist/add", {method:"POST",body:JSON.stringify({keyword:$("#watchlist-keyword").value.trim(),type:$("#watchlist-type").value,viewing_mode:$("#watchlist-viewing-mode").value,path_rule_id:$("#watchlist-path-rule").value || undefined})});
-      toast("订阅已保存"); $("#watchlist-modal").classList.add("hidden"); event.currentTarget.reset(); await loadAll(true);
+      toast("订阅已保存"); $("#watchlist-modal").classList.add("hidden"); form.reset(); await loadAll(true);
     } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#path-hardlink-enabled").addEventListener("change", () => { state.pathsDirty = true; });
   $("#save-hardlink-toggle").addEventListener("click", async (event) => {
-    event.currentTarget.disabled = true;
+    const button = event.currentTarget; button.disabled = true;
     try { const result = await api("/api/settings/paths", {method:"PATCH",body:JSON.stringify({medialib_hardlink_enabled:$("#path-hardlink-enabled").checked})}); state.paths = result.settings; state.pathsDirty = false; toast("硬链接开关已保存"); }
-    catch (error) { toast(error.message, true); } finally { event.currentTarget.disabled = false; }
+    catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
   $("#add-path-rule").addEventListener("click", () => editPathRule());
   $("#path-rules-groups").addEventListener("click", async (event) => {
@@ -1065,9 +1082,9 @@ function bindEvents() {
     event.preventDefault(); const button = $("#save-downloader"); const payload = {downloader_type:$("#downloader-type").value,qb_host:$("#qb-host").value.trim() || null,qb_port:Number($("#qb-port").value),qb_username:$("#qb-username").value.trim(),qb_use_https:$("#qb-https").checked,qb_verify_ssl:$("#qb-verify").checked,transmission_host:$("#tr-host").value.trim() || null,transmission_port:Number($("#tr-port").value),transmission_username:$("#tr-username").value.trim(),transmission_use_https:$("#tr-https").checked,transmission_verify_ssl:$("#tr-verify").checked,transmission_rpc_path:$("#tr-rpc-path").value.trim()}; if ($("#qb-password").value) payload.qb_password=$("#qb-password").value; if ($("#tr-password").value) payload.transmission_password=$("#tr-password").value;
     button.disabled = true; try { const result = await api("/api/settings/downloader", {method:"PATCH",body:JSON.stringify(payload)}); state.downloaderSettings = result.settings; state.downloaderDirty = false; toast("下载器配置已保存并切换"); await loadAll(true); } catch (error) { toast(error.message, true); } finally { button.disabled = false; }
   });
-  $("#test-downloader").addEventListener("click", async (event) => { event.currentTarget.disabled = true; try { const result = await api("/api/settings/downloader/test", {method:"POST",body:"{}"}); toast(`${result.client === "transmission" ? "Transmission" : "qBittorrent"} 连接成功：${result.version}`); } catch (error) { toast(error.message, true); } finally { event.currentTarget.disabled = false; } });
+  $("#test-downloader").addEventListener("click", async (event) => { const button = event.currentTarget; button.disabled = true; try { const result = await api("/api/settings/downloader/test", {method:"POST",body:"{}"}); toast(`${result.client === "transmission" ? "Transmission" : "qBittorrent"} 连接成功：${result.version}`); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
   $("#agent-connect").addEventListener("click", (event) => openModal("#agent-modal", event.currentTarget));
-  $("#create-agent-config").addEventListener("click", async (event) => { const name = $("#agent-name").value.trim(); const scopes = $$("input[name=agent-scope]:checked").map((input) => input.value); if (name.length < 2 || !scopes.length) { toast("请填写有意义的 Agent 名称并至少选择一个范围", true); return; } event.currentTarget.disabled = true; try { const result = await api("/api/agents/bootstrap", {method:"POST",body:JSON.stringify({name,scopes})}); const prompt = agentPrompt(result.agent); $("#agent-config").value = prompt; $("#agent-config-wrap").classList.remove("hidden"); await copyText(prompt); toast("连接方案已复制，请发给你的 Agent"); await loadAll(true); } catch (error) { toast(error.message, true); } finally { event.currentTarget.disabled = false; } });
+  $("#create-agent-config").addEventListener("click", async (event) => { const button = event.currentTarget; const name = $("#agent-name").value.trim(); const scopes = $$("input[name=agent-scope]:checked").map((input) => input.value); if (name.length < 2 || !scopes.length) { toast("请填写有意义的 Agent 名称并至少选择一个范围", true); return; } button.disabled = true; try { const result = await api("/api/agents/bootstrap", {method:"POST",body:JSON.stringify({name,scopes})}); const prompt = agentPrompt(result.agent); $("#agent-config").value = prompt; $("#agent-config-wrap").classList.remove("hidden"); await copyText(prompt); toast("连接方案已复制，请发给你的 Agent"); await loadAll(true); } catch (error) { toast(error.message, true); } finally { button.disabled = false; } });
   $("#copy-agent-config").addEventListener("click", async () => { await copyText($("#agent-config").value); toast("连接方案已复制"); });
   $("#agent-list").addEventListener("click", async (event) => { const button = event.target.closest("[data-revoke-agent]"); if (!button || !confirm("撤销后该 Agent 将立即无法访问，确定继续吗？")) return; try { await api(`/api/agents/${button.dataset.revokeAgent}`, {method:"DELETE"}); toast("Agent 授权已撤销"); await loadAll(true); } catch (error) { showError(error); } });
   $("#agent-scopes-form").addEventListener("submit", async (event) => {

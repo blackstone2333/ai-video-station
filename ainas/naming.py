@@ -1222,7 +1222,13 @@ class NamingService:
                         "last_error": None,
                         "result": preview,
                         "processed_file_indices": sorted(processed_indices),
-                        "hardlink_status": "waiting_download" if hardlink_enabled else "disabled",
+                        # Preserve partial/conflict outcomes from this batch;
+                        # only an incomplete download should remain waiting.
+                        "hardlink_status": (
+                            str(hardlink_result.get("status") or "waiting_download")
+                            if hardlink_enabled
+                            else "disabled"
+                        ),
                         "hardlink_attempts": 0,
                         "hardlink_error": None,
                         "hardlink_result": hardlink_result if hardlink_enabled else None,
@@ -1431,6 +1437,16 @@ class NamingService:
                 if job["status"] in {"failed", "missing_in_downloader"}:
                     job = self.repository.update(job_id, {"status": "retrying", "attempts": 0, "last_error": None})
                 if job["status"] == "completed":
+                    # A completed and already-linked record is terminal.  A
+                    # routine status check must not downgrade it merely
+                    # because the downloader has since forgotten the torrent.
+                    if job.get("hardlink_status") in {"done", "disabled", None}:
+                        return {
+                            "running": False,
+                            "checked": 1,
+                            "completed": 1,
+                            "results": [job],
+                        }
                     if job.get("hardlink_status") == "failed":
                         job = self.repository.update(
                             job_id,
