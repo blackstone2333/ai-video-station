@@ -788,3 +788,8 @@ class DirectorySyncWatcher:
             logger.error("directory_sync_trigger_error", extra={"rule_id": rule_id, "error": str(exc)})
             with self._lock:
                 self._pending_paths.setdefault(rule_id, set()).update(paths)
+                if rule_id not in self._timers:
+                    timer = threading.Timer(5.0, self._trigger_sync, args=(rule_id,))
+                    timer.daemon = True
+                    self._timers[rule_id] = timer
+                    timer.start()
