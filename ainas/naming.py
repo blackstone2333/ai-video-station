@@ -1107,7 +1107,6 @@ class NamingService:
             )
         linking_batch = False
         try:
-            self._require_safe_episode_plan(selected, plan, preview)
             verifier = getattr(self.hardlinker, "verify_named_sources", None)
             already_named = False
             if files_complete and callable(verifier):
@@ -1120,6 +1119,12 @@ class NamingService:
             ready = [item for item in completed_files if int(item["index"]) not in processed_indices]
             checkpoint = dict(job.get("rename_checkpoint") or {})
             completed_operation_keys = self._completed_operation_keys(job, preview)
+            # Validate only the files that are actually complete in this
+            # pass.  One malformed/unresolved episode in a 33-episode pack
+            # must not block renaming and linking the other 32 files.
+            if policy_for(plan.media_type).episodic and ready:
+                unresolved = set(self._unresolved_episode_paths(ready, plan, preview))
+                ready = [item for item in ready if str(item.get("name") or "") not in unresolved]
             if already_named:
                 completed_operation_keys = [
                     self._operation_key(operation) for operation in preview.get("operations") or []
@@ -1232,6 +1237,22 @@ class NamingService:
                         "checks": checks,
                         "last_check": now,
                         "last_error": None,
+                    },
+                )
+
+            # All selected files are complete, but one or more could not be
+            # assigned an episode number.  Keep the job actionable instead of
+            # failing the whole pack after the valid files were processed.
+            unresolved_all = self._unresolved_episode_paths(selected, plan, preview)
+            if unresolved_all:
+                return self.repository.update(
+                    job["id"],
+                    {
+                        "status": "waiting_selection",
+                        "checks": checks,
+                        "last_check": now,
+                        "last_error": f"无法识别集号：{unresolved_all[0]}",
+                        "processed_file_indices": sorted(processed_indices),
                     },
                 )
 
