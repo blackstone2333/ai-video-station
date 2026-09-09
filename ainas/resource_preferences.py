@@ -49,14 +49,29 @@ PROFILES = {
 }
 
 
-def profile_for(mode: str | None, snapshot: Mapping[str, Any] | None = None) -> ResourceProfile:
+def profile_for(
+    mode: str | None,
+    snapshot: Mapping[str, Any] | None = None,
+    media_type: str | None = None,
+) -> ResourceProfile:
     selected = mode if mode in VIEWING_MODES else "daily"
     baseline = PROFILES[selected]
+    default_resolution = baseline.resolution_order
+    if selected == "daily" and media_type == "movie":
+        default_resolution = ("2160p", "1080p", "720p", "4320p", "480p", "unknown")
     if not snapshot:
+        if default_resolution != baseline.resolution_order:
+            return ResourceProfile(
+                mode=selected,
+                resolution_order=default_resolution,
+                source_order=baseline.source_order,
+                audio_order=baseline.audio_order,
+                size_preference=baseline.size_preference,
+            )
         return baseline
     return ResourceProfile(
         mode=selected,
-        resolution_order=tuple(snapshot.get("resolution_order") or baseline.resolution_order),
+        resolution_order=tuple(snapshot.get("resolution_order") or default_resolution),
         source_order=tuple(snapshot.get("source_order") or baseline.source_order),
         audio_order=tuple(snapshot.get("audio_order") or baseline.audio_order),
         size_preference=str(snapshot.get("size_preference") or baseline.size_preference),

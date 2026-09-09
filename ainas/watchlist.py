@@ -132,7 +132,7 @@ class WatchlistRepository:
                 "path_rule_id": path_rule_id,
                 "path_rule_snapshot": deepcopy(path_rule_snapshot) if path_rule_snapshot else None,
                 "viewing_mode": viewing_mode,
-                "resource_preferences": deepcopy(resource_preferences) if resource_preferences else profile_for(viewing_mode).to_dict(),
+                "resource_preferences": deepcopy(resource_preferences) if resource_preferences else profile_for(viewing_mode, media_type=media_type).to_dict(),
             }
             data["items"].append(item)
             self._write(data)

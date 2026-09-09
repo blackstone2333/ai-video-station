@@ -459,7 +459,7 @@ class WatchlistService:
                 )
         elif self.path_rules and media_type != "auto":
             route = self.path_rules.resolve(media_type)
-        preferences = profile_for(viewing_mode, resource_preferences).to_dict()
+        preferences = profile_for(viewing_mode, resource_preferences, media_type=media_type).to_dict()
         return self.repository.add(
             keyword,
             media_type,
@@ -499,7 +499,7 @@ class WatchlistService:
             item_id,
             {
                 "viewing_mode": mode,
-                "resource_preferences": profile_for(mode, snapshot).to_dict(),
+                "resource_preferences": profile_for(mode, snapshot, media_type=item.get("type")).to_dict(),
             },
         )
 
@@ -567,13 +567,19 @@ class WatchlistService:
             if resolved_type == "auto":
                 resolved_type = outcome.media_type if outcome.media_type != "auto" else releases[0].media_type
                 base_changes["type"] = resolved_type
+                if resolved_type == "movie":
+                    current_prefs = item.get("resource_preferences")
+                    if not current_prefs or current_prefs.get("resolution_order", [])[:2] == ["1080p", "2160p"]:
+                        upgraded = profile_for(item.get("viewing_mode"), current_prefs, media_type="movie").to_dict()
+                        base_changes["resource_preferences"] = upgraded
+                        item["resource_preferences"] = upgraded
 
             downloaded_links = set(item.get("downloaded_links", []))
             downloaded_episodes = set(item.get("downloaded_episodes", []))
             episode_sources = dict(item.get("episode_sources") or {})
             viewing_mode = item.get("viewing_mode")
             ranked_releases = (
-                rank_releases(releases, profile_for(viewing_mode, item.get("resource_preferences")))
+                rank_releases(releases, profile_for(viewing_mode, item.get("resource_preferences"), media_type=resolved_type))
                 if viewing_mode
                 else releases
             )

@@ -52,6 +52,20 @@ def test_collection_and_compact_profiles_change_resolution_order_without_filteri
     assert len(rank_releases([full_hd, four_k, hd], profile_for("daily"))) == 3
 
 
+def test_movie_daily_profile_defaults_to_4k_resolution_order():
+    movie_profile = profile_for("daily", media_type="movie")
+    assert movie_profile.resolution_order[0] == "2160p"
+    assert movie_profile.resolution_order[1] == "1080p"
+
+    tv_profile = profile_for("daily", media_type="tv")
+    assert tv_profile.resolution_order[0] == "1080p"
+    assert tv_profile.resolution_order[1] == "2160p"
+
+    anime_profile = profile_for("daily", media_type="anime")
+    assert anime_profile.resolution_order[0] == "1080p"
+    assert anime_profile.resolution_order[1] == "2160p"
+
+
 def test_episode_file_selection_downloads_only_missing_episodes_and_their_subtitles():
     files = [
         {"index": 0, "name": "Season 01/Show.S01E01.mkv", "size": 1000, "priority": 1},
