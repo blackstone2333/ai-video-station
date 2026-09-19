@@ -102,3 +102,35 @@ def test_media_type_inference_recognizes_anime_and_episode_series():
     assert infer_media_type("奥本海默 1080p", "https://site.test/mj/123.html", "movie") == "movie"
     assert infer_media_type("奥本海默 1080p", "https://site.test/movie/1.html", "movie") == "movie"
     assert infer_media_type("Python 学习资料", "https://site.test/files/1.html", "custom") == "custom"
+
+
+import pytest
+from ainas.quality import expand_episode
+
+
+@pytest.mark.parametrize("token, expected", [
+    ("S01E03-04", "S01E03-E04"),
+    ("S01E03-E04", "S01E03-E04"),
+    ("S01E03_E04", "S01E03-E04"),
+    ("S01E03E04", "S01E03-E04"),
+    ("S01E03~04", "S01E03-E04"),
+    ("S01E03至04", "S01E03-E04"),
+    ("EP03-04", "E03-E04"),
+    ("E03-E04", "E03-E04"),
+    ("第03-04集", "E03-E04"),
+    ("第03至04话", "E03-E04"),
+])
+def test_joined_episode_tokens_share_naming_and_coverage(token, expected):
+    assert detect_episode(f"Show.{token}.1080p.mkv") == expected
+    assert detect_episode_range(f"Show.{token}.1080p.mkv", 1) == ("S01E03", "S01E04")
+    assert expand_episode(expected, 1) == ("S01E03", "S01E04")
+
+
+def test_joined_episode_parser_does_not_consume_resolution_or_invalid_ranges():
+    assert detect_episode("Show.S01E03-1080p.mkv") == "S01E03"
+    assert detect_episode("Show.S01E04-03.mkv") is None
+    assert detect_episode_range("Show.S01E04-03.mkv") == ()
+    assert detect_episode_range("Show.S01.480-720p.mkv") == ()
+    assert detect_episode("03-04.1080p.mkv", allow_numeric_prefix=True) == "E03-E04"
+    assert expand_episode("S00E03-E04", 1) == ("S00E03", "S00E04")
+    assert expand_episode("S01E04-E03") == ()

@@ -4,7 +4,7 @@ from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
-from .quality import Release, detect_episode
+from .quality import Release, detect_episode, detect_season, expand_episode
 
 
 VIEWING_MODES = {"daily", "collection", "compact"}
@@ -114,22 +114,12 @@ def rank_releases(releases: Iterable[Release], profile: ResourceProfile) -> List
     return sorted(releases, key=lambda item: release_score(item, profile), reverse=True)
 
 
-def _normalize_episode(value: str | None, seasons: set[int]) -> str | None:
-    if not value:
-        return None
-    if value.startswith("S"):
-        return value.split("-E", 1)[0]
-    if value.startswith("E") and len(seasons) == 1:
-        return f"S{next(iter(seasons)):02d}{value}"
-    return value
-
-
 def select_episode_files(files: Iterable[Mapping[str, Any]], wanted_episodes: Sequence[str]) -> Dict[str, Any]:
     values = [dict(item) for item in files if item.get("name") is not None]
-    wanted = set(wanted_episodes)
+    wanted = {episode for value in wanted_episodes for episode in expand_episode(value)}
     seasons = {int(item[1:3]) for item in wanted if len(item) >= 6 and item.startswith("S")}
-    video_episodes: Dict[int, str] = {}
-    subtitle_episodes: Dict[int, str] = {}
+    video_episodes: Dict[int, set[str]] = {}
+    subtitle_episodes: Dict[int, set[str]] = {}
     unparsed_videos: List[int] = []
     all_indices: List[int] = []
     for fallback_index, item in enumerate(values):
@@ -137,17 +127,24 @@ def select_episode_files(files: Iterable[Mapping[str, Any]], wanted_episodes: Se
         all_indices.append(index)
         name = str(item.get("name") or "")
         suffix = PurePosixPath(name).suffix.casefold()
-        episode = _normalize_episode(detect_episode(name, allow_numeric_prefix=True), seasons)
+        season = detect_season(name)
+        if season is None and len(seasons) == 1:
+            season = next(iter(seasons))
+        episodes = set(expand_episode(detect_episode(PurePosixPath(name).name, allow_numeric_prefix=True), season))
         if suffix in VIDEO_EXTENSIONS:
-            if episode:
-                video_episodes[index] = episode
+            if episodes:
+                video_episodes[index] = episodes
             elif not any(token in name.casefold() for token in ("sample", "trailer", "preview", "预告")):
                 unparsed_videos.append(index)
-        elif suffix in SUBTITLE_EXTENSIONS and episode:
-            subtitle_episodes[index] = episode
+        elif suffix in SUBTITLE_EXTENSIONS and episodes:
+            subtitle_episodes[index] = episodes
 
-    matched = sorted(wanted.intersection(video_episodes.values()))
-    if unparsed_videos or set(matched) != wanted:
+    # A joined video is indivisible. Its explicitly named companion episodes
+    # must travel with the missing episode; report that coverage to callers.
+    selected_videos = {index: episodes for index, episodes in video_episodes.items() if episodes & wanted}
+    covered = set().union(*selected_videos.values()) if selected_videos else set()
+    matched = sorted(covered & wanted)
+    if not wanted or unparsed_videos or set(matched) != wanted:
         return {
             "safe": False,
             "reason": "episode-files-not-separable",
@@ -156,8 +153,8 @@ def select_episode_files(files: Iterable[Mapping[str, Any]], wanted_episodes: Se
             "matched_episodes": matched,
         }
     selected = sorted(
-        [index for index, episode in video_episodes.items() if episode in wanted]
-        + [index for index, episode in subtitle_episodes.items() if episode in wanted]
+        list(selected_videos)
+        + [index for index, episodes in subtitle_episodes.items() if episodes <= covered]
     )
     return {
         "safe": True,
@@ -165,4 +162,5 @@ def select_episode_files(files: Iterable[Mapping[str, Any]], wanted_episodes: Se
         "selected_indices": selected,
         "skipped_indices": sorted(set(all_indices) - set(selected)),
         "matched_episodes": matched,
+        "covered_episodes": sorted(covered),
     }

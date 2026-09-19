@@ -185,3 +185,51 @@ def test_partial_episode_batch_checkpoints_success_before_a_later_qb_failure(set
     assert saved["downloaded_episodes"] == ["S01E01"]
     assert len(saved["downloaded_links"]) == 1
     assert "qb unavailable" in saved["last_error"]
+
+
+def test_watchlist_handles_all_disjoint_joined_releases_without_repeat_downloads(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    item = repository.add("测试剧", "tv")
+    releases = [make_release(f"S01E{start:02d}-{start + 1:02d} 1080p", char)
+                for start, char in [(3, "a"), (5, "b"), (7, "c")]]
+    naming = StubNaming()
+    service = WatchlistService(settings, repository, StubSearch(releases), StubQB(), naming=naming)
+    assert service.check(item["id"])["downloaded"] == 3
+    assert [entry[3] for entry in naming.added] == [[f"S01E{i:02d}" for i in (start, start + 1)] for start in (3, 5, 7)]
+    assert service.check(item["id"])["downloaded"] == 0
+    assert repository.get(item["id"])["downloaded_episodes"] == [f"S01E{i:02d}" for i in range(3, 9)]
+
+
+def test_watchlist_normalizes_legacy_range_and_seasonless_episode_tokens():
+    values = [make_release("S01E03", "a"), make_release("S01E04", "b"), make_release("EP05", "c")]
+    assert WatchlistService._select_tv_releases(values, {"S01E03-E04", "E05"}) == []
+
+
+def test_completed_job_credits_both_episodes_only_after_success(settings):
+    repository = WatchlistRepository(settings.watchlist_path)
+    item = repository.add("测试剧", "tv")
+    repository.update(item["id"], {"downloaded_episodes": ["S01E03"], "episode_sources": {"S01E03": {"naming_job_id": "job", "release_id": "release"}}})
+    job = {"id": "job", "status": "completed", "hardlink_status": "conflict", "completed_episodes": ["S01E03", "S01E04"]}
+    repository.record_completed_job(job)
+    assert repository.get(item["id"])["downloaded_episodes"] == ["S01E03"]
+    job["hardlink_status"] = "done"
+    repository.record_completed_job(job)
+    repository.record_completed_job(job)
+    saved = repository.get(item["id"])
+    assert saved["downloaded_episodes"] == saved["completed_episodes"] == ["S01E03", "S01E04"]
+    assert saved["episode_sources"]["S01E04"]["status"] == "completed"
+
+
+def test_completed_manual_job_matches_only_same_title_and_type(settings):
+    repo = WatchlistRepository(settings.watchlist_path)
+    matching = repo.add("柯蒂斯总统", "anime")
+    wrong_type = repo.add("柯蒂斯总统", "tv")
+    wrong_title = repo.add("其他节目", "anime")
+    repo.record_completed_job({
+        "id": "manual", "torrent_hash": "hash", "status": "completed", "hardlink_status": "done",
+        "plan": {"media_name": "柯蒂斯总统", "media_type": "anime"},
+        "completed_episodes": ["S01E07", "S01E08"],
+    })
+    assert repo.get(matching["id"])["completed_episodes"] == ["S01E07", "S01E08"]
+    assert repo.get(wrong_type["id"])["downloaded_episodes"] == []
+    assert repo.get(wrong_title["id"])["downloaded_episodes"] == []

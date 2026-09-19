@@ -17,9 +17,9 @@ from .config import Settings
 from .errors import AppError, ConflictError, NotFoundError
 from .media_policies import policy_for
 from .qbittorrent import QBittorrentClient, normalized_task_progress, torrent_hash
-from .quality import Release, canonical_media_name, detect_episode, detect_season
+from .quality import Release, canonical_media_name, detect_episode, detect_season, expand_episode
 from .resource_preferences import select_episode_files
-from .watchlist import utc_now_iso
+from .watchlist import WatchlistRepository, utc_now_iso
 from .state import StateStore, StateStoreError
 
 
@@ -287,12 +287,25 @@ class EmbyNamingPlanner:
                 # Episodic files are separate episodes, not automatically numbered movie parts.
                 part = self._file_part(old_value, index, len(videos), auto_number=False)
                 value = self._title_prefix(plan, part)
-                value += f".{episode}"
-                if plan.episode_title:
-                    value += f".{plan.episode_title}"
                 video_format = self._file_video_format(old_value, plan.video_format)
-                if video_format:
-                    value += f".{video_format}"
+                if "-E" in episode:
+                    # Emby/Jellyfin's joined-episode convention must remain
+                    # visible in the filename; dots around the range make
+                    # some scanners treat it as a release qualifier.
+                    value = plan.media_name
+                    if plan.original_title and plan.original_title.casefold() != plan.media_name.casefold():
+                        value += f" - {plan.original_title}"
+                    value += f" - {episode}"
+                    if plan.episode_title:
+                        value += f" - {plan.episode_title}"
+                    if video_format:
+                        value += f" - {video_format}"
+                else:
+                    value += f".{episode}"
+                    if plan.episode_title:
+                        value += f".{plan.episode_title}"
+                    if video_format:
+                        value += f".{video_format}"
                 new_basename = f"{value}{old_value.suffix.lower()}"
             else:
                 main_index = main_videos.index(item) if item in main_videos else index
@@ -479,6 +492,7 @@ class NamingService:
         planner: Optional[EmbyNamingPlanner] = None,
         hardlinker: Optional[Any] = None,
         path_rules: Optional[Any] = None,
+        watchlist: Optional[WatchlistRepository] = None,
     ) -> None:
         self.settings = settings
         self.repository = repository
@@ -486,7 +500,29 @@ class NamingService:
         self.planner = planner or EmbyNamingPlanner()
         self.hardlinker = hardlinker
         self.path_rules = path_rules
+        self.watchlist = watchlist
         self._lock = threading.Lock()
+
+    @staticmethod
+    def _completed_episodes(files: Iterable[Dict[str, Any]], plan: NamingPlan, preview: Dict[str, Any]) -> List[str]:
+        if not policy_for(plan.media_type).episodic:
+            return []
+        renamed = {operation["old_path"]: operation["new_path"] for operation in preview.get("operations") or []}
+        episodes: set[str] = set()
+        for item in files:
+            path = PurePosixPath(renamed.get(item["name"], item["name"]))
+            if path.suffix.lower() not in VIDEO_EXTENSIONS:
+                continue
+            season = detect_season(str(path))
+            if season is None:
+                season = plan.season if plan.season is not None else 1
+            episodes.update(expand_episode(detect_episode(path.name, allow_numeric_prefix=True), season))
+        return sorted(episodes)
+
+    def _sync_watchlist(self, jobs: Iterable[Dict[str, Any]]) -> None:
+        if self.watchlist:
+            for job in jobs:
+                self.watchlist.record_completed_job(job)
 
     @staticmethod
     def _rename_started(job: Dict[str, Any]) -> bool:
@@ -1311,6 +1347,7 @@ class NamingService:
                 job["id"],
                 {
                     "status": "completed",
+                    "completed_episodes": self._completed_episodes(selected, plan, preview),
                     "checks": checks,
                     "last_check": now,
                     "last_error": None,
@@ -1380,6 +1417,14 @@ class NamingService:
                     {"hardlink_status": "waiting_download", "hardlink_error": None, "last_check": now},
                 )
             files = self.qb.files(job["torrent_hash"])
+            selection = job.get("selection") or {}
+            selected_indices = set(selection.get("selected_indices") or []) if selection.get("applied") else None
+            files = [
+                item for index, item in enumerate(files)
+                if (int(item.get("index", index)) in selected_indices if selected_indices is not None
+                    else int(item.get("priority", 1) or 0) > 0)
+                and not self._is_padding_file(item)
+            ]
             if not files:
                 return self.repository.update(
                     job["id"],
@@ -1406,6 +1451,7 @@ class NamingService:
                 {
                     "hardlink_status": hardlink_status,
                     "hardlink_result": result,
+                    "completed_episodes": self._completed_episodes(files, plan, naming_result) if hardlink_status == "done" else [],
                     "hardlink_error": None,
                     "last_check": now,
                 },
@@ -1441,6 +1487,7 @@ class NamingService:
                     # routine status check must not downgrade it merely
                     # because the downloader has since forgotten the torrent.
                     if job.get("hardlink_status") in {"done", "disabled", None}:
+                        self._sync_watchlist([job])
                         return {
                             "running": False,
                             "checked": 1,
@@ -1453,6 +1500,7 @@ class NamingService:
                             {"hardlink_status": "retrying", "hardlink_attempts": 0, "hardlink_error": None},
                         )
                     results = [self._finish_hardlink(job)]
+                    self._sync_watchlist(results)
                     return {
                         "running": False,
                         "checked": 1,
@@ -1481,6 +1529,7 @@ class NamingService:
                 ]
             for item in hardlink_jobs:
                 results.append(self._finish_hardlink(item))
+            self._sync_watchlist(results)
             return {
                 "running": False,
                 "checked": len(results),

@@ -114,3 +114,50 @@ def test_episode_file_selection_refuses_an_indivisible_bundle():
 
     assert result["safe"] is False
     assert result["reason"] == "episode-files-not-separable"
+
+
+def test_joined_file_and_subtitle_cover_both_requested_episodes():
+    files = [
+        {"index": 0, "name": "President.Curtis.S01E05-06.1080p.mp4"},
+        {"index": 1, "name": "President.Curtis.S01E05-06.1080p.chs.srt"},
+        {"index": 2, "name": "President.Curtis.S01E07-08.mp4"},
+        {"index": 3, "name": "poster.jpg"},
+    ]
+    result = select_episode_files(files, ["S01E05", "S01E06"])
+    assert result["safe"] is True
+    assert result["selected_indices"] == [0, 1]
+    assert result["matched_episodes"] == ["S01E05", "S01E06"]
+    assert result["skipped_indices"] == [2, 3]
+    assert select_episode_files(files, ["S01E05-E06"])["safe"] is True
+    # A missing second half requires the whole joined file, with explicit coverage.
+    partial = select_episode_files(files, ["S01E06"])
+    assert partial["safe"] is True
+    assert partial["selected_indices"] == [0, 1]
+    assert partial["covered_episodes"] == ["S01E05", "S01E06"]
+
+
+def test_episode_file_coverage_comes_from_basename_not_parent_pack_label():
+    assert select_episode_files([
+        {"name": "Show.S01E01-E08/Show.S01E05-06.mp4"},
+    ], ["S01E05", "S01E06"])["safe"] is True
+    assert select_episode_files([
+        {"name": "Show.S01E01-E08/mystery.mp4"},
+    ], ["S01E01", "S01E02"])["safe"] is False
+    assert select_episode_files([
+        {"name": "Season 02/EP05-06.mp4"},
+    ], ["S01E05", "S01E06"])["safe"] is False
+    assert select_episode_files([
+        {"name": "Season 02/EP05-06.mp4"},
+    ], ["S02E05", "S02E06"])["safe"] is True
+
+
+def test_pack_folder_range_never_replaces_individual_file_episode():
+    files = [
+        {"index": 0, "name": "President.Curtis.S01E05-06/President.Curtis.S01E05.mp4"},
+        {"index": 1, "name": "President.Curtis.S01E05-06/President.Curtis.S01E06.Hollow.mp4"},
+    ]
+    result = select_episode_files(files, ["S01E06"])
+    assert result["safe"] is True
+    assert result["selected_indices"] == [1]
+    assert result["skipped_indices"] == [0]
+    assert result["covered_episodes"] == ["S01E06"]

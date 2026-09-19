@@ -192,6 +192,28 @@ def test_tv_plan_normalizes_real_sixv_numeric_episode_pack():
     assert preview["unresolved_episodes"] == []
 
 
+def test_tv_plan_uses_emby_joined_episode_filename_and_subtitle_stem():
+    release = build_release(
+        "柯蒂斯总统",
+        "President.Curtis.S01E05-06.1080p.HD",
+        "https://sixv.test/mj/1.html",
+        MAGNET,
+        "tv",
+        2026,
+    )
+    plan = replace(EmbyNamingPlanner.from_release(release), video_format="1080p.HD")
+    preview = EmbyNamingPlanner().plan_files(
+        [
+            {"name": "President.Curtis.S01E05-06.mp4", "size": 100},
+            {"name": "President.Curtis.S01E05-06.chs.srt", "size": 2},
+        ],
+        plan,
+    )
+    renamed = {item["old_path"]: item["new_path"] for item in preview["operations"]}
+    assert renamed["President.Curtis.S01E05-06.mp4"] == "柯蒂斯总统 - S01E05-E06 - 1080p.HD.mp4"
+    assert renamed["President.Curtis.S01E05-06.chs.srt"] == "柯蒂斯总统 - S01E05-E06 - 1080p.HD.zh-CN.srt"
+
+
 def test_anime_uses_tv_style_emby_naming():
     plan = EmbyNamingPlanner.from_release(anime_release())
     preview = EmbyNamingPlanner().plan_files([{"name": "01.mkv", "size": 100}], plan)
@@ -916,3 +938,34 @@ def test_hardlink_failure_retries_and_can_be_manually_retried(tmp_path):
     report = service.check(job["id"])
     assert report["completed"] == 1
     assert repository.get(job["id"])["hardlink_status"] == "done"
+
+
+@pytest.mark.parametrize("start", [3, 5, 7])
+def test_joined_episode_job_recovers_selection_names_subtitle_and_credits_watchlist(tmp_path, start):
+    from ainas.watchlist import WatchlistRepository
+    settings = naming_settings(tmp_path)
+    label = f"President.Curtis.S01E{start:02d}-{start + 1:02d}.1080p.HD"
+    release = build_release("柯蒂斯总统", label, "https://sixv.test/mj/1.html", MAGNET, "anime", 2026)
+    files = [{"index": index, "name": label + suffix, "size": size, "progress": 1.0, "priority": 1}
+             for index, suffix, size in [(0, ".mp4", 100), (1, ".chs.srt", 10)]]
+    qb = FakeQB(files=files)
+    repository = NamingJobRepository(settings.naming_jobs_path)
+    watchlist = WatchlistRepository(settings.watchlist_path)
+    subscription = watchlist.add("柯蒂斯总统", "anime")
+    service = NamingService(settings, repository, qb, hardlinker=FakeHardlinker(), watchlist=watchlist)
+    wanted = [f"S01E{number:02d}" for number in (start, start + 1)]
+    added = service.add_download(release, settings.qb_anime_category, wanted_episodes=wanted[1:] if start == 5 else wanted)
+    job_id = added["naming_job_id"]
+    repository.update(job_id, {"status": "waiting_selection", "selection": {"safe": False, "reason": "episode-files-not-separable"}})
+    watchlist.update(subscription["id"], {"episode_sources": {wanted[0]: {"naming_job_id": job_id}}})
+    assert service.check(job_id)["completed"] == 1
+    job = repository.get(job_id)
+    assert job["selection"]["covered_episodes"] == wanted
+    assert job["completed_episodes"] == wanted
+    expected_stem = f"柯蒂斯总统 - S01E{start:02d}-E{start + 1:02d} - 1080p.HD"
+    assert qb.file_values[0]["name"] == expected_stem + ".mp4"
+    assert qb.file_values[1]["name"] == expected_stem + ".zh-CN.srt"
+    assert watchlist.get(subscription["id"])["completed_episodes"] == wanted
+    calls = list(qb.calls)
+    assert service.check(job_id)["completed"] == 1
+    assert qb.calls == calls

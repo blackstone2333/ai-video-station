@@ -14,6 +14,7 @@ from .errors import NotFoundError
 from .errors import AppError
 from .state import StateStore, StateStoreError
 from .resource_preferences import profile_for
+from .quality import canonical_media_name, expand_episode
 
 
 def utc_now_iso() -> str:
@@ -147,6 +148,42 @@ class WatchlistRepository:
                     self._write(data)
                     return deepcopy(item)
         raise NotFoundError("watchlist item", item_id)
+
+    def record_completed_job(self, job: Dict[str, Any]) -> None:
+        """Credit every episode in a verified video to its owning subscription."""
+        if job.get("status") != "completed" or job.get("hardlink_status") not in {"done", "disabled"}:
+            return
+        episodes = set(job.get("completed_episodes") or [])
+        if not episodes:
+            return
+        with self._lock:
+            data = self._read()
+            changed = False
+            for item in data["items"]:
+                sources = item.get("episode_sources") or {}
+                source = next((value for value in sources.values() if value.get("naming_job_id") == job["id"]), None)
+                if source is None:
+                    plan = job.get("plan") or {}
+                    if (item.get("type") not in {"auto", plan.get("media_type")}
+                        or canonical_media_name(item["keyword"]).casefold() != str(plan.get("media_name") or "").casefold()):
+                        continue
+                    source = {"naming_job_id": job["id"], "task_id": job.get("torrent_hash")}
+                downloaded = {
+                    episode for token in item.get("downloaded_episodes", [])
+                    for episode in (expand_episode(token, 1) or (token,))
+                }
+                completed = set(item.get("completed_episodes") or [])
+                new_sources = {**sources, **{episode: {**source, "status": "completed"} for episode in episodes}}
+                changes = {
+                    "downloaded_episodes": sorted(downloaded | episodes),
+                    "completed_episodes": sorted(completed | episodes),
+                    "episode_sources": new_sources,
+                }
+                if any(item.get(key) != value for key, value in changes.items()):
+                    item.update(changes)
+                    changed = True
+            if changed:
+                self._write(data)
 
     def delete(self, item_id: str) -> None:
         with self._lock:

@@ -18,6 +18,12 @@ CAM_PATTERNS = [
 ]
 
 SIZE_RE = re.compile(r"(?i)(\d+(?:\.\d+)?)\s*(TB|TiB|GB|GiB|G|MB|MiB|M)\b")
+RANGE_SEPARATOR = r"\s*[-~至_]\s*"
+EPISODE_RANGE_PATTERNS = [
+    re.compile(rf"(?i)(?<![a-z0-9])S(\d{{1,2}})[ ._\-]*E(\d{{1,3}})(?:{RANGE_SEPARATOR}(?:EP?|X)?|[ .]*E)(\d{{1,3}})(?![a-z0-9])"),
+    re.compile(rf"(?i)(?<![a-z0-9])EP?(\d{{1,3}}){RANGE_SEPARATOR}(?:EP?)?(\d{{1,3}})(?![a-z0-9])"),
+    re.compile(rf"(?:第|全|更新至)?\s*(?<!\d)(\d{{1,3}}){RANGE_SEPARATOR}(\d{{1,3}})\s*[集话期]"),
+]
 EPISODE_PATTERNS = [
     re.compile(r"(?i)\bS(\d{1,2})[ ._\-]*E(\d{1,3})(?:[ ._\-]*(?:E|X)(\d{1,3}))?\b"),
     re.compile(r"(?i)(?:^|[ ._\-])E(?:P)?(\d{1,3})(?:[ ._\-]|$)"),
@@ -92,6 +98,15 @@ def parse_size(text: str) -> Tuple[Optional[str], int]:
 
 def detect_episode(text: str, *, allow_numeric_prefix: bool = False) -> Optional[str]:
     normalized = unquote(text)
+    for index, pattern in enumerate(EPISODE_RANGE_PATTERNS):
+        match = pattern.search(normalized)
+        if match:
+            numbers = [int(value) for value in match.groups()]
+            season, start, end = numbers if index == 0 else (None, *numbers)
+            if end < start:
+                return None
+            prefix = f"S{season:02d}" if season is not None else ""
+            return f"{prefix}E{start:02d}" + (f"-E{end:02d}" if end != start else "")
     season_episode = EPISODE_PATTERNS[0].search(normalized)
     if season_episode:
         value = f"S{int(season_episode.group(1)):02d}E{int(season_episode.group(2)):02d}"
@@ -118,10 +133,28 @@ def detect_episode(text: str, *, allow_numeric_prefix: bool = False) -> Optional
     # episode number; require a separator after it so resolutions such as
     # ``720p`` are not mistaken for episode 720.
     if allow_numeric_prefix:
+        numeric_range = re.match(rf"(?i)^\s*(\d{{1,3}}){RANGE_SEPARATOR}(\d{{1,3}})(?=[ ._\-]|$)", stem)
+        if numeric_range:
+            start, end = map(int, numeric_range.groups())
+            return f"E{start:02d}-E{end:02d}" if end >= start else None
         numeric_prefix = re.match(r"(?i)^\s*(?:EP?|第)?0*(\d{1,3})(?=[ ._\-])", stem)
         if numeric_prefix:
             return f"E{int(numeric_prefix.group(1)):02d}"
     return None
+
+
+def expand_episode(value: Optional[str], season: Optional[int] = None) -> Tuple[str, ...]:
+    """Expand a canonical episode token without losing the end of a joined file."""
+    match = re.fullmatch(r"(?:S(\d{1,2}))?E(\d{1,3})(?:-E(\d{1,3}))?", value or "", re.IGNORECASE)
+    if not match:
+        return ()
+    season_value = int(match.group(1)) if match.group(1) is not None else season
+    start = int(match.group(2))
+    end = int(match.group(3) or start)
+    if end < start:
+        return ()
+    prefix = f"S{season_value:02d}" if season_value is not None else ""
+    return tuple(f"{prefix}E{number:02d}" for number in range(start, end + 1))
 
 
 CHINESE_DIGITS = {"零": 0, "〇": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
@@ -304,37 +337,14 @@ def _language(text: str, audio_languages: Tuple[str, ...]) -> Optional[str]:
 
 def detect_episode_range(text: str, season: Optional[int] = None) -> Tuple[str, ...]:
     normalized = unquote(text)
-    start = end = None
-    season_value = season
-    season_range = re.search(
-        r"(?i)\bS0*(\d{1,2})[ ._\-]*E0*(\d{1,3})\s*[-~至]\s*E?0*(\d{1,3})\b",
-        normalized,
-    )
-    if season_range:
-        season_value = int(season_range.group(1))
-        start, end = int(season_range.group(2)), int(season_range.group(3))
-    else:
-        episode_range = re.search(
-            r"(?i)\bE0*(\d{1,3})\s*[-~至]\s*E?0*(\d{1,3})\b",
-            normalized,
-        )
-        if episode_range:
-            start, end = int(episode_range.group(1)), int(episode_range.group(2))
-        else:
-            localized_range = re.search(
-                r"(?:第|全|更新至)?\s*0*(\d{1,3})\s*[-~至]\s*0*(\d{1,3})\s*[集话期]",
-                normalized,
-            )
-            if localized_range:
-                start, end = int(localized_range.group(1)), int(localized_range.group(2))
-            else:
-                complete = re.search(r"(?:全集|全)\s*0*(\d{1,3})\s*[集话期]", normalized)
-                if complete:
-                    start, end = 1, int(complete.group(1))
-    if start is None or end is None or end < start or end - start > 999:
-        return ()
-    season_value = season_value or detect_season(normalized) or 1
-    return tuple(f"S{season_value:02d}E{episode:02d}" for episode in range(start, end + 1))
+    token = detect_episode(normalized)
+    season_value = season if season is not None else detect_season(normalized)
+    if season_value is None:
+        season_value = 1
+    if token and "-E" in token:
+        return expand_episode(token, season_value)
+    complete = re.search(r"(?:全集|全)\s*0*(\d{1,3})\s*[集话期]", normalized)
+    return expand_episode(f"E01-E{int(complete.group(1)):02d}", season_value) if complete else ()
 
 
 def _hdr(text: str) -> Optional[str]:

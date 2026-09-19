@@ -22,6 +22,7 @@ from .quality import (
     Release,
     canonical_media_name,
     detect_episode,
+    expand_episode,
     detect_season,
     infer_media_type,
     link_display_name,
@@ -507,6 +508,9 @@ class WatchlistService:
     def _select_tv_releases(
         releases: List[Release], downloaded_episodes: set[str]
     ) -> List[tuple[Release, Optional[List[str]]]]:
+        downloaded_episodes = {
+            episode for token in downloaded_episodes for episode in (expand_episode(token, 1) or (token,))
+        }
         selected: List[tuple[Release, Optional[List[str]]]] = []
         episode_seen = set()
         bundle_selected = False
@@ -526,24 +530,30 @@ class WatchlistService:
                         episode=token,
                         season=release.season or 1,
                     )
-            if release.episodes:
-                missing = [episode for episode in release.episodes if episode not in downloaded_episodes and episode not in episode_seen]
-                if missing and not bundle_selected:
+            coverage = release.episodes or expand_episode(release.episode, release.season if release.season is not None else 1)
+            if len(coverage) > 1:
+                missing = [episode for episode in coverage if episode not in downloaded_episodes and episode not in episode_seen]
+                if missing:
                     selected.append((release, missing))
                     episode_seen.update(missing)
-                    bundle_selected = True
                 continue
-            if release.episode:
-                if release.episode in downloaded_episodes or release.episode in episode_seen:
+            if coverage:
+                episode = coverage[0]
+                if episode in downloaded_episodes or episode in episode_seen:
                     continue
-                episode_seen.add(release.episode)
-                selected.append((release, None))
+                episode_seen.add(episode)
+                selected.append((replace(release, episode=episode), None))
             elif not bundle_selected:
                 selected.append((release, None))
                 bundle_selected = True
         return selected
 
     def _check_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
+        jobs = getattr(self.naming, "repository", None)
+        if jobs:
+            for job in jobs.list():
+                self.repository.record_completed_job(job)
+            item = self.repository.get(item["id"])
         now = utc_now_iso()
         base_changes: Dict[str, Any] = {
             "last_check": now,
@@ -638,7 +648,7 @@ class WatchlistService:
                         "error": exc.detail,
                     }
                 downloaded_links.add(release.id)
-                effective_episodes = wanted_episodes or ([release.episode] if release.episode else [])
+                effective_episodes = wanted_episodes or list(release.episodes or expand_episode(release.episode, release.season if release.season is not None else 1))
                 for episode in effective_episodes:
                     downloaded_episodes.add(episode)
                     episode_sources[episode] = {
@@ -757,7 +767,7 @@ def build_services(settings: Settings) -> AppServices:
     search = SearchService(crawler, cache)
     naming_jobs = NamingJobRepository(settings.naming_jobs_path, state_store)
     hardlinker = MediaLibraryService(settings, path_rules=path_rules)
-    naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker, path_rules=path_rules)
+    naming = NamingService(settings, naming_jobs, qb, hardlinker=hardlinker, path_rules=path_rules, watchlist=watchlist)
     media_operation_lock = threading.RLock()
     cleanup = CleanupService(settings, CleanupPlanRepository(state_store), path_rules, naming_jobs, qb, media_operation_lock)
     directory_sync = DirectorySyncService(
