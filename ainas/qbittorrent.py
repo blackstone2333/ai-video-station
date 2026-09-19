@@ -314,7 +314,15 @@ class QBittorrentClient:
         self._request("POST", "/api/v2/torrents/setCategory", data={"hashes": hash_value, "category": category})
 
     def resume(self, hash_value: str) -> None:
-        self._request("POST", "/api/v2/torrents/resume", data={"hashes": hash_value})
+        try:
+            self._request("POST", "/api/v2/torrents/resume", data={"hashes": hash_value})
+        except UpstreamError as exc:
+            # qBittorrent 5.2 removed the historical ``resume`` alias in
+            # favour of ``start``.  Both operations are idempotent; retry
+            # only this compatibility endpoint so transient errors still
+            # surface normally from the fallback request.
+            logger.info("qb_resume_endpoint_fallback", extra={"endpoint": "start"})
+            self._request("POST", "/api/v2/torrents/start", data={"hashes": hash_value})
 
     def pause(self, hash_value: str) -> None:
         self._request("POST", "/api/v2/torrents/pause", data={"hashes": hash_value})

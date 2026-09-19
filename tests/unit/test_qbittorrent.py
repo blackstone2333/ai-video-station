@@ -138,6 +138,7 @@ def test_tasks_normalize_completed_state_when_qb_progress_is_stale(tmp_path):
         qb_password="secret",
         scheduler_enabled=False,
     )
+
     base = "http://qb.test:8080"
     responses.post(f"{base}/api/v2/auth/login", body="Ok.")
     responses.get(
@@ -170,6 +171,17 @@ def test_tasks_normalize_completed_state_when_qb_progress_is_stale(tmp_path):
     assert completed["completed"] is True
     assert missing["progress"] == 0.0
     assert missing["completed"] is False
+
+
+@responses.activate
+def test_resume_falls_back_to_qbittorrent_52_start_endpoint(tmp_path):
+    settings = Settings(data_dir=tmp_path, qb_host="qb.test", qb_password="secret", scheduler_enabled=False)
+    client = QBittorrentClient(settings)
+    base = "http://qb.test:8080"
+    responses.post(f"{base}/api/v2/torrents/resume", status=404)
+    responses.post(f"{base}/api/v2/torrents/start", body="", status=200)
+    client.resume("abc")
+    assert responses.calls[-1].request.url.endswith("/api/v2/torrents/start")
 
 
 @responses.activate
