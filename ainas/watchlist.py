@@ -178,6 +178,7 @@ class WatchlistRepository:
                     "downloaded_episodes": sorted(downloaded | episodes),
                     "completed_episodes": sorted(completed | episodes),
                     "episode_sources": new_sources,
+                    "last_error": None,
                 }
                 if any(item.get(key) != value for key, value in changes.items()):
                     item.update(changes)
